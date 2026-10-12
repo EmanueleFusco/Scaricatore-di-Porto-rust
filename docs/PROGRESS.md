@@ -140,48 +140,63 @@ listed in `PHASE_PROMPTS.md` M0-B.
 
 * **Diagnosed the crash reported by the owner.** `npm run tauri dev` printed
   `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display.` and the process
-  died immediately. Environment (from `neofetch` in the owner's terminal): **CachyOS, KDE Plasma
-  6.7.5, Wayland session** (`XDG_SESSION_TYPE=wayland`), with `DISPLAY=:0` also available via
-  XWayland.
-* **Workaround found and verified**: forcing the X11 backend makes the app start normally.
-  ```
-  GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
-  ```
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` is the fallback spec §13.3 already prescribes; `GDK_BACKEND=x11`
-  is the part that actually fixes the crash *here*.
-* **The real window was finally captured.** `magick import -window <id>` (ImageMagick's X11 grabber;
-  `xwininfo`/`xdotool` are not installed on this machine) screenshots a specific X11 window by id,
-  obtained from `xprop -root _NET_CLIENT_LIST`. This closes the gap left open above.
+  died immediately, so nothing could be tested by hand.
+  Environment: **CachyOS, KDE Plasma 6.7.5, Wayland session** (`XDG_SESSION_TYPE=wayland`) with
+  XWayland on `:0`; `webkit2gtk-4.1 2.54.1`, `gtk4 4.24.1`, `glib 2.90.1`, `mesa 26.2.4`,
+  NVIDIA RTX 3080 (proprietary driver, modeset enabled).
+* **Root cause is NOT our code — verified.** The pristine Tauri template
+  (`create-tauri-app svelte-ts`, its untouched scaffold, none of our code) was built and launched on
+  the same Wayland session: it dies with the **identical** `Error 71`. So this is
+  GTK4/WebKitGTK against this compositor, not our configuration and not our Rust code.
+* **Measured matrix** (release binary, fresh start each time, window captured with
+  `magick import -window` and its mean pixel value measured — `0.0000` would mean a black window):
+
+  | backend | outcome | window | mean brightness | `Error 71` | GBM warnings |
+  | :-- | :-- | :-- | :-- | :-- | :-- |
+  | `GDK_BACKEND=wayland` | **dies** | none | — | **1** | 0 |
+  | `GDK_BACKEND=x11` | **alive** | yes | **0.137** (renders) | 0 | 2 (harmless) |
+
+  So **only `GDK_BACKEND=x11` is needed**; `WEBKIT_DISABLE_DMABUF_RENDERER=1` was *not* required
+  (tested separately, no difference). The GBM "Failed to create GBM buffer" messages still appear
+  on X11 but the window renders correctly, so they are noise on this machine.
+* **`npm run app` added** (`scripts/run-dev.mjs`): runs `tauri dev`, and on Linux only, when the
+  session is Wayland *and* XWayland is available *and* the user has not already set `GDK_BACKEND`,
+  it injects `GDK_BACKEND=x11` and prints exactly what it is doing and why. One command, no hidden
+  behaviour, unchanged on machines where Wayland works.
 
 ### Verified by running
 
-* `xprop -root _NET_CLIENT_LIST` shows the app window with the correct identity:
-  `WM_CLASS "scaricatore-di-porto"`, **`WM_NAME "Scaricatore Di Porto"`** (the title from
-  `tauri.conf.json`).
-* The window was captured and shows the finished shell: sidebar with **Coda** marked as the current
-  page, **"Coda"** heading, the empty-queue card (*"Incolla un link per iniziare"*), the status
-  footer (*"In attesa — Nessun processo in esecuzione"*), in **Italian** and in the **dark** palette
-  taken from the OS (KDE Breeze-Dark) — i.e. theme `System` works end to end. Window size 980×680
-  as configured.
-* **No error banner is present in the real app**, which means the `settings_get` IPC round trip to
-  Rust succeeded (a failure would render the `role="alert"` toast from `Toast.svelte`).
+* `npm run app -- --help` → prints the explanation and forwards the arguments to the CLI.
+* The window is still confirmed by identity and content: `xprop` shows `WM_NAME "Scaricatore Di
+  Porto"`, and the capture shows the finished shell — sidebar with **Coda** marked current, the
+  empty-queue card (*"Incolla un link per iniziare"*), the status footer (*"In attesa — Nessun
+  processo in esecuzione"*), **Italian**, **dark** palette taken from the OS (KDE Breeze-Dark), so
+  theme `System` works end to end. 980×680 as configured.
+* **No error banner in the real app**, which means the `settings_get` IPC round trip to Rust
+  succeeded (a failure would render the `role="alert"` toast).
 
 ### Not verified / stubbed
 
-* The **root cause** of the Wayland `Error 71` was not identified — it is a GTK/WebKitGTK protocol
-  error against this compositor, not something in our code. `GDK_BACKEND=x11` sidesteps it.
-* Whether plain `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone (without the X11 backend) is enough was
-  not isolated.
-* Clicking the language/theme dropdowns **by hand is still pending** — the capture tool can grab
-  the window but cannot synthesise input, so `settings.json` has still never been written on this
+* The **underlying GTK bug** behind `Error 71` was not identified — no upstream bug search was
+  done. It is recorded as an environment limitation, not a project defect.
+* Clicking the language/theme dropdowns **by hand is still pending**: the capture tool can grab a
+  window but cannot synthesise input, so `settings.json` has still never been written on this
   machine.
 * macOS and Windows remain completely untested.
 
+### A note on my own measurement mistake
+
+For a while I reported contradictory results ("MORTO" for configurations that had worked minutes
+earlier). Cause: a leftover test copy of the binary (`/tmp/opencode/app-base`) was still alive and
+held the `com.scaricatorediporto.app.SingleInstance` D-Bus name, so every later launch was treated
+as a second instance and exited at once. Recorded because it silently invalidated several probes:
+**when the app "exits immediately with no error", check whether a previous instance is still
+running** (`gdbus ... GetNameOwner`, `ps`).
+
 ### Decisions/deviations
 
-None new to the code. This is an environment finding: on a Wayland session the app currently needs
-`GDK_BACKEND=x11`. If it keeps happening on other Wayland desktops, the fix belongs in the app
-(fail soft / show a message) rather than in the user's shell — worth revisiting in M7.
+D10 in `docs/DECISIONS.md`: the Wayland crash is worked around in the dev launcher rather than
+"fixed" in the app, because the same crash happens with the unmodified Tauri template.
 
 ### Next step
 

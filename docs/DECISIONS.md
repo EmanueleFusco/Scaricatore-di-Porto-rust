@@ -81,6 +81,27 @@ repository (`LICENSE`, `README.md`, `requirements.txt`, `images/`) was left at t
 `original_python/` instead of being deleted, because it is the user's source material and the
 Python file's licence may matter for the About screen (§11.8).
 
+### D10 — Wayland: worked around in the dev launcher, not "fixed" in the app
+
+On the owner's machine (CachyOS, KDE Plasma 6.7.5, Wayland, NVIDIA RTX 3080, `webkit2gtk-4.1`
+2.54.1, `gtk4` 4.24.1) any GTK window dies immediately with
+`Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display`.
+
+**Verified it is not our code**: the pristine `create-tauri-app` Tauri template, built and run on
+the same session, dies with the identical message. Measured: `GDK_BACKEND=wayland` → dies, no
+window; `GDK_BACKEND=x11` → stays alive, window renders (mean pixel value 0.137, i.e. not black).
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` makes no difference here, despite the "Failed to create GBM
+buffer" messages (which are harmless — the window renders).
+
+So `scripts/run-dev.mjs` (exposed as `npm run app`) injects `GDK_BACKEND=x11` **only** when all of
+these hold: Linux, a Wayland session, XWayland available, and the user has not already set
+`GDK_BACKEND`. It prints what it is doing. This is deliberately not hidden inside the Rust code:
+if a future GTK fixes the crash, the workaround disappears on its own instead of masking a real
+problem, and on machines where Wayland works nothing changes.
+
+Known follow-up (not M0 work): if other Wayland desktops hit this, the right fix is in the app —
+detect the failure and tell the user to retry with `GDK_BACKEND=x11` — not in the user's shell.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a
