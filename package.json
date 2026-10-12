@@ -15,7 +15,8 @@
     "app": "node scripts/run.mjs dev",
     "tauri": "tauri",
     "app:binary": "node scripts/run.mjs binary",
-    "check:ci": "node scripts/check-ci-syntax.mjs"
+    "check:ci": "node scripts/check-ci-syntax.mjs",
+    "check:release": "node scripts/check-release-version.mjs"
   },
   "license": "MIT",
   "dependencies": {

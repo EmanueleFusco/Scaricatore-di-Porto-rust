@@ -94,6 +94,14 @@ jobs:
 
       - run: npm run build
 
+      # La versione vive in tre manifest indipendenti e finisce nel NOME dei file
+      # prodotti. Senza questo controllo si pubblicherebbe v0.2.0 contenente
+      # "..._0.1.0_amd64.deb": binari sbagliati con etichetta sbagliata, e su una
+      # release pubblicata non si corregge. Costa 10 secondi.
+      - name: Verify the tag matches the manifest versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm run check:release -- "${{ github.ref_name }}"
+
   # --------------------------------------------------------------- bundle (2x)
   bundle:
     name: bundle (${{ matrix.label }})
@@ -169,11 +177,34 @@ jobs:
       - name: Report bundle sizes
         run: node scripts/report-bundle-sizes.mjs
 
+      # Su macOS un `.app` e' una CARTELLA e GitHub non accetta cartelle come
+      # asset: va zipato. Lo zipiamo QUI, sul runner macOS, con `ditto`: e' lo
+      # strumento nativo che preserva symlink e permessi, e zipparlo da Linux
+      # produrrebbe un .app subtly rotto. Il nome include la label della matrice
+      # perche' i due job macOS produrrebbero altrimenti lo stesso nome file.
+      #
+      # Dopo aver zippato, l'.app VIENE CANCELLATO: altrimenti l'upload lo
+      # include come albero di file e nella release finiscono anche i suoi file
+      # interni sciolti (il binario `scaricatore`, ecc.) accanto agli zip giusti.
+      - name: Pack the macOS .app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for app in src-tauri/target/release/bundle/dmg/*.app; do
+            out="${{ matrix.label }}-$(basename "$app" .app).app.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$out"
+            rm -rf "$app"
+            echo "pacchettato e rimosso: $out"
+          done
+
       - name: Upload the bundle
         uses: actions/upload-artifact@v4
         with:
           name: scaricatore-di-porto-${{ matrix.label }}
-          path: src-tauri/target/release/bundle/**
+          path: |
+            src-tauri/target/release/bundle/**
+            ${{ runner.os == 'macOS' && format('{0}/*.app.zip', matrix.label) || '' }}
           if-no-files-found: error
           retention-days: 14
 
@@ -213,13 +244,72 @@ jobs:
       - name: Build the universal bundle
         run: npx tauri build --target universal-apple-darwin
 
+      # Vedi il commento nel job `bundle`: `.app` e' una cartella e va zipato con
+      # `ditto` sul runner macOS, non da Linux. Poi viene cancellata.
+      - name: Pack the universal .app
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for app in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.app; do
+            out="macos-universal-$(basename "$app" .app).app.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$out"
+            rm -rf "$app"
+            echo "pacchettato e rimosso: $out"
+          done
+
       - name: Upload the universal bundle
         uses: actions/upload-artifact@v4
         with:
           name: scaricatore-di-porto-macos-universal
-          path: src-tauri/target/universal-apple-darwin/release/bundle/**
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/**
+            macos-universal-*.app.zip
           if-no-files-found: error
           retention-days: 14
+
+  # ------------------------------------------------------- draft release (v*)
+  # Raccoglie gli artifact dei job di build e crea una Release **in bozza**.
+  # Bozza e non pubblicata: se un file e' sbagliato la si cancella, mentre una
+  # release pubblicata non si puo' piu' correggere. La pubblichi con un clic dalla
+  # pagina Releases, dopo aver scaricato e provato i binari.
+  release:
+    name: draft release
+    needs: [check, bundle, bundle-macos-universal]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Solo questo job puo' scrivere: il workflow globale resta in sola lettura.
+    permissions:
+      contents: write
+    steps:
+      - name: Collect every artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: scaricatore-di-porto-*
+          path: assets
+          merge-multiple: true
+
+      # Gli artifact conservano la struttura delle cartelle, quindi gli asset
+      # avrebbero nomi tipo "deb/x.deb". Li appiattiamo: l'utente vede il nome
+      # del file vero. `-mindepth 2` tocca solo i file dentro le sottocartelle,
+      # cosi' gli zip gia' in `assets/` non vengono "spostati su se stessi".
+      - name: Flatten the files
+        run: |
+          set -euo pipefail
+          find assets -mindepth 2 -type f -exec sh -c 'mv "$1" "assets/$(basename "$1")"' _ {} \;
+          find assets -mindepth 1 -type d -empty -delete
+          echo "--- asset da allegare ---"
+          ls -la assets
+
+      - name: Create the draft release
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+        env:
+          # GITHUB_TOKEN e' automatico: nessun secret da configurare.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # -------------------------------------------- Tier 2, solo su avvio manuale
   # Spec §1.1: questi target non sono testati a mano. Devono almeno compilare e
