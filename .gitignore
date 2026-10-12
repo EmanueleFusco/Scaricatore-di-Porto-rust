@@ -8,24 +8,40 @@ dist/
 # --- Rust / Tauri ---
 src-tauri/target/
 src-tauri/gen/
-# Bundled tool binaries (spec §5.2.1): never committed, downloaded by scripts/fetch_bundled_tools.mjs
+# Tool binari inclusi nell'installer (spec §5.2.1): MAI nel repo, si scaricano
+# con scripts/fetch_bundled_tools.mjs
 src-tauri/binaries/
-# Whisper models and any downloaded tools
+# Modelli Whisper e strumenti scaricati a runtime
 *.gguf
 *.bin
 !src-tauri/tests/**/*.bin
 
-# --- Secrets / local env ---
+# --- Segreti e materiale di firma ---
 .env
 .env.*
 !.env.example
 
-# --- Editors / OS ---
+# Chiavi di firma: per la chiave PRIVATA dell'updater Tauri la spec §13.4 dice
+# che deve vivere SOLO nei secret di CI, mai nel repository. Se qualcuno la
+# genera in locale per fare una prova, non deve finire qui dentro.
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.jks
+# Copie locali di impostazioni o code di backup
+*.bak
+
+# --- Editor / OS ---
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
 
-# --- Logs / diagnostics ---
+# --- Log e diagnostica ---
 *.log
+# Dump di crash (WebKitGTK su Linux scrive core.<pid>)
+core
+core.*

@@ -256,6 +256,30 @@ Windows. I asserted it from the std docs (`MoveFileExW` + `MOVEFILE_REPLACE_EXIS
 `settings_survive_a_restart` only ever ran on Linux. That same test exercises the code path on
 Windows the moment CI goes green — until then, treat it as untested.
 
+### D16 — Pre-push audit of what actually gets committed
+
+Before the first push the owner asked for a secrets/`.gitignore` audit. Checked with commands that
+look at **what is really tracked**, not at what `.gitignore` claims:
+
+* `git grep` for API-key/token/private-key patterns and for real key formats
+  (`AIza…`, `sk-…`, `ghp_…`, `AKIA…`, `-----BEGIN`) → **no hits**. The matches for the words
+  "secret"/"token" are all documentation (`CancellationToken`, spec §10.5).
+* no `/home/<user>`, no e-mail addresses, no LAN IP addresses in any tracked file;
+* commit author is the placeholder `Scaricatore Dev <dev@example.invalid>` — **no real identity**;
+* heaviest tracked files are 264 kB (`original_python/images/icona.ico`) and 114 kB
+  (`Cargo.lock`) — nothing that should not be in a repository;
+* nothing that is ignored today was ever committed (`--diff-filter=A` cross-check);
+* the only ignored directories present are `src-tauri/target` (16 194 files), `node_modules`
+  (9 469), `src-tauri/gen` and `dist`.
+
+**Two real gaps found and closed.** The old `.gitignore` had no rule for signing material, so a
+private key generated locally for a test would have been committed — spec §13.4 requires the Tauri
+updater private key to exist **only** in CI secrets. Added `*.key *.pem *.p12 *.pfx *.keystore
+*.jks`, plus `*.bak` and WebKitGTK crash dumps (`core`, `core.*`). Verified both directions: the
+new rules catch key files, and none of the files that *must* be tracked (`tools.manifest.json`,
+`whisper.models.json`, `Cargo.lock`, `package-lock.json`, `.github/workflows/ci.yml`) are caught by
+accident.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a
