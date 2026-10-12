@@ -85,7 +85,7 @@ npx tauri build --no-bundle                         -> ok in 1m36s
   this environment its window could not be raised onto the captured desktop, so there is no
   picture of the real window. The evidence that the UI is not blank is indirect but strong: the
   production bundle runs under the exact CSP in a browser with no console output, and the release
-  binary starts and keeps running.
+  binary starts and keeps running. **Superseded by the next block.**
 * **Linux + this machine only.** Nothing was run on Windows or macOS; no `tauri build` bundle
   (`.deb`/`.rpm`/AppImage/NSIS/dmg) was produced, only `--no-bundle`.
 * **Settings persistence was verified through the IPC tests, not by hand.** The test
@@ -131,3 +131,58 @@ M0-B — `services/process.rs`: safe cross-platform spawn, Job Object / process-
 concurrent stdout+stderr draining with a 200-line stderr ring buffer, `CancellationToken` +
 `tokio::select!`, per-app private temp dir, with a `fake_tool` test binary and the four tests
 listed in `PHASE_PROMPTS.md` M0-B.
+
+---
+
+## 2026-10-12 — M0-A / Wayland crash on this machine + window captured
+
+### Done
+
+* **Diagnosed the crash reported by the owner.** `npm run tauri dev` printed
+  `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display.` and the process
+  died immediately. Environment (from `neofetch` in the owner's terminal): **CachyOS, KDE Plasma
+  6.7.5, Wayland session** (`XDG_SESSION_TYPE=wayland`), with `DISPLAY=:0` also available via
+  XWayland.
+* **Workaround found and verified**: forcing the X11 backend makes the app start normally.
+  ```
+  GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
+  ```
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` is the fallback spec §13.3 already prescribes; `GDK_BACKEND=x11`
+  is the part that actually fixes the crash *here*.
+* **The real window was finally captured.** `magick import -window <id>` (ImageMagick's X11 grabber;
+  `xwininfo`/`xdotool` are not installed on this machine) screenshots a specific X11 window by id,
+  obtained from `xprop -root _NET_CLIENT_LIST`. This closes the gap left open above.
+
+### Verified by running
+
+* `xprop -root _NET_CLIENT_LIST` shows the app window with the correct identity:
+  `WM_CLASS "scaricatore-di-porto"`, **`WM_NAME "Scaricatore Di Porto"`** (the title from
+  `tauri.conf.json`).
+* The window was captured and shows the finished shell: sidebar with **Coda** marked as the current
+  page, **"Coda"** heading, the empty-queue card (*"Incolla un link per iniziare"*), the status
+  footer (*"In attesa — Nessun processo in esecuzione"*), in **Italian** and in the **dark** palette
+  taken from the OS (KDE Breeze-Dark) — i.e. theme `System` works end to end. Window size 980×680
+  as configured.
+* **No error banner is present in the real app**, which means the `settings_get` IPC round trip to
+  Rust succeeded (a failure would render the `role="alert"` toast from `Toast.svelte`).
+
+### Not verified / stubbed
+
+* The **root cause** of the Wayland `Error 71` was not identified — it is a GTK/WebKitGTK protocol
+  error against this compositor, not something in our code. `GDK_BACKEND=x11` sidesteps it.
+* Whether plain `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone (without the X11 backend) is enough was
+  not isolated.
+* Clicking the language/theme dropdowns **by hand is still pending** — the capture tool can grab
+  the window but cannot synthesise input, so `settings.json` has still never been written on this
+  machine.
+* macOS and Windows remain completely untested.
+
+### Decisions/deviations
+
+None new to the code. This is an environment finding: on a Wayland session the app currently needs
+`GDK_BACKEND=x11`. If it keeps happening on other Wayland desktops, the fix belongs in the app
+(fail soft / show a message) rather than in the user's shell — worth revisiting in M7.
+
+### Next step
+
+M0-B, unchanged.
