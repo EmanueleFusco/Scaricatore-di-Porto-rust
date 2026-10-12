@@ -361,16 +361,24 @@ M0-B, unchanged.
   (`.deb` 1.94 MiB, `.rpm` 1.94 MiB, `.AppImage` 108.01 MiB) — the list does not break Linux.
 * `npm run check` (0 errors/warnings), `npm test` (28), `cargo fmt --check`,
   `cargo clippy -D warnings`, `cargo test` (32 + 5) all green.
+* **First CI run: every job green** (30m 17s wall clock) — `check` 7m08s, `bundle` linux-x64 7m30s,
+  windows-x64 9m12s, macos-arm64 2m35s, macos universal 3m52s.
+* **The Rust code now compiles and links for Windows x64, macOS arm64 and macOS universal** — the
+  first time anything has ever been built for those targets.
 
 ### Not verified / stubbed
 
-* **Nothing has been compiled for Windows or macOS.** No cross target is installed, and macOS cannot
-  be cross-compiled from Linux at all.
-* `std::fs::rename` replacing the destination on Windows is asserted from the std docs but **only
-  tested on Linux so far**. The IPC test `settings_survive_a_restart` exercises exactly that path
-  and will prove it the moment CI goes green on Windows.
-* The universal macOS build is untested; it needs both Apple targets and is the most likely CI
-  failure.
+* **No CI runner ever opened a window.** Green means "it compiles, links and bundles", not "it
+  works". Manual testing on real Windows and macOS hardware is still outstanding.
+* **The tests ran only on Linux.** `cargo test` lives in the `check` job (ubuntu only); the `bundle`
+  matrix does not run tests. So the open question from D15 — whether `std::fs::rename` replaces the
+  destination on Windows — is **still untested**.
+* Tier 2 targets (macOS Intel, Windows ARM64, Linux ARM64) show green but were **skipped**: that job
+  only runs on `workflow_dispatch`. The literal `${{ matrix.label }}` in the run summary is how
+  GitHub renders a skipped matrix that never expanded — it does not mean they were tested.
+* The artifacts themselves have not been downloaded or run by anyone yet.
+* My prediction that `bundle-macos-universal` would be the most likely failure was **wrong**: it
+  passed in 3m52s.
 
 ### Next step
 

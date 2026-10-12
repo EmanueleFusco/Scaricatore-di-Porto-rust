@@ -251,8 +251,15 @@ versions). Switching back is one line.
 
 **Still unverified, and only CI can verify it:** `std::fs::rename` replacing the destination on
 Windows. I asserted it from the std docs (`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`), but the test
-`settings_survive_a_restart` only ever ran on Linux. That same test exercises the code path on
-Windows the moment CI goes green — until then, treat it as untested.
+`settings_survive_a_restart` only ever ran on Linux — and it is **still** unverified after the first
+green CI run, because `cargo test` only runs in the `check` job (ubuntu). The `bundle` jobs compile
+but do not execute the suite. Running the tests on Windows is the obvious next improvement.
+
+**First CI run outcome** (30m 17s): every job green — `check` 7m08s, `bundle` linux-x64 7m30s,
+windows-x64 9m12s, macos-arm64 2m35s, macos universal 3m52s. Green means *it compiles, links and
+bundles*, not *it works*: no runner ever opened a window. Two corrections to my own predictions: the
+universal macOS build, which I called the most likely failure, passed first time; and the Tier 2 job
+showing green in 0s means it was **skipped**, not passed.
 
 ### D16 — Pre-push audit of what actually gets committed
 
