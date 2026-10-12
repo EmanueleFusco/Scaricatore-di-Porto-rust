@@ -12,8 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:csp": "npm run build && node scripts/serve-dist-with-csp.mjs",
-    "app": "node scripts/run-dev.mjs",
-    "tauri": "tauri"
+    "app": "node scripts/run.mjs dev",
+    "tauri": "tauri",
+    "app:binary": "node scripts/run.mjs binary"
   },
   "license": "MIT",
   "dependencies": {

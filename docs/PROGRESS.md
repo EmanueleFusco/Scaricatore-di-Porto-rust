@@ -215,6 +215,41 @@ template.
 
 ---
 
+## 2026-10-12 — M0-A / why the release binary and `npm run app` behaved differently
+
+### Done
+
+* **Owner asked why `./target/release/scaricatore-di-porto` did not start while `npm run app` did.**
+  Measured, not guessed:
+
+  | how it is launched | outcome | window | `Error 71` |
+  | :-- | :-- | :-- | :-- |
+  | release binary, **no env vars** | **dies** | none | **1** |
+  | release binary, `x11` + `no-dmabuf` | **alive** | yes | 0 |
+  | debug binary (what `npm run app` runs), **no env vars** | **dies** | none | **1** |
+
+  **The release binary is not broken.** Both binaries fail identically without the environment
+  variables; `npm run app` only appeared to work because `scripts/run.mjs` injects them. The
+  release binary also has the frontend embedded (no `Could not connect to 127.0.0.1`), because it
+  was built with `--features tauri/custom-protocol`.
+* **`scripts/run.mjs` replaces `scripts/run-dev.mjs`** and supports two modes, so both routes
+  behave identically:
+  * `npm run app` → `tauri dev` (Vite dev server + debug binary)
+  * `npm run app:binary` → the compiled release binary; if it is missing it prints the right build
+    command and warns that a bare `cargo build --release` is not enough.
+* Verified: `npm run app:binary` → alive, window created, 0 `Error 71`, 0 GBM errors.
+
+### Not verified / stubbed
+
+* Still not verified by me that the window is visible **on screen** (the capture tool bypasses the
+  compositor); the owner is the only one who can confirm the display bugs are gone.
+
+### Next step
+
+M0-B, unchanged.
+
+---
+
 ## 2026-10-12 — M0-A / icons replaced with Lucide + settings persistence confirmed by the owner
 
 ### Done
