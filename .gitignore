@@ -1,0 +1,30 @@
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+*.local
+
+# --- Rust / Tauri ---
+src-tauri/target/
+src-tauri/gen/
+# Bundled tool binaries (spec §5.2.1): never committed, downloaded by scripts/fetch_bundled_tools.mjs
+src-tauri/binaries/
+# Whisper models and any downloaded tools
+*.gguf
+*.bin
+!src-tauri/tests/**/*.bin
+
+# --- Secrets / local env ---
+.env
+.env.*
+!.env.example
+
+# --- Editors / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- Logs / diagnostics ---
+*.log
