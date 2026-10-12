@@ -113,8 +113,18 @@ jobs:
           # per arm64 il job `tier2` usa `ubuntu-24.04-arm` e non 22.04.
           - os: ubuntu-22.04
             label: linux-x64
-          - os: windows-latest
+          # Windows: `windows-latest` e' passato a Windows Server 2025 con
+          # **Visual Studio 2026** (giugno 2026). Fissiamo `windows-2022` per due
+          # motivi: e' l'immagine piu' vecchia (SDK piu' basso -> il binario gira
+          # su piu' versioni di Windows, che e' la nostra politica "prodotto piu'
+          # vecchio = massima compatibilita'") ed e' quella su cui l'ecosistema
+          # Tauri e' piu' testato. Per tornare a `windows-latest` basta cambiare
+          # questa riga.
+          - os: windows-2022
             label: windows-x64
+          # macOS: `macos-latest` = macOS 26 **arm64** (Apple Silicon), che e'
+          # il target Tier 1 della spec §1.1. Il binario universale sta nel job
+          # separato `bundle-macos-universal`.
           - os: macos-latest
             label: macos-arm64
     runs-on: ${{ matrix.os }}
@@ -199,8 +209,12 @@ jobs:
 
       - run: npm ci
 
-      # Spec §13.2 chiede il binario universale. La notarizzazione resta una
-      # attività umana (docs/SPIKES.md): qui si produce solo il bundle unsigned.
+      # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche',
+      # se fallisce non deve bloccare il .app nativo arm64, che e' quello che
+      # serve al test manuale su Apple Silicon. `macos-latest` e' arm64: per la
+      # slice Intel serve il target `x86_64-apple-darwin` (installato sopra) e il
+      # lipo che fa Tauri. NON FIRMATO: la notarizzazione resta umana
+      # (docs/SPIKES.md).
       - name: Build the universal bundle
         run: npx tauri build --target universal-apple-darwin
 

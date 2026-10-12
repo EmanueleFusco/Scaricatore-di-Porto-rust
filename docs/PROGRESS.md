@@ -336,6 +336,46 @@ M0-B, unchanged.
 
 M0-B, unchanged.
 
+---
+
+## 2026-10-12 — M0-A / Windows and macOS audit
+
+### Done
+
+* Owner confirmed the policy: **oldest supported product, for the widest compatibility**. That
+  decision drove the two changes below.
+* Audited Windows x64 and macOS against GitHub's runner README, Tauri's prerequisites page (updated
+  20 Aug 2026) and the published Tauri config schema — not from memory. Full reasoning and the
+  corrected facts are in DECISIONS.md D15.
+* **`bundle.targets`: `"all"` → explicit list without `msi`.** `"all"` would also build an MSI on
+  Windows, and Tauri's docs say MSI packaging needs the VBSCRIPT optional feature on the build
+  machine, which may be absent on the Windows runner images. Spec §13.1 prefers NSIS and never
+  mentions MSI.
+* **CI now uses `windows-2022` instead of `windows-latest`**, because `windows-latest` moved to
+  Windows Server 2025 with **Visual Studio 2026** in June 2026; the older image is both the
+  conservative choice and the one matching the owner's policy.
+
+### Verified by running
+
+* `npx tauri build` with the new target list still produces all three Linux bundles
+  (`.deb` 1.94 MiB, `.rpm` 1.94 MiB, `.AppImage` 108.01 MiB) — the list does not break Linux.
+* `npm run check` (0 errors/warnings), `npm test` (28), `cargo fmt --check`,
+  `cargo clippy -D warnings`, `cargo test` (32 + 5) all green.
+
+### Not verified / stubbed
+
+* **Nothing has been compiled for Windows or macOS.** No cross target is installed, and macOS cannot
+  be cross-compiled from Linux at all.
+* `std::fs::rename` replacing the destination on Windows is asserted from the std docs but **only
+  tested on Linux so far**. The IPC test `settings_survive_a_restart` exercises exactly that path
+  and will prove it the moment CI goes green on Windows.
+* The universal macOS build is untested; it needs both Apple targets and is the most likely CI
+  failure.
+
+### Next step
+
+M0-B, unchanged.
+
 ### Next step
 
 M0-B, unchanged.

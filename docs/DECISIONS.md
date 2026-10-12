@@ -209,6 +209,53 @@ All eight packages were verified present in the jammy `main`/`universe` indices.
 **Open for the owner:** when 22.04 leaves standard support, the `bundle` job label must move up.
 Deciding between "newest LTS" and "oldest still supported" is a product call, not mine.
 
+### D15 — Windows and macOS verified against current sources (two real fixes)
+
+Owner asked for an audit of the Windows x64 and macOS side. Checked against GitHub's runner
+README, Tauri's prerequisites page (updated 20 Aug 2026) and the Tauri config schema, not memory.
+
+**Runner landscape today:**
+
+| label | resolves to |
+| :-- | :-- |
+| `windows-latest` | Windows Server 2025 + **Visual Studio 2026** (migrated June 2026) |
+| `windows-2022` | Windows Server 2022 + VS 2022 — still available |
+| `macos-latest` | **macOS 26 arm64** (Apple Silicon) |
+| `macos-15-intel` / `macos-26-intel` | macOS Intel, for the Tier 2 job |
+| `ubuntu-latest` | 24.04; `ubuntu-26.04` exists |
+
+**Fix 1 — `bundle.targets`: dropped `msi`.** It was `"all"`, which on Windows also builds an MSI.
+Tauri's docs state MSI packaging needs the **VBSCRIPT optional feature** on the build machine and
+that it may be disabled on some Windows images, in which case `light.exe` fails. The runner would
+need the feature enabled plus a restart. Spec §13.1 says the **NSIS installer is preferred** and
+never mentions MSI, so the list is now explicit:
+`["deb", "rpm", "appimage", "nsis", "app", "dmg"]` (values confirmed against the published config
+schema, which allows exactly these plus `msi`). Adding MSI back is one word if the Microsoft Store
+ever matters.
+
+**Fix 2 — CI uses `windows-2022`, not `windows-latest`.** Since June 2026 `windows-latest` carries
+**Visual Studio 2026**, which is new enough that the Tauri ecosystem is not yet proven against it.
+`windows-2022` is both the more conservative choice and the one consistent with the owner's policy
+("oldest product = widest compatibility": an older SDK means the binary runs on more Windows
+versions). Switching back is one line.
+
+**Verified as correct, no change needed:**
+
+* `PathResolver::download_dir()` (used by `services/paths.rs` for the default output folder) works
+  on all three: `C:\Users\<u>\Downloads`, `/Users/<u>/Downloads`, `$XDG_DOWNLOAD_DIR`.
+* `tauri-plugin-single-instance` uses a Win32 **named mutex + window class** on Windows and a
+  **Unix socket under `/tmp`** on macOS (path kept under 100 chars) — no platform-specific code
+  needed from us.
+* `main.rs` already carries `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`,
+  so release builds on Windows show no console window (spec §4.1).
+* Tauri's stated minimum is macOS 10.15; the spec asks for macOS 12+. Our floor is therefore
+  stricter, which is safe.
+
+**Still unverified, and only CI can verify it:** `std::fs::rename` replacing the destination on
+Windows. I asserted it from the std docs (`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`), but the test
+`settings_survive_a_restart` only ever ran on Linux. That same test exercises the code path on
+Windows the moment CI goes green — until then, treat it as untested.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a
