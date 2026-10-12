@@ -112,6 +112,30 @@ problem, and on machines where Wayland works nothing changes.
 Known follow-up (not M0 work): if other Wayland desktops hit this, the right fix is in the app —
 detect the failure and tell the user to retry with `GDK_BACKEND=x11` — not in the user's shell.
 
+### D11 — Icons: Lucide (`lucide-svelte`), not hand-written SVG
+
+M0-A initially drew the two sidebar icons as hand-written inline `<svg>` path data written from
+memory. The gear rendered badly — and that was the correct outcome of the method, not bad luck:
+AGENTS.md §2.3 says *"Do not invent […] verify them"*, and invented SVG path data is invented like
+any other value. From M2 on there will be dozens of icons (play, pause, folder, trash, retry, …),
+so the trap would have repeated every time.
+
+Replaced with `lucide-svelte` (v1.0.1):
+
+* **Still inline SVG.** Spec §1 requires "inline SVG icons", "no remote assets" and (spec §11.9) no
+  external fonts or images. Lucide renders `<svg>` elements in the DOM — no icon font, no network.
+* **Tree-shaking verified, not assumed.** The package is `sideEffects: false` and icons are
+  imported one by one (`lucide-svelte/icons/settings`). Measured: the bundle grew from 70.28 kB to
+  81.97 kB for three icons, and spot checks confirm unused icons (`airplay`, `airplane`, `banana`,
+  `trophy`) are absent while the three used paths are present.
+* **Licence ISC** (the Feather-derived icons are MIT). Both are permissive. It has to be added to
+  the About screen in M7 alongside yt-dlp/ffmpeg/whisper.cpp/QuickJS/Deno (spec §11.8).
+* Weight impact: **+11.7 kB JS** (≈ +4.4 kB gzip), build-time only — nothing is added to the Rust
+  binary.
+
+Rule for the rest of the project: **never hand-write SVG path data. Take it from Lucide, or copy a
+published path verbatim from the icon set's source, and say where it came from.**
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a

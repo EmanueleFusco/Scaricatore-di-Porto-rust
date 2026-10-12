@@ -213,6 +213,57 @@ D10 in `docs/DECISIONS.md`: the Wayland crash and the black window are worked ar
 launcher rather than "fixed" in the app, because the same crash happens with the unmodified Tauri
 template.
 
+---
+
+## 2026-10-12 — M0-A / icons replaced with Lucide + settings persistence confirmed by the owner
+
+### Done
+
+* **Owner confirmed the settings round trip by hand**: language and theme changed in the UI survive
+  closing and relaunching the app. This was the last unverified item of M0-A.
+* **Owner reported the gear icon in the sidebar was malformed.** Root cause was my own method: the
+  two sidebar icons were hand-written inline SVG `<path>` data recalled from memory. AGENTS.md §2.3
+  ("Do not invent […] verify them") applies to SVG path data like any other value.
+* **Replaced with `lucide-svelte` 1.0.1** (see DECISIONS.md D11): `download`, `list-video`,
+  `settings`, imported individually from `lucide-svelte/icons/<name>`.
+  * Still **inline SVG**, as spec §1 requires — no icon font, no remote asset.
+  * **Tree-shaking measured, not assumed**: bundle 70.28 kB → 81.97 kB JS for three icons;
+    `airplay` / `airplane` / `banana` / `trophy` absent from the bundle, the three used paths present.
+  * **ISC licence** (Feather-derived icons MIT) — must appear in the About screen (spec §11.8, M7).
+* Project rule recorded: never hand-write SVG path data.
+
+### Verified by running
+
+* Release binary rebuilt and captured: the sidebar now shows a correct gear, a correct
+  list-with-play icon for **Coda**, and a correct download arrow in the brand. 980×680 as configured.
+* `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (32 + 5),
+  `npm run check` (0 errors/warnings), `npm test` (28) — all green.
+
+### Not verified / stubbed
+
+* The icon set has **not** been exercised at small sizes on Windows/macOS, and only 3 of ~1600
+  icons are in use; the rest get picked as the UI grows (M2 needs play/pause/folder/trash/retry).
+* Still not verified by me: that the packaged window is visible **on screen** (see the previous
+  block — the capture tool bypasses the compositor).
+
+### Another of my mistakes: `cargo build --release` alone produces a useless binary
+
+While rebuilding to screenshot the icons I got `Could not connect to 127.0.0.1` inside the release
+app. Tauri decides dev-vs-dist with `dev: cfg!(not(feature = "custom-protocol"))`
+(`tauri-macros/src/context.rs`), and **that feature is what `tauri build` turns on**. So:
+
+```
+cargo build --release                                      # compiles, runs, but loads devUrl -> broken
+cargo build --release --features tauri/custom-protocol     # real standalone binary
+npx tauri build                                           # the supported way
+```
+
+Recorded because it looks like a packaging bug and is not one.
+
+### Next step
+
+M0-B, unchanged.
+
 ### Next step
 
 M0-B, unchanged.

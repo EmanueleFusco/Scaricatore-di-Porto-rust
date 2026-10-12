@@ -1,26 +1,25 @@
 <script lang="ts">
   /** Application navigation (spec §11.2). Collapses to icons under 800 px. */
+  // Icons come from Lucide (ISC) and are rendered as **inline SVG**, as spec §1
+  // requires: no icon font, no remote asset, no hand-written path data.
+  // `lucide-svelte/icons/<name>` imports a single icon, and the package is
+  // `sideEffects: false`, so only the icons we actually use reach the bundle.
+  import DownloadIcon from "lucide-svelte/icons/download";
+  import ListVideoIcon from "lucide-svelte/icons/list-video";
+  import SettingsIcon from "lucide-svelte/icons/settings";
   import { router } from "$lib/router.svelte";
   import { tt } from "$lib/stores/settings.svelte";
 
-  const links = [
-    { href: "/", key: "nav.queue", icon: "queue" },
-    { href: "/settings", key: "nav.settings", icon: "gear" },
-  ] as const;
+  // Every Lucide icon has the same signature, so one of them types the array.
+  const links: { href: string; key: string; icon: typeof ListVideoIcon }[] = [
+    { href: "/", key: "nav.queue", icon: ListVideoIcon },
+    { href: "/settings", key: "nav.settings", icon: SettingsIcon },
+  ];
 </script>
 
 <nav class="sidebar" aria-label={tt("a11y.sidebar")}>
-  <a
-    class="sidebar__brand"
-    href="/"
-    onclick={(event) => router.follow(event, "/")}
-  >
-    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
-      <path d="M12 3v11m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="2"
-        stroke-linecap="round" stroke-linejoin="round" />
-      <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor"
-        stroke-width="2" stroke-linecap="round" />
-    </svg>
+  <a class="sidebar__brand" href="/" onclick={(event) => router.follow(event, "/")}>
+    <DownloadIcon size={24} aria-hidden="true" focusable="false" />
     <span class="sidebar__title">{tt("app.name")}</span>
   </a>
 
@@ -33,29 +32,7 @@
           aria-current={router.isActive(link.href) ? "page" : undefined}
           onclick={(event) => router.follow(event, link.href)}
         >
-          {#if link.icon === "queue"}
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
-              <path
-                d="M4 6h16M4 12h16M4 18h10"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
-          {:else}
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
-              <path
-                d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9 2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H8a1.7 1.7 0 0 0 1-1.5 2 2 0 1 1 4 0A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          {/if}
+          <link.icon size={20} aria-hidden="true" focusable="false" />
           <span class="sidebar__label">{tt(link.key)}</span>
         </a>
       </li>
