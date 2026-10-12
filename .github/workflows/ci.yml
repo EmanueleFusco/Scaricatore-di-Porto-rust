@@ -106,8 +106,15 @@ jobs:
   bundle:
     name: bundle (${{ matrix.label }})
     needs: check
-    # Gli artefatti servono quando qualcuno li scarica: non a ogni push sul branch.
-    if: github.event_name != 'pull_request'
+    # I bundle girano SOLO quando serve un artefatto: tag `v*`, oppure avvio
+    # manuale dalla pagina Actions. Non a ogni push su main.
+    #
+    # Motivo: su repo PRIVATO il piano Free include 500 MB di spazio artifact
+    # (condiviso con Packages). Ogni run occupa almeno 108 MB solo di AppImage,
+    # quindi con retention 14 giorni bastava 3-4 push in due settimane per
+    # sforare la quota ed essere fatturato. Un push normale deve costare solo
+    # `check`: 7 minuti e 7 minuti di quota Linux.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -214,7 +221,7 @@ jobs:
   bundle-macos-universal:
     name: bundle (macos universal)
     needs: check
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
