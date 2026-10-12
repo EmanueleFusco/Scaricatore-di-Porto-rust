@@ -33,13 +33,26 @@ src-tauri/binaries/
 # Copie locali di impostazioni o code di backup
 *.bak
 
-# --- Documenti personali, solo per il proprietario ---
-# GUIDA_OPERATIVA.md e' il quaderno di lavoro: comandi, flusso della CI, come
-# testare, cosa manca. Serve a te, non a chi visita il repo, quindi resta in
-# locale e non viene mai committato.
-# Il README pubblico per gli utenti si scrive piu' avanti, quando l'app avra'
-# qualcosa da mostrare (spec §11.8, About/licenze).
+# --- Solo per il proprietario: restano in locale, non su GitHub ---
+# Questi file servono a te e agli agenti per lavorare, ma non sono il programma.
+# Esistono sul disco, sono gia' esclusi dalla storia di git, e qui vengono
+# tenuti fuori anche dagli index futuri.
+#
+# NON cancellarli: `git filter-repo` riscrive sia la storia sia la working tree,
+# quindi se un giorno rifai una pulizia della storia ricrealo dal mirror di backup.
+
+# Il quaderno di lavoro: comandi, flusso della CI, come testare, cosa manca.
+# Il README pubblico per gli utenti si scrivera' piu' avanti.
 GUIDA_OPERATIVA.md
+
+# I prompt copy-paste per le varie fasi, e la guida per l'uso degli agenti.
+PHASE_PROMPTS.md
+COME_INIZIARE.md
+
+# L'originale Python: serve al confronto di parita' dalla fase M1 in poi.
+# Non e' parte di questo programma e non va pubblicato.
+reference/
+original_python/
 
 # --- Editor / OS ---
 .DS_Store

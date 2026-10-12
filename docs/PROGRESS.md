@@ -384,6 +384,47 @@ M0-B, unchanged.
 
 M0-B, unchanged.
 
-### Next step
+---
 
-M0-B, unchanged.
+## 2026-10-12 — M0-A chiusa / PASSAGGIO DI CONSEGNE
+
+Read this block first if you are a new session continuing the work.
+
+**Stato:** M0-A finita e verificata. Il branch `main` e` pulito, tutto committato, working tree
+vuota. Versione `0.1.0`.
+
+**Cosa funziona, verificato:** la shell dell'app (sidebar, coda vuota, footer), le impostazioni
+persistenti su tre sistemi, i18n IT/EN con cambio a runtime, tema System/Dark/Light, single-instance,
+CI su Linux/Windows/macOS con pubblicazione delle release in bozza.
+
+**Cosa NON esiste ancora:** `services/process.rs` e tutto il resto. Nessuna coda, nessun download,
+nessun tool esterno. L'app non scarica niente: e' una shell, e va detto cosi' a chi la usa.
+
+**Prossimo passo: M0-B.** Il testo del task e' in `PHASE_PROMPTS.md`, sezione "M0-B". Il file
+e' **sul disco ma non tracciato in git** (D17: escluso da GitHub, tenuto in locale per gli
+agenti). Se non lo trovi, controlla `.gitignore` prima di chiederlo.
+
+```bash
+git switch -c m0-process      # non lavorare direttamente su main
+```
+
+### Tre cose che ti risparmieranno tempo
+
+1. **`reference/ScaricatoreDiPorto.py` e' sul disco ma non in git.** Se non lo vedi con
+   `ls` o `git ls-files`, e' solo perche' e' in `.gitignore`: non e' sparito. Serve dalla **M1**
+   (lavoro di parita'), per M0-B non serve. Stessa cosa per `PHASE_PROMPTS.md` e
+   `COME_INIZIARE.md`.
+2. **Su questa macchina l'app non parte senza aiuto.** Sessione Wayland + WebKitGTK = `Error 71`
+   e finestra nera. Usa `npm run app` (mette lui le variabili) e non `npm run tauri dev` diretto.
+3. **I check del turno precedente passavano tutti.** Se un check fallisce subito, il problema e'
+   tuo, non preesistente: 32 + 5 test Rust, 28 test frontend, clippy pulito, `npm run check:ci`
+   valido.
+
+### Cosa NON e' stato verificato, e conta
+
+* Nessun runner ha mai aperto una finestra. "Verde" significa "compila, linka, impacchetta".
+* **I test girano solo su Linux.** `cargo test` sta nel job `check` (ubuntu); i job `bundle`
+  compilano ma non eseguono la suite. Se M0-B aggiunge test che dipendono dal sistema
+  (spawn, Job Object, process group), vanno eseguiti esplicitamente anche su Windows e macOS,
+  altrimenti la copertura e' solo-linux anche quando sembra multi-OS.
+* `std::fs::rename` che sostituisce il file su Windows: documentato, non testato su Windows.

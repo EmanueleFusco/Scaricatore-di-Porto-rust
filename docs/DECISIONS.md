@@ -74,10 +74,15 @@ truth.
 `PHASE_PROMPTS.md` M0-A does not ask for them; `.github/workflows/`, `tools.manifest.json` and the
 first-run wizard belong to M0-C. `scripts/` is therefore still empty.
 
-### D9 — ~~`original_python/` is kept as-is~~ — **SUPERSEDED by D17**
+### D9 — `original_python/` is kept as-is
 
-Kept originally because it is the owner's source material and the licence may matter for the About
-screen. The owner later decided to remove it from the repository; see D17.
+The layout in `AGENTS.md` §3 only lists `reference/ScaricatoreDiPorto.py`. The rest of the upstream
+repository (`LICENSE`, `README.md`, `requirements.txt`, `images/`) was left at the root under
+`original_python/` instead of being deleted, because it is the user's source material and the
+Python file's licence may matter for the About screen (§11.8).
+
+**Chiarimento aggiunto in D17:** questi file **esistono e servono** al lavoro degli agenti, ma non
+sono tracciati in git e quindi non finiscono su GitHub. Restano sul disco.
 
 ### D10 — Wayland: worked around in the dev launcher, not "fixed" in the app
 
@@ -330,7 +335,15 @@ is a non-issue. If the repository ever becomes public, decide again deliberately
 `filter-repo` removes the `origin` remote on purpose, so it had to be re-added. The remote branches
 `main` and `m0-skeleton` both need a `--force` push.
 
-**Consequence to remember:** `AGENTS.md` §1 and §3 describe `reference/ScaricatoreDiPorto.py` as the
-parity reference, and the phase prompts rely on it. From M1 on, the parity reference has to be
-supplied from outside the repository. `docs/RUST_PORT_GUIDELINES.md` is read-only, so the spec
-still mentions it — expected, and left untouched.
+**Correzione (stessa giornata):** what the owner actually wanted was *off GitHub*, not *off the
+disk. `git filter-repo` rewrites the working tree as well as the history, so the five paths above
+were removed from the local checkout too — which broke the very thing they were kept for:
+`AGENTS.md` §1/§3 and the phase prompts both rely on `reference/ScaricatoreDiPorto.py`.
+
+All five were restored from the mirror backup (byte-identical, verified path by path) and are now
+held out of git with `.gitignore` instead. That is the correct mechanism: it keeps them available
+to the agents on this machine while never pushing them to GitHub. History rewriting was still the
+right call for the already-pushed copies, and stays.
+
+**Lesson:** before running a history rewrite, copy the affected paths *out of the repository*. The
+filter removes them from the checkout, and a backup is only a backup if you go and use it.
