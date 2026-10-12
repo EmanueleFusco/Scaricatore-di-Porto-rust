@@ -171,6 +171,44 @@ likely to need a fix are the Linux system packages and the `universal-apple-darw
 that is really **108 MiB**. The numbers that reach the job summary must be the ones a user
 downloads.
 
+### D14 — Why CI builds on `ubuntu-22.04`, and what was actually wrong
+
+The owner noticed the workflow says `ubuntu-22.04` while the desktop is "Ubuntu 26". Three different
+things were being conflated, so here is the audit:
+
+1. **The owner's machine is not Ubuntu** — it is **CachyOS** (Arch-based, rolling), running
+   `webkit2gtk-4.1 2.54.1`, `gtk4 4.24.1`, `glib 2.90.1`, `mesa 26.2.4`. The distro version in the
+   workflow names a **CI runner**, not the dev machine.
+2. **`ubuntu-22.04` is deliberate, not stale.** Spec §13.5 names it, and spec §5.4 states the
+   principle ("build on the *oldest supported* distro"). Building against the oldest glibc makes the
+   `.deb` run on newer systems too. Kept.
+3. **The modern end of the range is already covered**: the `check` job runs on `ubuntu-latest`, so
+   every push is validated on a current distro while `bundle` ships the oldest-compatible build.
+
+Verified against the real apt indices rather than from memory:
+
+| fact | value |
+| :-- | :-- |
+| `ubuntu-22.04` (jammy) amd64 webkit2gtk | **2.50.4** |
+| `ubuntu-22.04` (jammy) **arm64** webkit2gtk | **2.36.0** — Canonical backported only amd64/i386 |
+| Ubuntu 26.04 codename | `resolute` |
+| `ubuntu-latest` | 24.04 |
+| owner's machine (CachyOS) | 2.54.1 |
+
+**What was genuinely wrong and is fixed:** the CI installed a hand-written package list that did
+**not** include `libayatana-appindicator3-dev`, which appears in Tauri v2's documented prerequisites
+(page last updated 20 Aug 2026). It happens not to be required here — `tray-icon` is not among
+Tauri's default features and we never enable it — but the list now matches the official source
+instead of my recollection. `patchelf`, which was not in the official list either, was dropped.
+
+While checking I first reported that `libayatana-appindicator3-dev` does not exist on 22.04: that was
+wrong, I had searched only the `universe` index. It is in `main`. Corrected here.
+
+All eight packages were verified present in the jammy `main`/`universe` indices.
+
+**Open for the owner:** when 22.04 leaves standard support, the `bundle` job label must move up.
+Deciding between "newest LTS" and "oldest still supported" is a product call, not mine.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a

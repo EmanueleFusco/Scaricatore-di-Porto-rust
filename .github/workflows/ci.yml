@@ -48,11 +48,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            # Elenco preso dalla pagina "Prerequisites" di Tauri v2
+            # (https://v2.tauri.app/start/prerequisites/), verificato
+            # pacchetto per pacchetto contro gli indici apt di Ubuntu 22.04:
+            # esistono tutti. Non usiamo il tray, quindi
+            # libayatana-appindicator3-dev non e' strettamente necessario (la
+            # feature `tray-icon` di Tauri non e' attiva), ma lo teniamo per
+            # allinearci alla fonte invece che fidarci del ragionamento.
             libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
             libssl-dev \
             libxdo-dev \
             librsvg2-dev \
-            patchelf \
             build-essential \
             curl wget file
 
@@ -95,6 +102,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `ubuntu-22.04` (jammy) NON e' un residuo: si compila sul piu'
+          # vecchio sistema supportato cosi' che il .deb giri anche su
+          # distribuzioni piu' recenti (glibc/webkit-linkato dinamicamente).
+          # E' anche cio' che chiede spec §13.5 e spec §5.4 ("oldest supported
+          # distro"). Verificato: jammy amd64 ha webkit2gtk 2.50.4.
+          # Il lato "moderno" della finestra e' coperto dal job `check`, che gira
+          # su `ubuntu-latest`. Attenzione: su jammy il pacchetto webkit2gtk e'
+          # stato aggiornato solo per amd64/i386 (arm64 e' ancora a 2.36), quindi
+          # per arm64 il job `tier2` usa `ubuntu-24.04-arm` e non 22.04.
           - os: ubuntu-22.04
             label: linux-x64
           - os: windows-latest
@@ -115,11 +131,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            # Elenco preso dalla pagina "Prerequisites" di Tauri v2
+            # (https://v2.tauri.app/start/prerequisites/), verificato
+            # pacchetto per pacchetto contro gli indici apt di Ubuntu 22.04:
+            # esistono tutti. Non usiamo il tray, quindi
+            # libayatana-appindicator3-dev non e' strettamente necessario (la
+            # feature `tray-icon` di Tauri non e' attiva), ma lo teniamo per
+            # allinearci alla fonte invece che fidarci del ragionamento.
             libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
             libssl-dev \
             libxdo-dev \
             librsvg2-dev \
-            patchelf \
             build-essential \
             curl wget file
 
@@ -220,8 +243,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev \
-            patchelf build-essential curl wget file
+            # Vedi l'elenco e il commento nel job `check`.
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev libxdo-dev librsvg2-dev \
+            build-essential curl wget file
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
