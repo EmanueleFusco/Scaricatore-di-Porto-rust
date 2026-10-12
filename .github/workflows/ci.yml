@@ -44,17 +44,19 @@ jobs:
           node-version: lts/*
           cache: npm
 
+      # Pacchetti di sistema: elenco preso dalla pagina "Prerequisites" di Tauri v2
+      # (https://v2.tauri.app/start/prerequisites/), verificato pacchetto per
+      # pacchetto contro gli indici apt: esistono tutti su 22.04, 24.04 e 26.04.
+      # Non usiamo il tray, quindi libayatana-appindicator3-dev non e'
+      # strettamente necessario (la feature `tray-icon` di Tauri non e' attiva),
+      # ma lo teniamo per allinearci alla fonte invece che fidarci del ragionamento.
+      # NB: i commenti stanno SOPRA lo step di proposito. Dentro un blocco `run: |`
+      # sono commenti SHELL, e una riga `#` che segue una continuazione `\` tronca
+      # il comando: e' esattamente come si e' rotto la prima CI.
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            # Elenco preso dalla pagina "Prerequisites" di Tauri v2
-            # (https://v2.tauri.app/start/prerequisites/), verificato
-            # pacchetto per pacchetto contro gli indici apt di Ubuntu 22.04:
-            # esistono tutti. Non usiamo il tray, quindi
-            # libayatana-appindicator3-dev non e' strettamente necessario (la
-            # feature `tray-icon` di Tauri non e' attiva), ma lo teniamo per
-            # allinearci alla fonte invece che fidarci del ragionamento.
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libssl-dev \
@@ -141,13 +143,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            # Elenco preso dalla pagina "Prerequisites" di Tauri v2
-            # (https://v2.tauri.app/start/prerequisites/), verificato
-            # pacchetto per pacchetto contro gli indici apt di Ubuntu 22.04:
-            # esistono tutti. Non usiamo il tray, quindi
-            # libayatana-appindicator3-dev non e' strettamente necessario (la
-            # feature `tray-icon` di Tauri non e' attiva), ma lo teniamo per
-            # allinearci alla fonte invece che fidarci del ragionamento.
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libssl-dev \
@@ -257,7 +252,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            # Vedi l'elenco e il commento nel job `check`.
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libssl-dev libxdo-dev librsvg2-dev \

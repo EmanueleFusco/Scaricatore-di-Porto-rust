@@ -14,7 +14,8 @@
     "check:csp": "npm run build && node scripts/serve-dist-with-csp.mjs",
     "app": "node scripts/run.mjs dev",
     "tauri": "tauri",
-    "app:binary": "node scripts/run.mjs binary"
+    "app:binary": "node scripts/run.mjs binary",
+    "check:ci": "node scripts/check-ci-syntax.mjs"
   },
   "license": "MIT",
   "dependencies": {
