@@ -74,12 +74,10 @@ truth.
 `PHASE_PROMPTS.md` M0-A does not ask for them; `.github/workflows/`, `tools.manifest.json` and the
 first-run wizard belong to M0-C. `scripts/` is therefore still empty.
 
-### D9 — `original_python/` is kept as-is
+### D9 — ~~`original_python/` is kept as-is~~ — **SUPERSEDED by D17**
 
-The layout in `AGENTS.md` §3 only lists `reference/ScaricatoreDiPorto.py`. The rest of the upstream
-repository (`LICENSE`, `README.md`, `requirements.txt`, `images/`) was left at the root under
-`original_python/` instead of being deleted, because it is the user's source material and the
-Python file's licence may matter for the About screen (§11.8).
+Kept originally because it is the owner's source material and the licence may matter for the About
+screen. The owner later decided to remove it from the repository; see D17.
 
 ### D10 — Wayland: worked around in the dev launcher, not "fixed" in the app
 
@@ -284,3 +282,33 @@ accident.
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a
   *guess* — nobody has confirmed it yet. It should be stated explicitly in the README.
+
+---
+
+## 2026-10-12 — D17: workflow files and the Python original removed, history rewritten
+
+Owner asked to drop three things that are not part of the programme, then extended it to the Python
+source itself:
+
+* **`COME_INIZIARE.md`**, **`PHASE_PROMPTS.md`** — notes and prompts for driving the agent, not
+  programme code;
+* **`original_python/`** — leftovers from the upstream repository (`LICENSE`, `README.md`,
+  `requirements.txt`, `images/`); the Python file itself had already been moved to `reference/`;
+* **`reference/ScaricatoreDiPorto.py`** — the owner states the Python programme is their own work,
+  they keep a copy elsewhere and do not need it here, and the licence is not a constraint because
+  they can relicense it at will.
+
+**Licence note, for the record:** the original app is **GPL v3** while this project declares
+`license = "MIT"`. That mixture was the original reason to tidy up; the owner has since confirmed it
+is a non-issue. If the repository ever becomes public, decide again deliberately.
+
+**History was rewritten**, not merely deleted, because the files were already on GitHub — a plain
+`git rm` would have left them readable from any earlier commit. Done with `git filter-repo
+--invert-paths`; all 13 commits were preserved (new SHAs) and a mirror backup was taken first.
+`filter-repo` removes the `origin` remote on purpose, so it had to be re-added. The remote branches
+`main` and `m0-skeleton` both need a `--force` push.
+
+**Consequence to remember:** `AGENTS.md` §1 and §3 describe `reference/ScaricatoreDiPorto.py` as the
+parity reference, and the phase prompts rely on it. From M1 on, the parity reference has to be
+supplied from outside the repository. `docs/RUST_PORT_GUIDELINES.md` is read-only, so the spec
+still mentions it — expected, and left untouched.
