@@ -41,7 +41,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: asset: http://asset.localhost",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1421 http://localhost:1420",
+        "connect-src": "'self' ipc: http://ipc.localhost ws: wss:",
         "object-src": "'none'",
         "base-uri": "'self'",
         "frame-ancestors": "'none'"

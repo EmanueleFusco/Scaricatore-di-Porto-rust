@@ -156,47 +156,62 @@ listed in `PHASE_PROMPTS.md` M0-B.
   | `GDK_BACKEND=wayland` | **dies** | none | — | **1** | 0 |
   | `GDK_BACKEND=x11` | **alive** | yes | **0.137** (renders) | 0 | 2 (harmless) |
 
-  So **only `GDK_BACKEND=x11` is needed**; `WEBKIT_DISABLE_DMABUF_RENDERER=1` was *not* required
-  (tested separately, no difference). The GBM "Failed to create GBM buffer" messages still appear
-  on X11 but the window renders correctly, so they are noise on this machine.
-* **`npm run app` added** (`scripts/run-dev.mjs`): runs `tauri dev`, and on Linux only, when the
+  So **both** environment variables are needed on this machine:
+  * `GDK_BACKEND=x11` — without it the app dies with `Error 71`.
+  * `WEBKIT_DISABLE_DMABUF_RENDERER=1` — the window renders **black on screen** otherwise
+    (the two `Failed to create GBM buffer` messages). With it, **the GBM errors disappear entirely**
+    and the log is empty. This is the fallback spec §13.3 prescribes.
+* **`npm run app` updated** (`scripts/run-dev.mjs`): runs `tauri dev`, and on Linux only, when the
   session is Wayland *and* XWayland is available *and* the user has not already set `GDK_BACKEND`,
-  it injects `GDK_BACKEND=x11` and prints exactly what it is doing and why. One command, no hidden
+  it injects both variables and prints exactly what it is doing and why. One command, no hidden
   behaviour, unchanged on machines where Wayland works.
+* **`devCsp` relaxed for HMR only**: `connect-src` now ends with `ws: wss:` instead of hard-coded
+  `ws://localhost:1421` / `http://localhost:1420`, which were wrong anyway once `devUrl` became
+  `http://127.0.0.1:1420`. The production `csp` is untouched.
 
 ### Verified by running
 
 * `npm run app -- --help` → prints the explanation and forwards the arguments to the CLI.
-* The window is still confirmed by identity and content: `xprop` shows `WM_NAME "Scaricatore Di
-  Porto"`, and the capture shows the finished shell — sidebar with **Coda** marked current, the
+* Release binary + `GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1`: alive, **0 GBM errors**,
+  empty log.
+* The window's X11 buffer contains the finished shell — sidebar with **Coda** marked current, the
   empty-queue card (*"Incolla un link per iniziare"*), the status footer (*"In attesa — Nessun
   processo in esecuzione"*), **Italian**, **dark** palette taken from the OS (KDE Breeze-Dark), so
-  theme `System` works end to end. 980×680 as configured.
+  theme `System` works end to end. 980×680 as configured, `WM_NAME "Scaricatore Di Porto"`.
 * **No error banner in the real app**, which means the `settings_get` IPC round trip to Rust
   succeeded (a failure would render the `role="alert"` toast).
 
 ### Not verified / stubbed
 
+* **Whether the window is actually visible on screen is still unverified by me.** My capture tool
+  (`magick import -window`) reads the X11 window buffer directly and therefore bypasses the
+  compositor, so it cannot tell "correct pixels" from "correct pixels that the GPU never shows".
+  The disappearance of the GBM errors is strong evidence that the black window is gone, but the
+  owner must confirm it visually.
 * The **underlying GTK bug** behind `Error 71` was not identified — no upstream bug search was
   done. It is recorded as an environment limitation, not a project defect.
-* Clicking the language/theme dropdowns **by hand is still pending**: the capture tool can grab a
-  window but cannot synthesise input, so `settings.json` has still never been written on this
-  machine.
+* Clicking the language/theme dropdowns **by hand is still pending**: the capture tool cannot
+  synthesise input, so `settings.json` has still never been written on this machine.
 * macOS and Windows remain completely untested.
 
-### A note on my own measurement mistake
+### Two measurement mistakes of mine, recorded so they are not repeated
 
-For a while I reported contradictory results ("MORTO" for configurations that had worked minutes
-earlier). Cause: a leftover test copy of the binary (`/tmp/opencode/app-base`) was still alive and
-held the `com.scaricatorediporto.app.SingleInstance` D-Bus name, so every later launch was treated
-as a second instance and exited at once. Recorded because it silently invalidated several probes:
-**when the app "exits immediately with no error", check whether a previous instance is still
-running** (`gdbus ... GetNameOwner`, `ps`).
+1. **Stale instance.** For a while I reported contradictory results ("MORTO" for configurations that
+   had worked minutes earlier). A leftover test copy of the binary (`/tmp/opencode/app-base`) was
+   alive and held the `com.scaricatorediporto.app.SingleInstance` D-Bus name, so every later launch
+   was treated as a second instance and exited at once. **When the app "exits immediately with no
+   error", check whether a previous instance is still running** (`gdbus ... GetNameOwner`, `ps`).
+2. **Wrong measurement device.** I concluded "the window renders, brightness 0.137" from
+   `magick import`. That reads the X11 backing buffer and **bypasses the compositor**, so it was
+   measuring memory, not the screen: the window was in fact black on screen. The real signal was
+   the `Failed to create GBM buffer` line I had dismissed as harmless. **Capture through the
+   compositor (`spectacle`) or trust the user's eyes, never `magick import`, for display bugs.**
 
 ### Decisions/deviations
 
-D10 in `docs/DECISIONS.md`: the Wayland crash is worked around in the dev launcher rather than
-"fixed" in the app, because the same crash happens with the unmodified Tauri template.
+D10 in `docs/DECISIONS.md`: the Wayland crash and the black window are worked around in the dev
+launcher rather than "fixed" in the app, because the same crash happens with the unmodified Tauri
+template.
 
 ### Next step
 

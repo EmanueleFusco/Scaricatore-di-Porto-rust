@@ -88,12 +88,22 @@ On the owner's machine (CachyOS, KDE Plasma 6.7.5, Wayland, NVIDIA RTX 3080, `we
 `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display`.
 
 **Verified it is not our code**: the pristine `create-tauri-app` Tauri template, built and run on
-the same session, dies with the identical message. Measured: `GDK_BACKEND=wayland` → dies, no
-window; `GDK_BACKEND=x11` → stays alive, window renders (mean pixel value 0.137, i.e. not black).
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` makes no difference here, despite the "Failed to create GBM
-buffer" messages (which are harmless — the window renders).
+the same session, dies with the identical message.
 
-So `scripts/run-dev.mjs` (exposed as `npm run app`) injects `GDK_BACKEND=x11` **only** when all of
+There are in fact **two** separate problems here, and the second one only showed up when the owner
+ran the app for real:
+
+| symptom | cause | fix |
+| :-- | :-- | :-- |
+| `Error 71`, process dies, no window | GTK4 against this compositor | `GDK_BACKEND=x11` |
+| window opens but is **black on screen**, log shows `Failed to create GBM buffer` | WebKitGTK cannot allocate the NVIDIA GPU buffers via GBM | `WEBKIT_DISABLE_DMABUF_RENDERER=1` (spec §13.3) |
+
+With both set the app stays alive, the GBM messages disappear entirely and the log is empty.
+**Whether the window is actually visible on screen still has to be confirmed by the owner** — the
+screenshot tool available here (`magick import -window`) reads the X11 backing buffer and bypasses
+the compositor, so it reports correct pixels even when the compositor shows black.
+
+So `scripts/run-dev.mjs` (exposed as `npm run app`) injects **both** variables only when all of
 these hold: Linux, a Wayland session, XWayland available, and the user has not already set
 `GDK_BACKEND`. It prints what it is doing. This is deliberately not hidden inside the Rust code:
 if a future GTK fixes the crash, the workaround disappears on its own instead of masking a real
