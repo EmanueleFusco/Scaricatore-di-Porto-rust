@@ -1,0 +1,56 @@
+{
+  "app.name": "Scaricatore Di Porto",
+  "app.tagline": "Scarica e trascrivi, in coda.",
+
+  "nav.queue": "Coda",
+  "nav.settings": "Impostazioni",
+
+  "queue.title": "Coda",
+  "queue.empty.title": "Incolla un link per iniziare",
+  "queue.empty.hint": "La coda è vuota. I download e le trascrizioni appariranno qui.",
+  "queue.comingSoon": "La coda arriva nelle prossime fasi (M2).",
+
+  "footer.idle": "In attesa",
+  "footer.placeholder": "Nessun processo in esecuzione",
+  "footer.toolsPending": "Strumenti non verificati",
+
+  "settings.title": "Impostazioni",
+  "settings.general": "Generali",
+  "settings.language": "Lingua",
+  "settings.language.system": "Sistema",
+  "settings.theme": "Tema",
+  "settings.theme.system": "Sistema",
+  "settings.theme.dark": "Scuro",
+  "settings.theme.light": "Chiaro",
+  "settings.outputDir": "Cartella di download predefinita",
+  "settings.outputDir.system": "Cartella Download del sistema",
+  "settings.outputDir.hint": "Usata quando un nuovo elemento non sceglie una cartella.",
+  "settings.save": "Salva",
+  "settings.saved": "Impostazioni salvate.",
+  "settings.saveFailed": "Salvataggio delle impostazioni non riuscito.",
+  "settings.loadFailed": "Impossibile leggere le impostazioni.",
+  "settings.section.language": "Lingua e tema",
+  "settings.section.downloads": "Download",
+  "settings.language.resolved": "In uso: {lang}",
+  "settings.downloads.comingSoon": "Le impostazioni dei download arrivano con la fase M1/M2.",
+
+  "plural.running": "{count} in esecuzione",
+  "plural.running.one": "{count} in esecuzione",
+  "plural.queued": "{count} in coda",
+  "plural.queued.one": "{count} in coda",
+
+  "toast.settingsRecovered": "Il file delle impostazioni era illeggibile: è stato spostato in {path} e sono state usate le impostazioni predefinite.",
+  "toast.dismiss": "Chiudi",
+
+  "error.io": "Errore di I/O",
+  "error.json": "Formato dati non valido",
+  "error.tauri": "Errore interno dell'applicazione",
+  "error.settingsCorrupt": "Impostazioni danneggiate",
+  "error.unsupported": "Operazione non supportata",
+
+  "a11y.skipToContent": "Vai al contenuto",
+  "a11y.sidebar": "Navigazione principale",
+  "a11y.statusBar": "Stato dell'applicazione",
+  "common.back": "Indietro",
+  "common.close": "Chiudi"
+}

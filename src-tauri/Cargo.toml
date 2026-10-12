@@ -1,0 +1,50 @@
+[package]
+name = "scaricatore-di-porto"
+version = "0.1.0"
+description = "Scaricatore Di Porto — cross-platform downloader and transcriber"
+authors = ["Scaricatore Di Porto contributors"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.85" # edition 2024 floor
+
+[lib]
+# The `_lib` suffix keeps the lib name unique and avoids clashing with the bin
+# name on Windows (cargo#8519).
+name = "scaricatore_di_porto_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+# Kept in step with the @tauri-apps/* npm packages: the CLI refuses to run on a
+# major/minor mismatch between the Rust crates and the JS packages.
+# (tauri-build has its own version line and is NOT tied to the tauri crate.)
+tauri = { version = "2.12", features = [] }
+# Allowed plugins only (spec §1 weight rules): dialog, opener, single-instance.
+# NOTE: tauri-plugin-shell is forbidden (spec §1).
+tauri-plugin-dialog = "2.8"
+tauri-plugin-opener = "2.7"
+# Protocol-handler (deep-link) support is deferred to a later phase: it would
+# pull in tauri-plugin-deep-link, and the `deep-link` feature is not needed for
+# the M0-A "second launch focuses the first window" behaviour (spec §3).
+tauri-plugin-single-instance = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+# `test` gives us tauri::test::mock_* so the IPC handlers can be exercised
+# without a window (spec §15 "integration tests run offline on all 3 OSes").
+tauri = { version = "2.12", features = ["test"] }
+
+# Release profile mandated by spec §1 "Weight rules":
+# opt-level = "s", lto = true, codegen-units = 1, panic = "abort", strip = true.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,56 @@
+{
+  "app.name": "Scaricatore Di Porto",
+  "app.tagline": "Download and transcribe, queued.",
+
+  "nav.queue": "Queue",
+  "nav.settings": "Settings",
+
+  "queue.title": "Queue",
+  "queue.empty.title": "Paste a link to start",
+  "queue.empty.hint": "The queue is empty. Downloads and transcriptions will show up here.",
+  "queue.comingSoon": "The queue arrives in a later phase (M2).",
+
+  "footer.idle": "Idle",
+  "footer.placeholder": "No process running",
+  "footer.toolsPending": "Tools not checked yet",
+
+  "settings.title": "Settings",
+  "settings.general": "General",
+  "settings.language": "Language",
+  "settings.language.system": "System",
+  "settings.theme": "Theme",
+  "settings.theme.system": "System",
+  "settings.theme.dark": "Dark",
+  "settings.theme.light": "Light",
+  "settings.outputDir": "Default download folder",
+  "settings.outputDir.system": "The system Downloads folder",
+  "settings.outputDir.hint": "Used when a new queue item does not pick a folder.",
+  "settings.save": "Save",
+  "settings.saved": "Settings saved.",
+  "settings.saveFailed": "Could not save the settings.",
+  "settings.loadFailed": "Could not read the settings.",
+  "settings.section.language": "Language and theme",
+  "settings.section.downloads": "Downloads",
+  "settings.language.resolved": "In use: {lang}",
+  "settings.downloads.comingSoon": "Download settings arrive with phase M1/M2.",
+
+  "plural.running": "{count} running",
+  "plural.running.one": "{count} running",
+  "plural.queued": "{count} queued",
+  "plural.queued.one": "{count} queued",
+
+  "toast.settingsRecovered": "The settings file was unreadable: it was moved to {path} and the defaults are being used.",
+  "toast.dismiss": "Dismiss",
+
+  "error.io": "I/O error",
+  "error.json": "Invalid data format",
+  "error.tauri": "Internal application error",
+  "error.settingsCorrupt": "Damaged settings",
+  "error.unsupported": "Unsupported operation",
+
+  "a11y.skipToContent": "Skip to content",
+  "a11y.sidebar": "Main navigation",
+  "a11y.statusBar": "Application status",
+  "common.back": "Back",
+  "common.close": "Close"
+}
