@@ -299,6 +299,43 @@ Recorded because it looks like a packaging bug and is not one.
 
 M0-B, unchanged.
 
+---
+
+## 2026-10-12 — M0-C item 8 (pulled forward) / cross-OS CI
+
+### Done
+
+* Owner asked how to test on Windows and macOS. Answer: only CI can do it from here; cross-
+  compiling to Windows is possible but useless (the result cannot be run), and cross-compiling to
+  macOS from Linux is impossible (needs Xcode + Apple SDK).
+* **`.github/workflows/ci.yml` written** (spec §13.5), shaped around the owner's **private**
+  repository and its minute budget (DECISIONS.md D12): lint+tests on Linux only at every push, the
+  3-OS bundle matrix only when an artifact is actually wanted, and the Tier 2 targets
+  (macOS Intel, Windows ARM64, Linux ARM64) only on `workflow_dispatch`.
+* **`scripts/report-bundle-sizes.mjs`** puts the artifact sizes in the job summary (spec §1).
+  Verified locally against a real bundle.
+
+### Verified by running
+
+* `npx tauri build` produces bundles on this machine: `.deb` **1,9 MiB**, `.rpm` **1,9 MiB**,
+  `.AppImage` **108,0 MiB** (the AppImage is big on purpose — it embeds WebKitGTK, and spec §1
+  excludes it from the size targets). App binary alone: **4,58 MiB**, under the ≤ 15 MB target.
+* `scripts/report-bundle-sizes.mjs` reports exactly those numbers.
+* `npm run check` (0 errors/warnings) and `npm test` (28) green; the workflow YAML has no tabs and
+  parses into the expected jobs.
+
+### Not verified / stubbed
+
+* **The CI has never run.** The first execution is the real test. Most likely to need a fix: the
+  Ubuntu system package list and the `universal-apple-darwin` build.
+* No Windows or macOS build exists yet — nothing has been compiled for those targets.
+* `scripts/fetch_bundled_tools.mjs`, `tools.manifest.json` and the sidecar job (spec §13.5 c) are
+  still missing: they belong to M0-C, which is not finished.
+
+### Next step
+
+M0-B, unchanged.
+
 ### Next step
 
 M0-B, unchanged.

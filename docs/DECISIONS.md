@@ -136,6 +136,41 @@ Replaced with `lucide-svelte` (v1.0.1):
 Rule for the rest of the project: **never hand-write SVG path data. Take it from Lucide, or copy a
 published path verbatim from the icon set's source, and say where it came from.**
 
+### D12 — CI designed around the **private** repository's minute budget
+
+The owner created the repository **private**. Verified from GitHub's billing docs:
+
+* included minutes: **2 000/month** on Free, 3 000 on Pro/Team; **public repos are free and
+  unlimited**;
+* multipliers: **Linux 1x, Windows 2x, macOS 10x** — a 6-minute macOS job costs 60 Linux-equivalent
+  minutes. Effective free macOS time on a Free private repo: roughly **200 minutes/month**.
+
+So `.github/workflows/ci.yml` does not run everything on every push:
+
+* `check` — lint + tests on **Linux only** (1x), on every push and PR;
+* `bundle` — the 3-OS matrix (linux-x64, windows-x64, macos-arm64) only when an artifact is
+  actually wanted: push to `main`, a tag, or `workflow_dispatch`. Skipped on pull requests;
+* `bundle-macos-universal` — separate job so a universal failure cannot block the native `.app`
+  used for manual testing;
+* `tier2` — macOS Intel / Windows ARM64 / Linux ARM64 (spec §1.1) **only on `workflow_dispatch`**:
+  those targets must build and pass the fake-tool tests in CI, but must not burn the quota on
+  every push.
+
+Third-party actions used (pinned to major tags, all widely used): `dtolnay/rust-toolchain`,
+`Swatinem/rust-cache`. First-party: `actions/checkout`, `actions/setup-node`,
+`actions/upload-artifact`.
+
+Not verified yet: the workflow has never been executed — the first run is the test. The parts most
+likely to need a fix are the Linux system packages and the `universal-apple-darwin` target.
+
+### D13 — bundle sizes measured, not summed
+
+`scripts/report-bundle-sizes.mjs` counts only the installable artifacts (`.deb`, `.rpm`, `.AppImage`,
+`.exe`, `.msi`, `.dmg`, `.snap`, and `.app` directories). My first version walked the whole
+`bundle/<format>/` tree and also summed the staging files, which reported **424 MiB** for an AppImage
+that is really **108 MiB**. The numbers that reach the job summary must be the ones a user
+downloads.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a
