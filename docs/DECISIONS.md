@@ -285,6 +285,21 @@ new rules catch key files, and none of the files that *must* be tracked (`tools.
 `whisper.models.json`, `Cargo.lock`, `package-lock.json`, `.github/workflows/ci.yml`) are caught by
 accident.
 
+### D18 — The operational guide is personal and stays out of git
+
+The owner asked for the command/CI walkthrough to be exported to a file, then clarified that it is
+**their** working document, not a README for visitors: the real README is written later, when the
+app has something to show (spec §11.8 About/licences).
+
+So it lives in **`GUIDA_OPERATIVA.md`**, is listed in `.gitignore`, and is removed from git's index
+while staying on disk. Verified both ways: `git check-ignore` matches it, and `git status` does not
+offer it for `git add`.
+
+Deliberately **not** done: erasing it from history. It was committed once, as `README.md`, in commit
+`0eb35a9`, so someone reading the repository history finds one commit mentioning a README that no
+longer exists at that path. That costs nothing, and rewriting the history a second time for
+cosmetics is not worth it.
+
 ### Open questions (owner)
 
 * Tier 1 assumption of spec §1.1 (Windows x64, Linux x64, macOS Apple Silicon) is still a

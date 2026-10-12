@@ -33,6 +33,14 @@ src-tauri/binaries/
 # Copie locali di impostazioni o code di backup
 *.bak
 
+# --- Documenti personali, solo per il proprietario ---
+# GUIDA_OPERATIVA.md e' il quaderno di lavoro: comandi, flusso della CI, come
+# testare, cosa manca. Serve a te, non a chi visita il repo, quindi resta in
+# locale e non viene mai committato.
+# Il README pubblico per gli utenti si scrive piu' avanti, quando l'app avra'
+# qualcosa da mostrare (spec §11.8, About/licenze).
+GUIDA_OPERATIVA.md
+
 # --- Editor / OS ---
 .DS_Store
 Thumbs.db
