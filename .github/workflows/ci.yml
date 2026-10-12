@@ -1,0 +1,242 @@
+# Verifiche e bundle su più sistemi operativi (spec §13.5).
+#
+# Due scelte, per non sprecare i minuti gratuiti di un repository PRIVATO:
+#   - `check` gira solo su Linux (moltiplicatore 1x) a ogni push e PR: feedback veloce.
+#   - `bundle` gira su tutte e tre le piattaforme solo quando serve un artefatto
+#     da scaricare (push su main, tag, o avvio manuale).
+#   - `tier2` (macOS Intel, Windows ARM64, Linux arm64, spec §1.1) gira solo su
+#     avvio manuale: non deve consumare la quota ogni push.
+# Con repository pubblico i runner standard sono gratuiti e illimitati e si
+# potrebbe togliere ogni condizione.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Un push nuovo annulla il run precedente dello stesso ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Errori di codice localizzati in inglese: i messaggi sono confrontati coi test.
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------- check (1x)
+  check:
+    name: check (ubuntu, lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - run: npm run check
+
+      - run: npm test
+
+      - run: npm run build
+
+  # --------------------------------------------------------------- bundle (2x)
+  bundle:
+    name: bundle (${{ matrix.label }})
+    needs: check
+    # Gli artefatti servono quando qualcuno li scarica: non a ogni push sul branch.
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-x64
+          - os: windows-latest
+            label: windows-x64
+          - os: macos-latest
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # NOTA: non si usa `cargo build --release` da solo. Tauri decide
+      # "dev vs release" con la feature `custom-protocol`, e solo la CLI la
+      # attiva: senza, l'app cercherebbe il frontend sul server di sviluppo.
+      - name: Build the bundle
+        run: npx tauri build
+
+      - name: Report bundle sizes
+        run: node scripts/report-bundle-sizes.mjs
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: scaricatore-di-porto-${{ matrix.label }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------ universal macOS (M7)
+  #-job separato: se fallisce non deve bloccare il .app nativo, che è quello
+  #  che serve per il test manuale su Apple Silicon.
+  bundle-macos-universal:
+    name: bundle (macos universal)
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install both Apple targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Spec §13.2 chiede il binario universale. La notarizzazione resta una
+      # attività umana (docs/SPIKES.md): qui si produce solo il bundle unsigned.
+      - name: Build the universal bundle
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Upload the universal bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: scaricatore-di-porto-macos-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
+
+  # -------------------------------------------- Tier 2, solo su avvio manuale
+  # Spec §1.1: questi target non sono testati a mano. Devono almeno compilare e
+  # superare i test con strumenti falsi in CI, e restare etichettati
+  # "sperimentali". L'avvio manuale serve a non consumare la quota ogni push.
+  tier2:
+    name: tier2 (${{ matrix.label }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            label: macos-x64
+          - os: windows-11-arm
+            label: windows-arm64
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev \
+            patchelf build-essential curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: cargo test (integration tests with fake tools)
+        working-directory: src-tauri
+        run: cargo test
+
+      - run: npm run check
+
+      - name: Build
+        run: npx tauri build --no-bundle
