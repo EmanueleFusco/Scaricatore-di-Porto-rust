@@ -1440,3 +1440,40 @@ Seconda run di `bundle (macos universal)`: il passo di CI ha trovato che
   2. Servono comunque le righe `FAILED` dei due job Windows: la suite sotto wine
      è verde, ma «molto probabile» non è «verificato».
   3. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
+
+### Addendum alla voce D51 — cosa `cargo-xwin` NON può fare
+
+Verificato tentando di eseguire `tests/bundled_tools.rs` per Windows sotto
+wine, con i binari Windows scaricati al posto giusto:
+
+```
+refusing to spawn the relative tool path
+/home/arturo/Documenti/ScaricatoreDiPorto/src-tauri\binaries\qjs-x86_64-pc-windows-msvc.exe
+```
+
+Il codice del test **e' corretto**: usa `Path::join`, non la concatenazione di
+stringhe. Il path e' misto perche' `CARGO_MANIFEST_DIR` e' un path Unix (la
+ compilazione e' stata fatta qui) e `Path::join` su Windows aggiunge `\`.
+Su un runner Windows vero `CARGO_MANIFEST_DIR` e' `D:\a\...` e il risultato e'
+valido. Quindi `bundled_tools` **non e' eseguibile sotto wine**: non per un difetto,
+perche' l'ambiente non e' rappresentabile.
+
+Da notare che `process.rs` ha rifiutato quel path e ha avuto ragione:
+`/home/...\binaries\qjs.exe` su Windows non e' assoluto (nessuna lettera di
+unita'), quindi il rifiuto di spec 4.8 e' il comportamento giusto. La guardia ha
+respinto un path genuinamente malformato.
+
+**La sostanza del test e' comunque verificata a mano**, eseguendo i binari
+Windows fuori dalla suite: il fetch per `x86_64-pc-windows-msvc` funziona da
+Linux (checksum di yt-dlp verificato contro `SHA2-256SUMS`, quello di qjs contro
+il manifesto), entrambi sono PE32+ `machine 0x8664`, `yt-dlp.exe --version` ->
+`2026.08.19`, `qjs.exe --version` -> `0.17.0`, e `qjs.exe` esegue uno script
+reale. Cioe' tutto quello che `bundled_tools` afferma, verificato con un metodo
+diverso.
+
+**Quello che `cargo-xwin` non copre, in tre righe:**
+
+* `bundled_tools` — il path di compilazione non e' rappresentabile sotto wine;
+* `tauri build` e l'impacchettamento su Windows — restano al runner vero;
+* il comportamento su macOS — non esiste un equivalente, e D52 lo ha mostrato:
+  quel difetto era invisibile su Linux perche' esiste solo su macOS.
