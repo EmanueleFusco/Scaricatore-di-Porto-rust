@@ -1340,3 +1340,55 @@ Linux e macOS arm64 erano verdi. Dettagli e fonti in D50.
      non sono mai stati eseguiti su Windows.
   3. Poi il discorso di `cargo-xwin` + wine per compilare i test per Windows da
      Linux, che è ancora aperto.
+
+## 2026-10-13 — M0-C / I test Windows su Linux, e il sesto bug di fila
+
+Mentre la CI girava: `cargo-xwin` + wine per eseguire la suite su Windows dalla
+macchina Linux. Dettagli in D51.
+
+- **Done**
+  - `cargo xwin check --all-targets` per `x86_64-pc-windows-msvc`: **verde**,
+    35 s. Chiuso il buco «i test non sono mai stati compilati per Windows».
+  - Verificato che il check **non è vacuo**: un errore di tipo dentro il modulo
+    di test lo fa fallire.
+  - `cargo xwin test --test process_tree`: **15/15 verdi sotto wine**, con
+    `cancelling_kills_the_child_and_the_grandchild`,
+    `dropping_a_running_tool_kills_the_tree` e
+    `the_app_exit_hook_kills_every_running_tool`. È spec §4, che avevo dichiarato
+    non verificabile.
+  - **Corretto un bug mio** in `well_known_dirs_for`: su Windows il ramo Unix
+    produceva `/home/tester\.deno\bin`. Il commento che prometteva «la risposta
+    dipende solo dagli argomenti» era falso per metà della funzione.
+  - Documentato nel codice perché esiste: su Windows `create_private_dir` non può
+    mettere 0700 e la privacy viene dalla app data dir. Da lì il 133 (Linux)
+    contro 132 (Windows), che è una differenza voluta e ora scritta.
+  - Corretta una mia supposizione: wine **fa** funzionare i Job Object.
+- **Verified by running**
+  - Linux: `cargo fmt --check` OK, `cargo clippy -D warnings` 0 errori,
+    `cargo test` 8 suite verdi, `npm test` **92 verdi**, `check:tools` OK.
+  - Windows via wine: `cargo xwin test --lib` → **132 verdi, 0 falliti**.
+  - Windows via wine: `cargo xwin test --test process_tree` → **15 verdi**.
+  - Confronto degli elenchi di test Linux/Windows: l'unica differenza è
+    `create_private_dir_uses_mode_0700`, escluso con `#[cfg(unix)]`.
+- **Not verified / stubbed**
+  - `npx tauri build` su Windows, l'installer e `bundled_tools`: non provati.
+    Wine non sostituisce un runner vero per l'impacchettamento.
+  - Il fix di `well_known_dirs_for` è stato verificato **sotto wine**, non sul
+    runner Windows della CI: se quel runner risponde diversamente, la CI resta
+    l'arbitro.
+- **Spec items marked "verify" che I checked**
+  - Job Object sotto wine: `CreateJobObjectW`, `AssignProcessToJobObject`,
+    `TerminateJobObject` e `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (via `Drop`)
+    funzionano. Misurati, non dedotti.
+  - Confronto sysroot wine `Z:\` ↔ `/`: i test che scrivono e leggono file
+    passano senza problemi di percorso.
+- **Decisions/deviations**
+  - D51: `cargo-xwin` + wine come seconda opinione, non come sostituto; e la
+    regola che vale più di tutto, cioè che quando proxy e test vero discordano
+    ha ragione il test vero.
+- **Next step**
+  1. La CI in corso **fallirà** su `well_known_locations_include_the_ones_the_
+     spec_lists` se il fix non è pushato. Serve un commit e un rilancio.
+  2. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
+  3. Script e prerequisite di `cargo-xwin` da mettere in `GUIDA_OPERATIVA.md`
+     (personale, fuori dal repository).

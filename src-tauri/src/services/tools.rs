@@ -182,8 +182,16 @@ pub fn well_known_dirs_for(
         dirs.push(PathBuf::from("/usr/local/bin"));
         dirs.push(PathBuf::from("/opt/local/bin"));
         if let Some(home) = home {
-            dirs.push(home.join(".deno").join("bin"));
-            dirs.push(home.join(".local").join("bin"));
+            // `format!` and not `join`, for the same reason as the Windows branch
+            // above. Asking this function for the Unix list from a Windows
+            // machine would otherwise hand back `/home/tester\.deno\bin`: a path
+            // that belongs to neither system, and a test that cannot be written.
+            // On Unix this produces exactly what `join` produced — the
+            // separator is `/` — so production behaviour does not change.
+            let base = home.display().to_string();
+            let base = base.strip_suffix('/').unwrap_or(base.as_str());
+            dirs.push(PathBuf::from(format!("{base}/.deno/bin")));
+            dirs.push(PathBuf::from(format!("{base}/.local/bin")));
         }
         if cfg!(target_os = "linux") {
             dirs.push(PathBuf::from("/usr/bin"));

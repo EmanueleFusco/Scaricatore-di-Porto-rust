@@ -1241,3 +1241,106 @@ sono mai girati qui. Non esistono su Linux. Le uniche cose verificate su questa
 macchina sono la logica di fetch (nomi, checksum, ordinamento), il passo di CI
 contro il `lipo` finto, e l'intestazione Mach-O dell'asset yt-dlp. Il resto lo
 vedrà il runner macOS.
+
+### D51 — La CI Windows come seconda opinione, e il bug che ha trovato subito
+
+Domanda di comodo: «si possono fare i test Windows su Linux?». Risposta: sì,
+via `cargo-xwin` + wine, e su questa macchina funziona. Ma il valore vero non è
+la comodità, è che **una delle cinque risposte che avevo dato con supposizioni
+era sbagliata**, e me la sono lasciata sfuggire due volte.
+
+**La supposizione.** Avevo scritto che wine implementa i Job Object «in modo
+parziale» e che `process_tree` sotto wine sarebbe stato inutile. Non l'avevo
+verificato. Quando ho cercato di verificarlo non sono riuscito a trovarne
+l'implementazione nella sorgente di Wine (`dlls/ntdll` e `dlls/kernel32` non
+hanno file con `job` nel nome; `dlls/kernelbase/process.c`,
+`dlls/ntdll/process.c`, `server/process.c` non contengono **zero** occorrenze di
+`JobObject`), e ho detto «non lo so» invece di lasciare l'assunzione in piedi.
+Già così sarebbe stato un miglioramento.
+
+**La misura, tramite un proxy.** Ho scritto una finestrella che chiama
+`CreateJobObjectW`, crea un figlio, lo assegna al job e termina il job.
+Risultato: **il figlio muore**. La mia supposizione era sbagliata proprio nel
+verso in cui l'avevo formulata.
+
+*Nota sul proxy, che è metodo e non aneddoto.* La prima versione si uccideva
+da sola: avevo messo **il processo stesso** dentro il job, quindi
+`TerminateJobObject` terminava anche noi, e l'output finiva lì. Quello non era
+un difetto di wine — è comportamento Windows corretto — era il mio probe
+mal scritto.
+
+**Il test vero, che vale più del proxy.** Compilata la suite per
+`x86_64-pc-windows-msvc` e lanciata sotto wine:
+
+```
+test cancelling_kills_the_child_and_the_grandchild ... ok
+test dropping_a_running_tool_kills_the_tree ... ok
+test the_app_exit_hook_kills_every_running_tool ... ok
+test result: ok. 15 passed; 0 failed
+```
+
+Vale la pena tenere a mente perché i due potevano contraddirsi: se mi fossi
+fermato al proxy avrei scritto un'altra assunzione al posto di un fatto, e
+sarebbe stata sbagliata. **Il proxy testa la mia idea del problema, il test
+vero testa il problema.** Quando i due discordano, il test vero ha ragione.
+
+Prima compilazione fallita 15/15, per un motivo che non c'entrava: avevo
+filtrato con `--test process_tree`, quindi Cargo non aveva compilato l'esempio
+`fake_tool`. La suite lo diceva da sola, per nome di file e con l'istruzione
+giusta. Un test che sa distinguere «i Job Object non funzionano» da «non hai
+eseguito niente» è un test che ti protegge; se non lo facesse, ti
+m(and)erebbe.
+
+**Ed ecco il bug: era mio, e del tipo esatto che D49 aveva appena corretto.**
+I 133 test della libreria sotto wine ne hanno trovato uno che Linux non poteva
+vedere:
+
+```
+assertion failed: unix.contains(&"/home/tester/.deno/bin".to_owned())
+```
+
+`Path::join` usa il separatore dell'host, quindi su Windows
+`well_known_dirs_for` produceva `/home/tester\.deno\bin` — un path che non
+appartiene a nessun sistema. Peggio: il commento scritto sopra la funzione
+diceva che «la risposta dipende solo dagli argomenti», e per il ramo Unix era
+**falso**. Ora anche il ramo Unix è composto con `format!`. Su Unix il risultato
+è identico a prima (il separatore è `/`), quindi **il comportamento di
+produzione non cambia**: cambia la promessa della funzione, che ora è vera.
+
+Il punto non è il bug. Il punto è che **un test scritto la sera prima e dichiarato
+«cross-platform» non lo era**, e a scoprirlo non è stato un runner Windows ma
+un controllo locale di novanta secondi. È la sesta volta in due giorni che la
+stessa classe di errore viene fuori da qualcosa che non era mai stato eseguito
+dove dice di funzionare.
+
+**Il 133 contro 132.** Sotto Windows la libreria ha un test in meno:
+`create_private_dir_uses_mode_0700`, `#[cfg(unix)]`. Su Windows i permessi Unix
+non esistono e la privacy della temp dir (spec §4.9, «mode 0700») viene dal
+fatto che la cartella sta sotto la app data dir dell'utente, che porta già la
+sua ACL. Non è un buco: è una differenza di piattaforma che ora è scritta nel
+codice, accanto alla funzione, invece di essere una differenza di conteggio che
+qualcuno avrebbe notato fra un anno chiedendosi perché manca un test.
+
+**Cosa ci si compra, e cosa no.** Si compra una seconda opinione Windows a costo
+zero di quota: 35 secondi il check di compilazione, 8 secondi i test della
+libreria, 10 secondi `process_tree`. Non si compra la validazione del bundle:
+`npx tauri build` su Windows, l'installer e `bundled_tools` restano da provare su
+un runner vero. E non sostituisce la CI: wine non è Windows, e su questo
+l'hardware non lo dimostreremo meglio di così.
+
+Comandi (la `TAURI_CONFIG` è la stessa del job `check`, e serve):
+
+```bash
+export CARGO_TARGET_DIR=/home/arturo/xwin-target
+export TAURI_CONFIG='{"bundle":{"externalBin":[]}}'
+export WINEDEBUG=-all
+cargo xwin check --all-targets --target x86_64-pc-windows-msvc
+cargo xwin build   --example fake_tool     --target x86_64-pc-windows-msvc
+cargo xwin test    --lib                   --target x86_64-pc-windows-msvc
+cargo xwin test    --test process_tree     --target x86_64-pc-windows-msvc
+```
+
+Prerequisiti verificati qui: `clang` 23.1.1 (serve `clang-cl`), `llvm-tools` di
+rustup (`ring` usa assembly, si installa con `rustup component add llvm-tools`),
+`wine` 11.19. **L'esempio `fake_tool` va compilato a parte**: con
+`--test <nome>` Cargo non lo costruisce, e serve a `process_tree`.
