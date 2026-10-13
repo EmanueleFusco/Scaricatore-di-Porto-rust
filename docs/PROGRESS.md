@@ -1477,3 +1477,47 @@ diverso.
 * `tauri build` e l'impacchettamento su Windows — restano al runner vero;
 * il comportamento su macOS — non esiste un equivalente, e D52 lo ha mostrato:
   quel difetto era invisibile su Linux perche' esiste solo su macOS.
+
+## 2026-10-13 — M0-C / `.exe` dopo il triple
+
+Terzo e ultimo rosso. `bundle (windows-x64)` falliva su
+`yt-dlp: the bundled binary did not answer --version`. Dettagli in D53.
+
+- **Done**
+  - Nuova `fetched_name(tool, triple)`: `<tool>-<triple>` con `.exe` **dopo** il
+    triple. `candidates()` la usa per il candidato di sviluppo.
+  - `executable_name` (nome nell'app installata, `yt-dlp.exe`) e `fetched_name`
+    (nome in `binaries/`, `yt-dlp-<triple>.exe`) sono tenute distinte a verbale:
+    erano la stessa cosa scritta in due modi, e solo uno dei due giusto.
+  - Il test del candidato con triple riscritto: tre triple Tier 1 più
+    `universal-apple-darwin`, nomi esatti scritti a lettere, e una guardia che
+    vieta `.exe-` in un nome.
+- **Verified by running**
+  - **Revert-check**: con il codice vecchio il test rosso e stampa
+    `/app/yt-dlp.exe-x86_64-pc-windows-msvc` come candidato; ripristinato, verde.
+  - Linux: fmt OK, clippy 0 errori, 8 suite verdi, `npm test` **96 verdi**,
+    `svelte-check` 0/0, `check:tools` OK, `check:ci` 9 blocchi validi.
+  - Windows via wine: `cargo xwin test --lib` → **132/132**.
+- **Not verified / stubbed**
+  - `bundled_tools` **non è eseguibile sotto wine** (addendum a D51:
+    `CARGO_MANIFEST_DIR` compilato su Linux + `Path::join` Windows = path misto,
+    giustamente rifiutato da spec 4.8). La sostanza è verificata a mano: fetch
+    Windows funzionante da Linux, checksum corretti, PE32+ x86_64,
+    `yt-dlp.exe --version` → `2026.08.19`, `qjs.exe --version` → `0.17.0`, qjs
+    esegue uno script.
+  - Il fetch universale vero e `tauri build` universale (D52): non girano su
+    Linux, resta la CI.
+- **Spec items marked "verify" che I checked**
+  - La convenzione del nome: `tauri_utils::external_binaries` costruisce
+    `{path}-{triple}{.exe su Windows}`; `fetch_bundled_tools.mjs` scrive
+    `<nome>-<triple>.exe`. Due fonti, stessa convenzione.
+- **Decisions/deviations**
+  - D53: `fetched_name` separato da `executable_name`; test del candidato
+    riscritto sulle quattro triple invece di una.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. **Da fare dopo il verde**: accendere `SDP_DEBUG_PROBE` nel passo di CI che
+     testa i tool, cosi' un fallimento dirà la causa e non solo la conclusione.
+     E' la seconda volta che un diagnostico esistente ma spento mi costa un
+     round-trip.
+  3. Dopo: installare e provare i pacchetti, poi merge e tag.

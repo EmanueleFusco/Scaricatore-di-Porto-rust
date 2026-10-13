@@ -109,6 +109,29 @@ pub fn executable_name(tool: &str, triple: &str) -> String {
     }
 }
 
+/// The name `scripts/fetch_bundled_tools.mjs` leaves in `binaries/`:
+/// `<tool>-<triple>`, with `.exe` **after** the triple.
+///
+/// Deliberately not `executable_name` with `-{triple}` appended. The two are
+/// different things: [`executable_name`] is the name inside an installed app,
+/// where the bundler has already stripped the triple, and it is
+/// `yt-dlp.exe` on Windows. This one is the name in the repository, and the
+/// bundler reads it with `format!("{path}-{triple}{ext}")`
+/// (`tauri_utils::external_binaries`), so it is `yt-dlp-<triple>.exe`.
+///
+/// Getting the order wrong is invisible on Linux — there is no extension to
+/// misplace — and it cost a whole CI run: `bundle (windows-x64)` built the
+/// candidate `yt-dlp.exe-x86_64-pc-windows-msvc` for a file that is called
+/// `yt-dlp-x86_64-pc-windows-msvc.exe`, so `resolve` found nothing and the
+/// bundled-tools gate failed with a message that named no file at all.
+pub fn fetched_name(tool: &str, triple: &str) -> String {
+    if triple.contains("windows") {
+        format!("{tool}-{triple}.exe")
+    } else {
+        format!("{tool}-{triple}")
+    }
+}
+
 /// `…/tools/<tool>/` — lookup order #2 (spec §5.2).
 pub fn app_data_dir_for(tools_dir: &Path, tool: &str) -> PathBuf {
     tools_dir.join(tool)
@@ -256,7 +279,7 @@ pub fn candidates(tool: &str, lookup: &Lookup, triple: &str) -> Vec<(ToolSource,
     if cfg!(debug_assertions) {
         out.push((
             ToolSource::Bundled,
-            lookup.bundled_dir.join(format!("{file_name}-{triple}")),
+            lookup.bundled_dir.join(fetched_name(tool, triple)),
         ));
     }
     for dir in &lookup.path_dirs {
@@ -976,6 +999,7 @@ mod tests {
 
     const LINUX: &str = "x86_64-unknown-linux-gnu";
     const WINDOWS: &str = "x86_64-pc-windows-msvc";
+    const MACOS: &str = "aarch64-apple-darwin";
 
     fn lookup() -> Lookup {
         Lookup {
@@ -1073,26 +1097,71 @@ mod tests {
         // `tauri dev` does not copy sidecars, so what
         // `fetch_bundled_tools.mjs` leaves in `src-tauri/binaries/` still carries
         // the suffix. The extra candidate exists only in debug builds.
+        //
+        // Asked of all three Tier 1 triples, not one. The first version of this
+        // test passed `LINUX` and built the expected name the same way the code
+        // does, so on Linux the two agreed by construction and the Windows
+        // answer — `yt-dlp.exe-<triple>` for a file called
+        // `yt-dlp-<triple>.exe` — was never checked by anyone, here or in CI.
         let plain = PathBuf::from("/app").join("yt-dlp");
-        let suffixed = PathBuf::from("/app").join(format!("yt-dlp-{LINUX}"));
         let found = candidates("yt-dlp", &lookup(), LINUX);
         if cfg!(debug_assertions) {
             assert!(found.contains(&(ToolSource::Bundled, plain.clone())));
-            assert!(found.contains(&(ToolSource::Bundled, suffixed.clone())));
-            // The suffixed name comes after the plain one: in a real install
-            // only the plain one exists, and this order never changes that.
             let plain_at = found
                 .iter()
                 .position(|(_, path)| *path == plain)
                 .expect("plain");
+            // The suffixed name comes after the plain one: in a real install
+            // only the plain one exists, and this order never changes that.
             let suffixed_at = found
                 .iter()
-                .position(|(_, path)| *path == suffixed)
+                .position(|(_, path)| {
+                    *path == PathBuf::from("/app").join(fetched_name("yt-dlp", LINUX))
+                })
                 .expect("suffixed");
             assert!(plain_at < suffixed_at);
         } else {
             assert!(found.contains(&(ToolSource::Bundled, plain)));
-            assert!(!found.contains(&(ToolSource::Bundled, suffixed)));
+            assert!(
+                !found
+                    .iter()
+                    .any(|(_, path)| path.to_string_lossy().contains(LINUX))
+            );
+        }
+
+        // The exact name on every target, so the convention is asserted rather
+        // than mirrored. Both spellings are taken from `tauri_utils::
+        // external_binaries`, which builds `{path}-{triple}` and appends `.exe`
+        // on Windows — and from the fetch script, which must agree with it.
+        assert_eq!(
+            fetched_name("yt-dlp", LINUX),
+            "yt-dlp-x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            fetched_name("qjs", WINDOWS),
+            "qjs-x86_64-pc-windows-msvc.exe",
+            "the extension goes after the triple, never before it"
+        );
+        assert_eq!(fetched_name("qjs", MACOS), "qjs-aarch64-apple-darwin");
+        assert_eq!(
+            fetched_name("yt-dlp", "universal-apple-darwin"),
+            "yt-dlp-universal-apple-darwin"
+        );
+
+        for triple in [LINUX, WINDOWS, MACOS, "universal-apple-darwin"] {
+            let name = fetched_name("yt-dlp", triple);
+            assert!(
+                !name.contains(".exe-"),
+                "{triple}: the extension must never precede the triple ({name})"
+            );
+            let found = candidates("yt-dlp", &lookup(), triple);
+            if cfg!(debug_assertions) {
+                let expected = PathBuf::from("/app").join(&name);
+                assert!(
+                    found.contains(&(ToolSource::Bundled, expected.clone())),
+                    "{triple}: candidates must include {expected:?}, got {found:?}"
+                );
+            }
         }
     }
 

@@ -1441,3 +1441,85 @@ non girano su Linux.
 **Non verificato, ancora:** il fetch universale vero e `tauri build --target
 universal-apple-darwin` restano senza esecuzione. La prossima run dirà se la
 catena regge fino in fondo.
+
+### D53 — `.exe` dopo il triple, non prima: il bundle Windows non trovava i suoi stessi tool
+
+Ultimo rosso, e il più economico da spiegare e il più costoso da trovare.
+
+```
+---- the_bundled_ytdlp_and_qjs_run_without_a_network stdout ----
+panicked at tests\bundled_tools.rs:92:32:
+yt-dlp: the bundled binary did not answer --version
+```
+
+`resolve()` non trova nulla. Ma il file c'era: nella stessa suite,
+`the_bundled_ytdlp_is_a_real_yt_dlp_and_not_a_stub` passa e controlla che il
+file esista e superi i 5 MB. Il test che esegue qjs passa, e spawma
+l'eseguibile **direttamente**. Solo `resolve` fallisce: il problema non è
+eseguire i binari, è **non trovarli**.
+
+**La causa, in una riga.**
+
+```rust
+let file_name = executable_name(tool, triple);            // Windows: "yt-dlp.exe"
+…
+lookup.bundled_dir.join(format!("{file_name}-{triple}")) // "yt-dlp.exe-x86_64-pc-windows-msvc"
+```
+
+Il file si chiama `yt-dlp-x86_64-pc-windows-msvc.exe`. Due nomi diversi, quindi
+il candidato non esiste, `probe_version` restituisce `None` subito — coerente
+con i 0,23 s della suite: **non è un timeout, non è PyInstaller, non è
+`%TEMP%`**. Non ho perso tempo a inseguire nessuna delle tre ipotesi buone,
+perché il tempo diceva già che il processo non era mai partito.
+
+**Due fonti indipendenti dicono dove va `.exe`**, e non sono una mia scelta:
+
+* `tauri_utils::external_binaries` costruisce `format!("{curr_path}-{target_triple}{extension}")`,
+  con `extension = ".exe"` solo su Windows;
+* `fetch_bundled_tools.mjs` (`destinationPath`) scrive `<nome>-<triple>.exe`.
+
+Quindi `executable_name` e il nome del file in `binaries/` sono **due cose
+diverse** e vanno costruite in due modi diversi. La funzione nuova
+`fetched_name(tool, triple)` le tiene separate a verbale.
+
+**Perché Linux non lo ha mai visto.** Su Linux non c'è estensione da collocare:
+`executable_name` restituisce `yt-dlp`, e `yt-dlp-<triple>` è già giusto. Il
+codice era corretto per due piattaforme su tre e sbagliato solo dove la
+convenzione portava dentro un dettaglio.
+
+**Il test che avrebbe dovuto accorgersene rispecchiava l'implementazione.**
+
+```rust
+let suffixed = PathBuf::from("/app").join(format!("yt-dlp-{LINUX}"));   // LINUX
+```
+
+Una sola triple, e costruita con lo stesso criterio del codice. Su Linux le due
+costruzioni coincidevano **per costruzione**, quindi l'asserzione era vera senza
+dire niente: passava su Windows, passava su Linux, e non avrebbe notato un nome
+sbagliato in nessuno dei due. Riscritto: le tre triple Tier 1 più
+`universal-apple-darwin`, con i nomi esatti scritti a lettere dentro il test, e
+una guardia esplicita che `.exe-` non compaia mai in un nome.
+
+Verificato revertendo la correzione, il test rosso stampa il candidato:
+
+```
+x86_64-pc-windows-msvc: candidates must include "/app/yt-dlp-x86_64-pc-windows-msvc.exe",
+got [… (Bundled, "/app/yt-dlp.exe-x86_64-pc-windows-msvc") …]
+```
+
+**Un difetto che la CI poteva-dirci subito.** `explain_probe` esiste per
+esattamente questo — dice perché ogni candidata è stata scartata — ma è spento
+per default dietro `SDP_DEBUG_PROBE`, e il passo di CI non lo impostava. Il
+messaggio che abbiamo ricevuto («did not answer --version») nomina la
+conclusione e non la causa. Con la variabile accesa, la stessa run avrebbe detto
+`could not be started` o `exited 0 with nothing on stdout` e il nome del file
+provato. **Un diagnostico che esiste ma non è acceso non è un diagnostico**, e
+questa è la seconda volta in due giorni che mi costa un round-trip: la prima è
+stata `externalBin`, che non diceva quale dei due file fosse sbagliato.
+
+**L'ottava volta stessa classe.** `externalBin`, `lipo -info`, la regola di
+`externalBin`, i cinque test only-Unix, `format!` al posto di `join`, un path
+scritto al posto dei contenuti, `well_known_dirs_for`, e questo. Tutti nati da
+codice mai eseguito sull'ambiente per cui era scritto. Quello che cambia,
+rispetto alla prima volta, è che **due di questi li ha trovati un controllo
+locale in meno di due minuti** invece di una run da 95 minuti.
