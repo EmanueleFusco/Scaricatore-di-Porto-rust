@@ -1630,3 +1630,178 @@ né nel codice né nella CI, per scelta esplicita.
      Node 24.
   4. Come da D53: accendere `SDP_DEBUG_PROBE` nei passi che testano i tool, cosi'
      un fallimento futuro dirà la causa e non solo la conclusione.
+
+## 2026-10-13 — Ricerca sui due warning CI: nessuna modifica applicata
+
+Richiesta: verificare i due warning e mettere in documentazione come risolverli,
+**senza toccare il codice**. Così è fatto: questo voce è l'unica modifica.
+
+Tre scoperte, in ordine di gravità. **La prima non era nei warning.**
+
+### A. `ubuntu-22.04` è già in deprecazione — ed è il job che produce gli installer
+
+I warning parlavano di `ubuntu-latest`, che riguarda solo `check` e `release`.
+Seguendo la pista delle immagini scoperte, il job `bundle` gira su
+**`ubuntu-22.04`**, e quello è un problema diverso e più serio.
+
+`actions/runner-images` #14254, stato **aperto**, aperto il 2026-06-16:
+
+> GitHub Actions announcing the deprecation process for `ubuntu-22.04` and
+> `ubuntu-22.04-arm`. While the images are being deprecated, You may experience
+> longer queue times during peak usage hours. Deprecation will begin on
+> **September 17th, 2026** and the images will be fully unsupported by
+> **April 17th, 2027** for GitHub Actions and Azure DevOps.
+
+E la parte che conta:
+
+> To raise awareness of the upcoming removal, we will **temporarily fail jobs
+> using Ubuntu 22.04**. The brownouts are scheduled for the following dates:
+> March 23, March 30, April 6, April 13 (ognuno 14:00 UTC → 00:00 UTC del giorno dopo).
+
+Quindi: la deprecazione è iniziata **26 giorni fa**, i nostri build falliranno
+in quattro finestre a marzo–aprile 2027, e il 17 aprile 2027 **smettiano del
+tutto**. Il motivo: «GitHub Actions maintains the latest two stable versions of
+any given OS version», e ora quelle sono 24.04 e 26.04.
+
+**Cosa colpisce**, dai `runs-on` del workflow:
+
+| job | runner | esposto |
+| :-- | :-- | :-- |
+| `bundle` linux-x64 | `ubuntu-22.04` | **sì: `.deb`, `.rpm`, AppImage** |
+| `check` | `ubuntu-latest` | sì, ma non produce nulla di pubblicato |
+| `release` | `ubuntu-latest` | sì, ma solo raccoglie artifact |
+| `bundle` windows / macos | `windows-2022` / `macos-latest` | no |
+| `process-tests` | `windows-2022`, `macos-latest` | no (non ha una gamba Linux) |
+| `tier2` linux-arm64 | `ubuntu-24.04-arm` | no, 24.04 è supportata |
+
+**Nota sul perché 22.04 era la scelta giusta**, e va tenuto presente invece di
+dimenticarlo: il commento nella CI spiega che si compila sul sistema più vecchio
+supportato perché il `.deb` deve girare anche su distribuzioni più recenti
+(glibc e webkit2gtk linkati dinamicamente), e che è ciò che chiede spec §13.5 e
+§5.4 («oldest supported distro»). La scelta era corretta; è il mondo che si è
+mosso. La sostituzione naturale è `ubuntu-24.04`, facendo attenzione che
+**webkit2gtk su jammy è stato aggiornato solo per amd64/i386 (arm64 è ancora a
+2.36)** — ed è il motivo per cui `tier2` usa già `ubuntu-24.04-arm`. Passando a
+24.04 quella precauzione cade, e il `.deb` si allinea a 24.04/26.04.
+
+### B. Node 20 è già rimosso: era "futuro", è "già successo"
+
+La voce precedente diceva «oggi funziona, problema futuro». **È sbagliato, e la
+correzione è il punto di questa ricerca.**
+
+Dalla changelog (2025-09-19, con aggiornamenti fino al 25 agosto 2026):
+
+> Node20 will reach end-of-life (EOL) in April of 2026. … Beginning on June 16th,
+> 2026, runners will begin using Node24 by default. … This will only work until we
+> upgrade the runner and remove Node20 on **September 23rd, 2026**.
+
+E dalla notifica finale, «Node 20 is no longer available in GitHub Actions»
+(2026-09-23):
+
+> This is the final notification that Node 20 is no longer available on GitHub
+> Actions runners. Runners now use Node 24 for JavaScript actions. The temporary
+> `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` opt-out is no longer available.
+
+Quindi le nostre azioni che dichiarano `using: node20` girano **solo perché il
+runner le forza su Node 24**. Non è una configurazione supportata: è uno strato
+di compatibilità di cui GitHub non dichiara la durata. Il warning diceva
+«being forced to run on Node.js 24» — e va letto alla lettera: non è
+un'informazione, è un avviso.
+
+**Verificato, non ricordato: non esiste una patch nella serie v4.**
+
+| azione | ultima v4.x | `runs.using` | versione su Node 24 |
+| :-- | :-- | :-- | :-- |
+| `actions/checkout` | v4.4.0 | `node20` | v7.1.0 |
+| `actions/setup-node` | v4.4.0 | `node20` | v7.1.0 |
+| `actions/upload-artifact` | v4.6.2 | `node20` | v7.0.2 |
+| `actions/download-artifact` | v4.3.0 | `node20` | **v8.0.2** |
+
+Tre cose da non sbagliare quando si farà:
+
+1. **Le major non sono allineate.** `download-artifact` è a **v8**, le altre a
+   **v7**: un «alzo tutto a v7» lascia `download-artifact` indietro, e un «v8»
+   generale non esiste per le altre. Vanno aggiornate una per una.
+2. **`Swatinem/rust-cache@v2` non è travolta**: non è un'azione `actions/*` e il
+   warning non la cita. L'ultima è v2.9.2.
+3. **Il `node-version` del workflow è un'altra cosa.** `setup-node` prende il
+   Node con cui gira *il nostro* `npm`; il warning parla del runtime con cui gira
+   *l'azione stessa*. Sono due livelli distinti e non si risolvono insieme.
+4. **Node 24 non supporta macOS 13.4 e precedenti, né ARM32.** Non ci tocca
+   (`tier2` usa macos-15-intel), ma è una conseguenza da conoscere se un giorno
+   aggiungiamo una piattaforma più vecchia.
+
+### C. `ubuntu-latest` → Ubuntu 26.04: finestra, non data
+
+Dalla changelog 2026-09-17 e dall'issue #14748:
+
+- Ubuntu 26.04 è **generally available dal 17 settembre 2026** (x64 e arm64).
+- `ubuntu-latest` migrerà da 24.04 a 26.04 **gradualmente tra il 19 ottobre e il
+  19 novembre 2026**, quindi per un mese la nostra run potrebbe capitare sull'una
+  o sull'altra immagine. È la cosa peggiore di questa migrazione: non una data,
+  una **finestra**.
+- Per fissarsi: `runs-on: ubuntu-24.04`. Per provare prima: `ubuntu-26.04`.
+
+**I sette pacchetti apt della CI su Ubuntu 26.04 (resolute).** Tutti esistono.
+Questo il cuore della domanda, e le versioni a confronto con 24.04 (noble):
+
+| pacchetto | 24.04 (noble) | 26.04 (resolute) | delta |
+| :-- | :-- | :-- | :-- |
+| `libwebkit2gtk-4.1-dev` | 2.52.6 | 2.52.6 | **nessuno**: noble è aggiornato via security update |
+| `libayatana-appindicator3-dev` | 0.5.93-1build3 | 0.5.94-1build1 | minore |
+| `libxdo-dev` | 1:3.20160805.1-5build1 | 1:3.20160805.1-5.1build1 | minore |
+| `librsvg2-dev` | 2.58.0+dfsg-1ubuntu0.1 | 2.61.3+dfsg-3ubuntu0.1 | bump di minor |
+| `libssl-dev` | 3.0.13-0ubuntu3.16 (OpenSSL) | 3.5.5-1ubuntu3.7 | **major** — irrilevante per noi, vedi sotto |
+| `build-essential`, `curl`, `wget`, `file` | presenti | presenti | nessuno |
+
+Due note su quella tabella, che sono la differenza fra «i numeri» e «cosa
+significano»:
+
+* **webkit2gtk è identico**, ed è il pacchetto che conta: il binario si linka
+  dinamicamente a WebKitGTK e questa è la libreria che decide se il WebView si
+  comporta allo stesso modo. Il fatto che 24.04 e 26.04 abbiano la stessa versione
+  toglie il rischio più grosso.
+* **`libssl-dev` fa un salto major (3.0 → 3.5)**, ma spec §1 richiede `rustls`
+  esplicitamente e **nessun OpenSSL**, e di fatto non lo usiamo. Il pacchetto sta
+  nell'elenco perché è sulla pagina dei prerequisiti di Tauri, non perché una
+  nostra dipendenza lo linki. Vale la pena saperlo se un giorno qualcuno aggiunge
+  una dipendenza che usa `openssl-sys`.
+* Sulle immagini Rust è 1.98.1 su entrambe, ed è irrilevante: la CI installa il
+  proprio toolchain con `dtolnay/rust-toolchain@stable`.
+
+### D. Cosa NON ho verificato
+
+* **Non ho eseguito una build su Ubuntu 26.04.** Non posso: non ho un runner.
+  Quello che ho verificato è l'esistenza dei pacchetti e le loro versioni, non
+  che `tauri build` ci produca lo stesso binario. La differenza glibc/kernel
+  (6.17 → 7.0) non è misurabile da qui.
+* **Non ho applicato nessuna delle tre correzioni**, nemmeno quella ovvia:
+  è quanto richiesto.
+* Non ho guardato se **macOS 14** (già ritirato il 1° ottobre 2026, vedi i
+  "related posts") tocchi qualcuno dei nostri job: `macos-latest` oggi è macOS 26,
+  quindi no, ma `tier2` usa `macos-15-intel` e quello è un'altra storia.
+
+### E. Ordine di lavoro proposto, da applicare quando si decide
+
+Con le date dalla parte, l'ordine non è ovvio ma è determinato:
+
+1. **`check` e `release`: fissare `ubuntu-24.04`.** Costa una riga per job,
+   toglie la finestra di un mese in cui la run potrebbe cambiare sistema sotto i
+   piedi, e 24.04 ha strada davanti (fino all'arrivo della prossima LTS). Da fare
+   **entro il 19 ottobre**, cioè tra 6 giorni.
+2. **`bundle`: `ubuntu-22.04` → `ubuntu-24.04`.** Non urgente per data (aprile
+   2027) ma **urgente per conseguenza**: è l'unico job che produce gli installer,
+   e quando cade, non abbiamo più un modo di rilasciarli. Vanno rimisurati i
+   `.deb`/rpm (le dimensioni e il glibc minimo cambiano), e va aggiornato il
+   commento nella CI che motiva la scelta di 22.04, perché diventa falso.
+   Vanno anche riguardati i brownout: se rilasciamo in marzo–aprile 2027 su 22.04,
+   un build potrebbe fallire per cause esterne.
+3. **Le azioni a Node 24**, una per una e verificandole: checkout v7, setup-node
+   v7, upload-artifact v7, download-artifact v8. Da fare insieme al punto 1 o 2,
+   tanto nello stesso commit si toglie un giro di CI.
+4. **Controllo da fare comunque**: `npm run check:release` e le versioni nei tre
+   manifest restano allineati a `0.1.0` (verificato prima, invariato).
+
+Nessuna di queste è applicata. Le righe da cambiare sono poche e il rischio è
+basso, ma è una decisione tua: cambia l'immagine di build degli installer, e
+quella è una cosa che si misura, non si presume.
