@@ -748,3 +748,68 @@ documentato sul campo `ProcessResult::exit_code`, che è la trappola per chi ver
 ### Next step
 
 Rilanciare `process-tests` e chiudere: D15 (`rename` su Windows) ed esito macOS. Poi M0-C.
+
+---
+
+## 2026-10-13 — M0-B quater / `settings_ipc` non partiva su Windows (bug noto di Tauri)
+
+### Cosa è successo
+
+Con `--no-fail-fast` i 15 test di integrazione sono arrivati a girare su Windows: **15/15 verdi**.
+Poi è emerso un problema diverso, che prima non si vedeva:
+
+```
+Running tests\settings_ipc.rs
+Caused by: process didn't exit successfully: `settings_ipc-....exe`
+  (exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND)
+```
+
+**Non è un test che fallisce: il processo non parte**, prima di `main()`. E solo `settings_ipc` muore,
+mentre `process_tree` sulla stessa macchina passa 15/15 — ed è la differenza che spiega tutto.
+
+### Causa, verificata nelle fonti
+
+`tauri-build` passa il manifest al binario applicativo con `embed-resource`, che emette
+`cargo:rustc-link-arg-bins` (`embed-resource 3.0.12`, `src/lib.rs:443`). **`-bins`, non `-tests`**:
+i binari prodotti da `cargo test` non lo ricevono. Senza quel manifest un eseguibile che importa i
+simboli di `comctl32` v6 carica la `comctl32` legacy (v5), che non li esporta.
+
+- `settings_ipc.rs` usa `tauri::test::mock_builder()` → importa la catena finestra/webview → comctl32 v6
+- `process_tree.rs` non tocca Tauri → non importa quei simboli → parte senza problemi
+
+Bug noto di Tauri, tre riferimenti concordi: issue **#13419**, issue **#14580** (ancora aperta),
+discussione **#11179**.
+
+### Done
+
+* **`src-tauri/windows-app-manifest.xml`** creato, identico a `tauri-build/src/windows-app-manifest.xml`.
+* **`build.rs`**: `cargo:rustc-link-arg-tests=/MANIFEST:EMBED` + `/MANIFESTINPUT:<path>`, emessi solo
+  quando `CARGO_CFG_TARGET_OS=windows` **e** `CARGO_CFG_TARGET_ENV=msvc`.
+
+### Verified by running
+
+* XML del manifest valido, `assemblyIdentity` = `Microsoft.Windows.Common-Controls`.
+* **I flag escono davvero**: cross-compilando per Windows **da Linux**
+  (`cargo build --target x86_64-pc-windows-msvc -vv`) il build script emette entrambi; compilando per
+  Linux **non ne emette nessuno** (0 occorrenze). È la prova che `CARGO_CFG_TARGET_*` è la strada
+  giusta: un `#[cfg(windows)]` qui non avrebbe emesso nulla, e
+  `cargo clippy --target x86_64-pc-windows-msvc` — la verifica che uso per controllare il codice
+  Windows — sarebbe stata cieca su quel pezzo.
+* `cargo fmt --all -- --check` → pulito.
+* `cargo clippy --all-targets -- -D warnings` → pulito su Linux **e** su `x86_64-pc-windows-msvc`.
+* `cargo test` su Linux → **61 + 15 + 5**, verdi.
+
+### Not verified / stubbed
+
+* **L'esito su runner Windows non è ancora arrivato.** La correzione è verificata per costruzione
+  (i flag emessi dove devono) e per tipo, ma non in esecuzione: è la prossima run a dirlo.
+* **D15 resta aperta**: `std::fs::rename` che sostituisce il file su Windows è proprio dentro
+  `atomic_write_replaces_existing_content_and_leaves_no_temp_file`, uno dei test di `paths.rs` che
+  risultano verdi nell'elenco. Quel test **è passato** su Windows: `rename` sostituisce la
+  destinazione. La domanda è risolta, e l'asserzione sul `.bak` copre lo stesso percorso.
+* macOS: esito di `process tests (macos-arm64)` ancora non comunicato.
+
+### Next step
+
+Rilanciare `process-tests`. Con la correzione attesa: Windows 61 + 15 + 5 verdi, e D15 chiusa.
+Poi **M0-C**.
