@@ -786,7 +786,16 @@ pub struct ProcessResult {
     /// The `label` of the command, for "Copy details".
     pub label: String,
     pub pid: Option<u32>,
-    /// `None` when the tool was killed by a signal or the status is unknown.
+    /// `None` when the process was killed by a signal **on Unix**, or when the
+    /// status is unavailable.
+    ///
+    /// **Do not read this as "was it killed?".** A tree we terminate on
+    /// Windows exits with `Some(1)`, because `TerminateJobObject` *sets* the
+    /// exit code of every member of the job; the same tree killed with
+    /// `SIGKILL` on Unix reports `None`. The portable signals are
+    /// [`ProcessResult::cancelled`] and [`ProcessResult::success`], and the
+    /// error classifier of spec §8.5 works on the stderr text, not on this
+    /// number.
     pub exit_code: Option<i32>,
     pub cancelled: bool,
     /// The last [`STDERR_TAIL_LINES`] stderr lines, oldest first.

@@ -545,3 +545,38 @@ la spec §1.1 chiede per i target sperimentali.
 **Nota operativa:** `workflow_dispatch` funziona solo se il file esiste sul branch di default.
 `tier2.yml` diventa quindi avviabile dalla pagina Actions **dopo** che questo commit arriva su
 `main`.
+
+---
+
+## 2026-10-13 — D27: un albero terminato ha due exit code diversi, e va bene così
+
+La prima esecuzione dei test su Windows ha mostrato che un tool terminato dal nostro
+`kill_tree()` riporta `exit_code == Some(1)`, mentre lo stesso tool terminato con `SIGKILL` su Unix
+riporta `None`. Non è un bug: sono le due implementazioni di spec §4.2 che la specifica chiede
+esplicitamente, e hanno semantiche diverse.
+
+* Unix: `killpg(SIGKILL)` uccide per segnale, e `ExitStatus::code()` restituisce `None` perché un
+  processo ucciso da un segnale non *ha* un codice di uscita.
+* Windows: `TerminateJobObject(hJob, uExitCode)`. Il secondo parametro è documentato da Microsoft
+  come *«The exit code to be used by all processes and threads in the job object»*: **assegna** un
+  codice a tutti i membri. Noi passiamo `TREE_TERMINATE_EXIT_CODE = 1`.
+
+**Non normalizziamo**, e il perché è una verifica, non una scelta di gusto:
+
+1. il classificatore di errori della spec §8.5 è una tabella di **pattern sul testo di stderr**
+   (`HTTP Error 403`, `Sign in to confirm`, `No space left`, …): non legge il codice di uscita, quindi
+   la differenza non la tocca;
+2. `ProcessResult::success()` è `!cancelled && exit_code == Some(0)` ed è `false` su entrambe le
+   piattaforme: la semantica che l'app usa è già portabile;
+3. aggiungere un flag «l'ho ucciso io» significherebbe propagare stato attraverso
+   `kill_all_running()`, che è una funzione che non restituisce nulla e che viene chiamata anche da
+   un `Drop` e da un hook di uscita: si aggiungerebbe plumbing per un caso che oggi non produce
+   nessun messaggio visibile.
+
+Quindi la differenza è **documentata sul campo** `ProcessResult::exit_code`, con l'istruzione esplicita
+di non leggerlo come «è stato ucciso?», e il test la verifica esplicitamente per piattaforma.
+
+**Nota di processo:** questo è il secondo test scritto a forma di Linux in due run di fila (prima i
+percorsi `/usr/bin/...` non assoluti su Windows, poi questo). La regola emersa è in `PROGRESS.md`: in
+un test, mai un valore che cambia da una piattaforma all'altra scritto alla cieca — o un
+`cfg!(windows)`, o una sua funzione dedicata che lo dichiari.

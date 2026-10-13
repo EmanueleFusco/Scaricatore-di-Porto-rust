@@ -92,7 +92,12 @@ jobs:
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test
+        # `--no-fail-fast`: senza, il primo test fallito nasconde tutti gli
+        # altri. Il 2026-10-13 un fallimento nella lib ha impedito di vedere
+        # che `settings_ipc` (che risponde alla domanda su rename di D15) e i
+        # 15 test di integrazione non erano mai partiti: si e' perso un giro
+        # di CI intero per scoprirlo. Costa zero minuti di quota.
+        run: cargo test --no-fail-fast
 
       - run: npm run check
 
@@ -165,7 +170,9 @@ jobs:
       # (src-tauri/tests/bin/fake_tool.rs).
       - name: cargo test (real spawn, job object / process group)
         working-directory: src-tauri
-        run: cargo test
+        # `--no-fail-fast` per lo stesso motivo del job `check`: vedere tutto in
+        # una run sola vale piu' di una run che si ferma al primo rosso.
+        run: cargo test --no-fail-fast
 
   # --------------------------------------------------------------- bundle (2x)
   bundle:

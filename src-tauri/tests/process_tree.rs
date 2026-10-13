@@ -488,13 +488,34 @@ async fn the_app_exit_hook_kills_every_running_tool() {
 
     // The two owning tasks then notice their child is gone and reap it, which
     // is what frees the pid for the check below. A tool killed from outside is
-    // *not* "cancelled" — it simply has no exit code.
+    // *not* "cancelled": nothing cancelled it, it was terminated.
+    //
+    // The exit code is the one place where the two platforms legitimately
+    // differ, and the difference is ours by design, not a bug:
+    //
+    //   Unix    -> `killpg(SIGKILL)`, so the child was killed by a signal and
+    //               `ExitStatus::code()` is `None`.
+    //   Windows -> `TerminateJobObject(job, TREE_TERMINATE_EXIT_CODE)`, and the
+    //               Microsoft documentation of that second parameter says it is
+    //               "the exit code to be used by all processes and threads in
+    //               the job object", so it is `Some(1)`.
+    //
+    // What the app actually relies on is `success() == false`, which holds on
+    // both: an exit code must never be read as the sign of a kill.
     let first_result = first
         .wait(CancellationToken::new())
         .await
         .expect("the killed tool must report a result");
-    assert!(!first_result.cancelled);
-    assert_eq!(first_result.exit_code, None, "killed by a signal");
+    assert!(
+        !first_result.cancelled,
+        "nobody cancelled it, it was terminated"
+    );
+    assert_eq!(
+        first_result.exit_code,
+        if cfg!(windows) { Some(1) } else { None },
+        "a terminated tree has no exit code on Unix (signal) and the terminate \
+         code on Windows"
+    );
     assert!(!first_result.success());
 
     let _ = second

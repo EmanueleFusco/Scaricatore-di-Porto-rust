@@ -672,3 +672,79 @@ deve passare da un helper che conosce la piattaforma, o il test è Linux-shaped 
 Rilanciare `process-tests` e arrivare ai test di integrazione su Windows. Se `AssignProcessToJobObject`
 fallisce sul runner, il piano B è documentato in D20/D21 (`taskkill /T /F` come fallback quando il
 Job Object non è assegnabile, per esempio sotto un runner che è già dentro un job).
+
+---
+
+## 2026-10-13 — M0-B ter / il Job Object è VERIFICATO su Windows (spec §4.2)
+
+### La buona notizia, che stava dentro il fallimento
+
+La prima run che ha **eseguito** i test su Windows (non solo compilato) ha dato:
+
+* **60 test unitari: verdi** (61 su Linux: manca `create_private_dir_uses_mode_0700`, che è
+  `#[cfg(unix)]`, e va bene così).
+* **`process_tree`: 14 su 15 verdi.** In particolare:
+
+  | test | esito | cosa dimostra |
+  | :-- | :-- | :-- |
+  | **`cancelling_kills_the_child_and_the_grandchild`** | **ok** | **il Job Object uccide l'albero su Windows.** Il pid del nipote non esiste più dopo la cancellazione. È la verifica più importante di M0-B, ed è reale. |
+  | `dropping_a_running_tool_kills_the_tree` | ok | il `Drop` chiama `TerminateJobObject` e la `KILL_ON_JOB_CLOSE` tiene |
+  | `a_large_stderr_output_does_not_deadlock` | ok | 40 000 righe su entrambi i flussi, nessun deadlock |
+  | `a_single_huge_stderr_line_survives_intact` | ok | riga da 1 MiB intera |
+  | `the_app_exit_hook_kills_every_running_tool` | **FAILED** | vedi sotto |
+  | gli altri 10 | ok | `CREATE_NO_WINDOW`, argv, URL dopo `--`, temp dir privata, URL non-http rifiutato, kill idempotente, token già cancellato, registro |
+
+Quindi, per la prima volta: **`CREATE_NO_WINDOW`, il Job Object, `TerminateJobObject` e il
+tree-kill sono verificati in esecuzione su Windows**, non solo in compilazione.
+
+### Il fallimento: di nuovo un test a forma di Linux
+
+```rust
+assert_eq!(first_result.exit_code, None, "killed by a signal");
+// left: Some(1)  right: None
+```
+
+Il codice ha ragione di nuovo, ed è la **seconda volta** con la stessa classe di errore.
+
+| | come muore il processo | `ExitStatus::code()` |
+| :-- | :-- | :-- |
+| Unix | `killpg(SIGKILL)` → morto per segnale | `None` |
+| Windows | `TerminateJobObject(job, TREE_TERMINATE_EXIT_CODE)` | **`Some(1)`** |
+
+Il secondo parametro di `TerminateJobObject` è documentato da Microsoft come *«The exit code to be
+used by all processes and threads in the job object»*: cioè **assegna** il codice, non lo lascia
+indeterminato. Il valore 1 è il nostro `TREE_TERMINATE_EXIT_CODE`, scelto in `process.rs`.
+
+Corretto il test con l'aspettativa giusta per piattaforma e il perché per iscritto. E soprattutto
+documentato sul campo `ProcessResult::exit_code`, che è la trappola per chi verrà:
+
+> **Non leggere questo come «è stato ucciso?».** I segnali portabili sono `cancelled` e `success()`,
+> e il classificatore di errori della spec §8.5 lavora sul testo di stderr, non su questo numero.
+
+### Altro
+
+* **`cargo test --no-fail-fast`** aggiunto ai job `check` e `process-tests`. Senza, il primo test
+  fallito nasconde tutti gli altri: il fallimento nella lib del giro precedente ha impedito di vedere
+  che `settings_ipc` non era mai partito, e si è perso un giro di CI intero per scoprirlo. Costa zero
+  minuti di quota.
+
+### Verified by running
+
+* `cargo fmt --all -- --check` → pulito.
+* `cargo clippy --all-targets -- -D warnings` → pulito (Linux) e su `x86_64-pc-windows-msvc`.
+* `cargo test` su Linux → **61 + 15 + 5**, verdi.
+* `npm run check:ci` → 8 blocchi `run: |` validi.
+
+### Not verified / stubbed
+
+* **La correzione di questo blocco non è ancora passata su Windows**: è verificata per tipo e per
+  logica su entrambe le piattaforme, ma l'esito su runner arriva dalla prossima run.
+* **`settings_ipc` (5 test) non è ancora partito su Windows**, quindi la domanda di **D15** —
+  `std::fs::rename` che sostituisce il file su Windows — è **ancora aperta**. Con
+  `--no-fail-fast` la prossima run la risponderà anche se qualcos'altro fallisce.
+* **macOS: esito ancora non comunicato.** Se `process tests (macos-arm64)` è verde, insieme a
+  questa run si chiude la verifica del livello processi su tutte e tre le piattaforme Tier 1.
+
+### Next step
+
+Rilanciare `process-tests` e chiudere: D15 (`rename` su Windows) ed esito macOS. Poi M0-C.
