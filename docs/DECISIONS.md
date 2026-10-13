@@ -497,3 +497,51 @@ handle, never replaces or moves it, and the handle is closed exactly once in `Dr
 * The bounded reader drain (`READER_DRAIN_TIMEOUT`) is defensive code with no test: exercising it
   needs a grandchild that *escapes* the process group (`setsid`) on Unix and a breakaway-flag process
   on Windows. It is documented as unverified rather than dressed up.
+
+---
+
+## 2026-10-13 — D26: Tier 2 spostato in un workflow tutto suo
+
+**Cosa è successo.** Un avvio manuale di `ci.yml` chiesto per una cosa sola — verificare i
+test del livello processi su Windows e macOS — ha fatto partire anche `tier2`, perché la sua
+condizione era `if: github.event_name == 'workflow_dispatch'`: stessa soglia, quindi stesso
+pulsante.
+
+Costo reale di quella run, calcolato con i moltiplicatori di D12 (Linux 1x, Windows 2x, macOS 10x):
+
+| runner | moltiplicatore | ~minuti di parete | minuti-equivalente Linux |
+| :-- | --: | --: | --: |
+| `macos-15-intel` | 10x | ~6 | **~60** |
+| `windows-11-arm` | 2x | ~8 | ~16 |
+| `ubuntu-24.04-arm` | 1x | ~7 | ~7 |
+| | | | **~83** |
+
+Tre target "sperimentali, solo CI" (spec §1.1) che in quel momento non servivano a nessuno, e il
+43% della quota mensile gratuita privata (2 000 min) bruciata in un colpo.
+
+**Il difetto di fondo non è la condizione, è il raggruppamento.** Con un solo pulsante e più job
+condizionati, *qualsiasi* avvio manuale innesca *tutti* quelli che ammettono
+`workflow_dispatch`. Scrivere `if: github.event_name == 'workflow_dispatch'` sembra
+"solo avvio manuale" ma significa "tutti gli avvii manuali", che è diverso da "solo quando lo
+voglio esplicitamente".
+
+**Soluzione: file separato.** `tier2` ora vive in `.github/workflows/tier2.yml`, con un solo
+trigger e un solo pulsante ("Actions → Tier 2 → Run workflow"). In `ci.yml` non esiste più la
+condizione: è impossibile che venga trascinato da un dispatch di questo workflow.
+
+La regola generale per le prossime fasi: **un workflow, un pulsante, un motivo per premere.**
+Il job `process-tests` è rimasto in `ci.yml` perché ha uno scopo diverso dagli altri (verificare
+il livello processi sui due target Tier 1) e va spinto nelle stesse occasioni di `check` e
+`bundle`; quando non serve, non si preme nessun pulsante.
+
+`scripts/check-ci-syntax.mjs` legge già **tutti** i `.yml` della cartella (verificato: ora
+controlla 8 blocchi, 7 in `ci.yml` e 1 in `tier2.yml`), quindi il file nuovo è coperto dal
+controllo che aveva salvato la prima CI.
+
+**Costo residuo e quando usarlo:** ~83 minuti-equivalente Linux per run, cioè ~24 run all'anno
+con la quota gratuita. È una verifica occasionale, non continua — che è esattamente quello che
+la spec §1.1 chiede per i target sperimentali.
+
+**Nota operativa:** `workflow_dispatch` funziona solo se il file esiste sul branch di default.
+`tier2.yml` diventa quindi avviabile dalla pagina Actions **dopo** che questo commit arriva su
+`main`.

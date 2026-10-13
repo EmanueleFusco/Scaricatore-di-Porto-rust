@@ -1,0 +1,96 @@
+# Tier 2 — i target sperimentali, in un workflow tutto loro.
+#
+# Spec §1.1: macOS Intel, Windows ARM64 e Linux arm64 non sono testati a mano e
+# non si possono dichiarare "supportati". Devono pero' almeno compilare e
+# superare i test con strumenti falsi in CI, e restare etichettati
+# "sperimentali".
+#
+# ## Perche' un file separato e non un job di ci.yml
+#
+# Con un job in ci.yml bastava un `if: github.event_name == 'workflow_dispatch'`
+# per farlo partire, ma il rovescio della medaglia e' che partiva **ogni volta
+# che si premeva "Run workflow" su ci.yml** per qualsiasi altro motivo. E'
+# successo davvero: un avvio manuale chiesto per verificare i test su Windows ha
+# trascinato anche questi tre runner, circa 100 minuti-equivalente Linux di
+# quota privata (macOS Intel e' moltiplicatore 10x) per target che in quel
+# momento non servivano a nessuno.
+#
+# Qui non c'e' modo di accadere: questo file ha un solo trigger e un solo
+# pulsante. Per usarlo: Actions -> Tier 2 -> Run workflow.
+#
+# Costo (piano Free di un repository PRIVATO, vedi DECISIONS.md D12):
+#   macos-15-intel  ~6 min x 10 = ~60 min-equivalente Linux
+#   windows-11-arm  ~8 min x  2 = ~16 min-equivalente Linux
+#   ubuntu-24.04-arm ~7 min x 1 =  ~7 min-equivalente Linux
+# Circa 83 minuti-equivalenti Linux per run. Con 2 000 minuti/mese gratuiti
+# si possono fare circa 24 run all'anno: e' una verifica occasionale, non una
+# continua.
+#
+# Nota: `workflow_dispatch` funziona solo se questo file esiste sul branch di
+# default (main).
+
+name: Tier 2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  tier2:
+    name: tier2 (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            label: macos-x64
+          - os: windows-11-arm
+            label: windows-arm64
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      # I commenti stanno SOPRA lo step di proposito: dentro un blocco
+      # `run: |` sono commenti SHELL, e una riga `#` che segue una
+      # continuazione `\` tronca il comando. E' il controllo di
+      # scripts/check-ci-syntax.mjs, che gira su tutti i file di questa cartella.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev libxdo-dev librsvg2-dev \
+            build-essential curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: cargo test (integration tests with fake tools)
+        working-directory: src-tauri
+        run: cargo test
+
+      - run: npm run check
+
+      - name: Build
+        run: npx tauri build --no-bundle

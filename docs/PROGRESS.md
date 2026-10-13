@@ -570,3 +570,41 @@ Two things that are now easier than they were:
 * Push the branch and read the **`process-tests`** result: it is the first real answer about Windows
   and about `rename`-over-destination on Windows.
 * Merge `m0-process` into `main` only after that CI run, and only if the Windows job is green.
+
+---
+
+## 2026-10-13 — M0-B bis / Tier 2 isolato in un workflow separato (spec §1.1, D12)
+
+### Done
+
+* **`.github/workflows/tier2.yml`** creato, e il job `tier2` **rimosso** da `ci.yml`.
+  `tier2.yml` ha un solo trigger (`workflow_dispatch`) e un solo pulsante. In `ci.yml` la
+  condizione che lo richiamava non esiste più: è strutturalmente impossibile che un avvio manuale
+  di `CI` trascini i tre target sperimentali.
+
+### Verified by running
+
+* `npm run check:ci` → **8 blocchi `run: |` controllati** (7 in `ci.yml`, 1 in `tier2.yml`),
+  entrambi i file ok. Il controllo legge già tutta la cartella, quindi il file nuovo è coperto.
+* Parsing YAML di entrambi: `ci.yml` → trigger `push`/`pull_request`/`workflow_dispatch`, job
+  `check`, `process-tests`, `bundle`, `bundle-macos-universal`, `release`; `tier2.yml` → trigger
+  `workflow_dispatch` **solo**, job `tier2`.
+
+### Not verified / stubbed
+
+* Il workflow `tier2.yml` **non è mai partito** e non può partire finché questo commit non è su
+  `main` (`workflow_dispatch` richiede che il file esista sul branch di default).
+* I tre target Tier 2 restano, come prima, "compilano e superano i test in CI" e nient'altro:
+  nessuno ha girato l'app su quei sistemi.
+
+### Decisions/deviations (also in DECISIONS.md)
+
+D26 — perché `if: github.event_name == 'workflow_dispatch'` non significa "solo quando lo voglio",
+ma "a ogni avvio manuale", e cosa è costato (calcolato con i moltiplicatori di D12: ~83
+minuti-equivalente Linux per run, ~43% della quota mensile gratuita).
+
+### Next step
+
+Aspettare la run manuale già avviata: quando `check` diventa verde deve comparire
+`process tests (windows-x64)` e `process tests (macos-arm64)`. È l'unica verifica ancora mancante
+per M0-B.

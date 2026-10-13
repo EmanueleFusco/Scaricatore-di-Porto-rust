@@ -9,8 +9,9 @@
 #     l'unica parte del progetto il cui comportamento cambia davvero da un
 #     sistema all'altro, e `cargo test` nel job `check` li eseguirebbe solo su
 #     Linux. Costa ~6 min per target, quindi non a ogni push (costo D12).
-#   - `tier2` (macOS Intel, Windows ARM64, Linux arm64, spec §1.1) gira solo su
-#     avvio manuale: non deve consumare la quota ogni push.
+# I target sperimentali di spec §1.1 (macOS Intel, Windows ARM64, Linux arm64)
+# NON stanno qui: sono in `tier2.yml`, con un proprio pulsante. Starne nello
+# stesso file li faceva partire a ogni avvio manuale di questo workflow.
 # Con repository pubblico i runner standard sono gratuiti e illimitati e si
 # potrebbe togliere ogni condizione.
 
@@ -381,57 +382,3 @@ jobs:
         env:
           # GITHUB_TOKEN e' automatico: nessun secret da configurare.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # -------------------------------------------- Tier 2, solo su avvio manuale
-  # Spec §1.1: questi target non sono testati a mano. Devono almeno compilare e
-  # superare i test con strumenti falsi in CI, e restare etichettati
-  # "sperimentali". L'avvio manuale serve a non consumare la quota ogni push.
-  tier2:
-    name: tier2 (${{ matrix.label }})
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15-intel
-            label: macos-x64
-          - os: windows-11-arm
-            label: windows-arm64
-          - os: ubuntu-24.04-arm
-            label: linux-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            libssl-dev libxdo-dev librsvg2-dev \
-            build-essential curl wget file
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - run: npm ci
-
-      - name: cargo test (integration tests with fake tools)
-        working-directory: src-tauri
-        run: cargo test
-
-      - run: npm run check
-
-      - name: Build
-        run: npx tauri build --no-bundle
