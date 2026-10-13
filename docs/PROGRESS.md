@@ -1565,3 +1565,68 @@ Ultimo rosso: `bundle (macos-arm64)`. HTTP 403 dalla API e 404 dall'alias
   2. **Da fare dopo il verde**: accendere `SDP_DEBUG_PROBE` nei passi che testano
      i tool, cosi' un fallimento dirà la causa (D53).
   3. Poi: installare e provare i pacchetti, merge, tag.
+
+## 2026-10-13 — M0-C / Run verde: due warning annotati, non corretti
+
+Run di `m0-tools` **verde su tutti e sette i job**, incluso `bundle (macos
+universal)`, che era l'unico passaggio della catena mai arrivato in fondo. I due
+warning che la run segnala sono annotati qui e **non è stato modificato niente**
+né nel codice né nella CI, per scelta esplicita.
+
+- **Warning 1 — Node.js 20 deprecato nelle GitHub Actions.**
+  `Node.js 20 is deprecated. The following actions target Node.js 20 but are
+  being forced to run on Node.js 24`.
+  Riguarda il **runtime delle azioni**, non il nostro Node: le azioni sono
+  scritte per girare su Node 20, i runner le forzano su Node 24. Oggi funziona
+  (la run è verde), quindi non è un problema attuale; è un problema **futuro e
+  datato**, nel momento in cui Node 20 sparisce dai runner.
+  Azioni coinvolte, dalle nostre dipendenze di workflow:
+
+  | azione | versione che usiamo |
+  | :-- | :-- |
+  | `actions/checkout` | `@v4` |
+  | `actions/setup-node` | `@v4` |
+  | `actions/upload-artifact` | `@v4` |
+  | `actions/download-artifact` | `@v4` |
+  | `Swatinem/rust-cache` | `@v2` (non segnalata: non e' `actions/*`) |
+
+  Riferimento: <https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/>
+  **Da verificare quando si decidera'**: quali versioni maggiori esistono e se
+  dichiarano Node 24. Non l'ho controllato adesso perche' la richiesta era di
+  annotare e non di agire.
+- **Warning 2 — `ubuntu-latest` passa a Ubuntu 26 il 19 ottobre 2026.**
+  `The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19,
+  2026.` Riferimento:
+  <https://github.com/actions/runner-images/issues/14748>
+  **Da oggi (2026-10-13) mancano 6 giorni.**
+
+  Chi e' esposto, dai `runs-on` del workflow:
+
+  | job | runner | esposto |
+  | :-- | :-- | :-- |
+  | `check` | `ubuntu-latest` | **si**, e gira a ogni push |
+  | `release` | `ubuntu-latest` | si |
+  | `process-tests`, `bundle` | matrice: `ubuntu-22.04`, `windows-2022`, `macos-latest` | no, il Linux e' pinnato a 22.04 |
+
+  Cioe' il lavoro che produce l'installer non e' esposto: il job `bundle` e' su
+  `ubuntu-22.04` di proposito, perche' e' la versione su cui il `.deb` e l'rpm
+  sono stati misurati. A cambiare e' `check`, che e' il job veloce: un'immagine
+  nuova con un GTK/WebKitGTK diverso e' esattamente il tipo di cosa che fa
+  fallire una build per motivi che non hanno a che fare con il codice.
+
+  **Quello che e' gia' stato fatto per questo**, e che vale la pena non
+  dimenticare: quando i pacchetti apt della CI sono stati scelti, sono stati
+  verificati uno per uno contro gli indici di `apt` ed esistono su **22.04, 24.04
+  e 26.04** (commento nella CI, riga 83). Quindi il rischio residuo non e'
+  «un pacchetto non c'e' piu'», e' «compila ma produce un binario diverso».
+
+- **Next step**
+  1. Installare e provare i pacchetti: e' il controllo che nessuna run puo' fare
+     al posto di una persona, ed e' quello che sblocca il tag `v0.1.0`.
+  2. Prima del 19 ottobre: decidere cosa fare del `ubuntu-latest` di `check`.
+     L'opzione con il minor costo e' fissarlo a `ubuntu-24.04` (o 22.04) come
+     gli altri job, cosi' la migrazione non arriva a sorpresa.
+  3. Separatamente: decidere se aggiornare le azioni `actions/*` per il runtime
+     Node 24.
+  4. Come da D53: accendere `SDP_DEBUG_PROBE` nei passi che testano i tool, cosi'
+     un fallimento futuro dirà la causa e non solo la conclusione.
