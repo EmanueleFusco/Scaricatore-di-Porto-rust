@@ -1139,7 +1139,12 @@ work offline right after install"):
 * **label dei runner** → quelle della M0-B sono state riverificate e non sono
   cambiate; nessuna nuova etichetta è stata introdotta qui.
 
-### Bugs trovati e corretti dai test (sette)
+### Bugs trovati e corretti dai test (otto)
+
+Ognuno è stato verificato **revertendo la correzione** e rilanciando il test che
+la copre: senza il fix tutti e otto diventano rossi, per la ragione giusta.
+Non è una verifica banale — un test che copre un fix ma resta verde anche senza
+di esso non copre niente.
 
 1. Un aggiornamento **fallito** veniva riportato come riuscito quando il testo non
    conteneva "up to date" (D44).
@@ -1156,10 +1161,27 @@ work offline right after install"):
 7. **`ETXTBSY`**: Linux rispondeva "yt-dlp non c'è" perché la copia appena
    scritta era ancora "busy" (D47). È l'unico dei sette che avrebbe colpito
    l'utente finale con una diagnosi sbagliata.
+8. **`scripts/fetch_bundled_tools.mjs`** produceva `qjs.exe-x86_64-pc-windows-msvc.exe`:
+   `destinationPath` riceveva `executableName` (che su Windows è già `qjs.exe`)
+   invece del nome del tool, e il bundler non avrebbe trovato nulla. Trovato dal
+   test JS `uses the tool name, not the asset name`. Da solo avrebbe fatto fallire
+   **solo** la build Windows, con un errore (`externalBin`) che non nomina il
+   file: il tipo di difetto che si scopre al primo utente Windows.
+
+I primi sette sono nel backend, l'ottavo è nello script di build: nessuno dei due
+era visibile a `clippy` né a `cargo build`, e nessuno sarebbe emerso senza
+eseguire i test.
 
 A questi si aggiunge il caso che la validazione del manifesto ha **rifiutato la
 mia stessa prima stesura** (deno dichiarato "pinned" senza versione), che è il
 miglior argomento a favore di avere la regola scritta prima dei dati.
+
+**Il #7 ha una prova debole rispetto agli altri.** Il test che copre il ritento
+verifica l'helper (`errno == 26`), non il comportamento sotto carico: `ETXTBSY`
+non è riproducibile a comando. La prova vera è stata empirica e statistica —
+prima del fix la suite falliva 1 volta su 3, dopo 14 run su 14 verdi. Va tenuto a
+mente se un giorno quel test torna rosso: il sospetto è il filesystem, non la
+logica.
 
 ### Needs a human — AGENTS.md §10.5
 

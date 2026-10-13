@@ -352,6 +352,13 @@ jobs:
       - name: Report which tools are about to be bundled
         run: ls -l src-tauri/binaries
 
+      # Il qjs universale e' l'unico file che la CI **compone** invece di
+      # scaricare (lipo delle due slice, spec §5.2.1). Se il lipo fallisce o
+      # produce qualcosa di solo-un-architettura, conviene saperlo PRIMA che
+      # finisca dentro l'app bundle, non al primo avvio su un Intel.
+      - name: The universal qjs really is universal
+        run: lipo -info src-tauri/binaries/qjs-universal-apple-darwin
+
       # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche'
       # se fallisce non deve bloccare il .app nativo arm64, che e' quello che
       # serve al test manuale su Apple Silicon. `macos-latest` e' arm64: per la
