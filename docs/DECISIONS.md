@@ -640,3 +640,36 @@ Tre dettagli che non sono ovvi e che sono il punto di questa decisione:
 **Non verificato:** l'esito su runner Windows arriva dalla prossima run. Quello che ho potuto
 verificare qui è (a) XML valido, (b) i flag emessi per il target Windows e non per Linux,
 (c) `cargo test` e `clippy` verdi su entrambe le piattaforme.
+
+---
+
+## 2026-10-13 — D29: chiusura di M0-B, e cosa "verificato" significa qui
+
+Il proprietario ha confermato che `macos-arm64` e Linux sono verdi e che il fallimento era solo
+Windows. Vale la pena fissare cosa questo significa, perché "verde" è una parola che si usa male.
+
+**Non significa:** che l'app funziona. Significa che `services/process.rs` è stato **eseguito** —
+non solo compilato — su tutti e tre i target Tier 1, e che i suoi test passano. È il salto che M0-B
+chiedeva: la sessione precedente poteva solo dire "compila su Windows e macOS", perché i test vivevano
+solo su Linux.
+
+**Significa in particolare**, perché è la parte che la spec §4.2 considera più fragile:
+
+* la cancellazione uccide **l'albero**, non solo il figlio. Il test non lo deduce: il fake tool
+  stampa il pid del suo nipote e il test lo interroga finché non sparisce. Su Windows questo
+  significa che `AssignProcessToJobObject` + `TerminateJobObject` funzionano su un runner vero; su
+  Linux e macOS che `process_group(0)` + `killpg` funzionano su Darwin, dove `killpg` ha anche il
+  diverso `link_name = killpg$UNIX2003` su x86_64;
+* `CREATE_NO_WINDOW` non apre finestre di console — verificato solo per compilazione (non c'è modo di
+  accorgersene da un test headless), quindi **quel punto specifico resta unverificato a mano**;
+* nessuna finestra di dialogo su Windows è comparsa durante le run.
+
+**Quello che resta fuori, detto chiaramente:** nessun processo reale è stato coinvolto. Il fake tool
+è un programma Rust di 200 righe, non `yt-dlp`. La prova che `yt-dlp` che avvia `ffmpeg` che avvia un
+runtime JavaScript muore tutto insieme arriva da M1, non da qui.
+
+**La lezione che si porta dietro, per tutte le fasi seguenti:** tre difetti di M0-B sono emersi solo
+quando i test hanno girato davvero su un sistema diverso da quello su cui erano stati scritti — due
+test con presupposti impliciti da Linux e un binario di test che non partiva. Nessuno dei tre era
+visibile in `cargo clippy`, che passava pulito su entrambe le piattaforme. **"Compila su tre sistemi" e
+"funziona su tre sistemi" sono due affermazioni diverse, e il passaggio in mezzo costa una CI.**

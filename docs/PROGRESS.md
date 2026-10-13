@@ -813,3 +813,65 @@ discussione **#11179**.
 
 Rilanciare `process-tests`. Con la correzione attesa: Windows 61 + 15 + 5 verdi, e D15 chiusa.
 Poi **M0-C**.
+
+---
+
+## 2026-10-13 — M0-B CHIUSO / il livello processi è verificato sulle tre piattaforme Tier 1
+
+Il proprietario ha confermato che, nelle run di `process-tests`, **macOS (`macos-arm64`) e Linux
+(`check`, `ubuntu-latest`) sono verdi** e che il fallimento era e resta solo Windows.
+
+### Cosa significa, in concreto
+
+Il livello processi di spec §4 non è più "compila su tre sistemi": è **stato eseguito** su tutti e
+tre i target Tier 1 della spec §1.1.
+
+| piattaforma | cosa ha verificato | come |
+| :-- | :-- | :-- |
+| **Linux x64** | `process_group(0)` + `killpg(SIGTERM)` → `killpg(SIGKILL)`, `killpg` di un gruppo vuoto = `ESRCH`, `forget_group` dopo il reaping, `SIGTERM` come default con `SIGKILL` dopo 2 s | 61 unit + 15 integrazione + 5 IPC, più 8 run consecutive di `process_tree` senza flake |
+| **macOS arm64** | **stessi percorsi Unix su Darwin**: `killpg` con `link_name = killpg$UNIX2003` su x86_64, `SIGKILL` a `ExitStatus::code() == None`, `process_group` di `std` | run `process tests (macos-arm64)` verde |
+| **Windows x64** | `CREATE_NO_WINDOW`, Job Object con `KILL_ON_JOB_CLOSE`, `AssignProcessToJobObject`, `TerminateJobObject`, `QueryInformationJobObject`, `CloseHandle` al drop, `unsafe impl Send/Sync` su `HANDLE` | 60 unit + 15 integrazione verdi (15/15), più il manifest Common Controls v6 |
+
+Il caso che la spec §4.2 considera il piu` rischioso — **la cancellazione deve uccidere l'albero, non
+solo il figlio** — e' verificato in esecuzione su Windows (Job Object) e su Linux/macOS (process
+group). `child.kill()` da solo avrebbe lasciato vivo il nipote: il test lo controlla davvero,
+leggendo il pid del grandchild e aspettando che sparisca.
+
+### D15 chiusa
+
+`atomic_write_replaces_existing_content_and_leaves_no_temp_file` e' **verde su Windows**. Quindi
+`std::fs::rename` sostituisce la destinazione anche li, come suggerivano i documenti di `std`
+(`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`): non piu' un'affermazione tratta dai docs, ma un fatto
+misurato su runner.
+
+### Precisazione onesta sulla data
+
+Il verde di macOS e' stato misurato **prima** degli ultimi tre commit:
+
+| commit | contenuto | effetto su macOS |
+| :-- | :-- | :-- |
+| `d1901bc` | aspettativa dell'exit code per piattaforma + `--no-fail-fast` + doc | nessuno: su Darwin l'albero termina per segnale, quindi `code()` e' `None`, che e' cio` che il test afferma |
+| `79014ee` | manifest Common Controls v6 in `build.rs` | nessuno: condizionato a `CARGO_CFG_TARGET_OS == "windows"` |
+| `fcd0d9e` | solo documentazione | nessuno |
+
+Quindi il codice su Darwin non e' cambiato, ma **la conferma formale arriva dalla prossima run**, che
+serve comunque per validare la correzione del manifest su Windows. Una sola run chiude entrambe le
+coste.
+
+### Stato della fase
+
+M0-B e' finita:
+
+* `services/process.rs` completo e verificato sulle tre piattaforme Tier 1;
+* `fake_tool` come esempio Cargo (fuori dall'installer, D19);
+* `process-tests` in CI, `tier2` isolato nel suo workflow (D23, D26);
+* tre difetti trovati e corretti grazie alle run reali: due test a forma di Linux (D27 e la
+  correzione dei percorsi) e il manifest mancante sui binari di test Windows (D28).
+
+**Da verificare a mano dall'utente** (impossibile da qui): che l'app si apra e che un download reale
+si cancelli correttamente. M0-C mette yt-dlp e qjs nel bundle, ed e' l la prima occasione per
+provare il pulsante di cancellazione contro un processo vero.
+
+### Next step
+
+**M0-C**, se il verde su Windows è confermato.
