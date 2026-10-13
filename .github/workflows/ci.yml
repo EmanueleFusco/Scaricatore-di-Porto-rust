@@ -4,6 +4,11 @@
 #   - `check` gira solo su Linux (moltiplicatore 1x) a ogni push e PR: feedback veloce.
 #   - `bundle` gira su tutte e tre le piattaforme solo quando serve un artefatto
 #     da scaricare (push su main, tag, o avvio manuale).
+#   - `process-tests` gira su Windows e macOS solo su tag o avvio manuale:
+#     i test del livello processi (Job Object, process group, spec §4) sono
+#     l'unica parte del progetto il cui comportamento cambia davvero da un
+#     sistema all'altro, e `cargo test` nel job `check` li eseguirebbe solo su
+#     Linux. Costa ~6 min per target, quindi non a ogni push (costo D12).
 #   - `tier2` (macOS Intel, Windows ARM64, Linux arm64, spec §1.1) gira solo su
 #     avvio manuale: non deve consumare la quota ogni push.
 # Con repository pubblico i runner standard sono gratuiti e illimitati e si
@@ -101,6 +106,65 @@ jobs:
       - name: Verify the tag matches the manifest versions
         if: startsWith(github.ref, 'refs/tags/v')
         run: npm run check:release -- "${{ github.ref_name }}"
+
+  # ------------------------------------------------------- process tests (2x/10x)
+  # `cargo test` nel job `check` gira solo su Linux. Il livello processi
+  # (spec §4: Job Object su Windows, process group su Unix, kill dell'albero,
+  # drenaggio di stdout+stderr, assenza di finestre di console) e' l'unica
+  # parte del progetto che si comporta davvero in modo diverso da un sistema
+  # all'altro: una suite linux-only darebbe una copertura solo-linux spacciata
+  # per multi-OS.
+  #
+  # Stessa soglia del job `bundle` (tag o avvio manuale) per non spendere la
+  # quota a ogni push: vedi la nota sul budget in cima al file e DECISIONS.md D19.
+  process-tests:
+    name: process tests (${{ matrix.label }})
+    needs: check
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Stesse immagini del job `bundle`: sono i due target Tier 1 (spec §1.1)
+          # su cui il processo di download deve funzionare davvero.
+          - os: windows-2022
+            label: windows-x64
+          - os: macos-latest
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev libxdo-dev librsvg2-dev \
+            build-essential curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # Nessun test di questa suite tocca la rete ne richiede un tool reale: si
+      # eseguono contro il binario `fake_tool` compilato insieme ai test
+      # (src-tauri/tests/bin/fake_tool.rs).
+      - name: cargo test (real spawn, job object / process group)
+        working-directory: src-tauri
+        run: cargo test
 
   # --------------------------------------------------------------- bundle (2x)
   bundle:
@@ -281,7 +345,7 @@ jobs:
   # pagina Releases, dopo aver scaricato e provato i binari.
   release:
     name: draft release
-    needs: [check, bundle, bundle-macos-universal]
+    needs: [check, process-tests, bundle, bundle-macos-universal]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Solo questo job puo' scrivere: il workflow globale resta in sola lettura.
