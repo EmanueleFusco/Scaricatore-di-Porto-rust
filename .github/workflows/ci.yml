@@ -323,6 +323,14 @@ jobs:
       - name: Build the universal bundle
         run: npx tauri build --target universal-apple-darwin
 
+      # PRIMA di "Pack the universal .app", che cancella la `.app`: dopo non
+      # ci sarebbe piu' niente da misurare. Il bundle universale vive in
+      # `target/universal-apple-darwin/`, quindi il percorso va passato.
+      - name: Report bundle sizes
+        run: node scripts/report-bundle-sizes.mjs
+        env:
+          SDP_TARGET_DIR: src-tauri/target/universal-apple-darwin
+
       # Vedi il commento nel job `bundle`: `.app` e' una cartella e va zipato con
       # `ditto` sul runner macOS, non da Linux. Poi viene cancellata.
       - name: Pack the universal .app
