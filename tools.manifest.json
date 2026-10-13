@@ -1,0 +1,146 @@
+{
+  "$comment": [
+    "External tools: the single source of truth (spec §5.1).",
+    "Read by the backend (src-tauri/src/services/manifest.rs) and by",
+    "scripts/fetch_bundled_tools.mjs before the bundle is built.",
+    "This file is tracked in git; the binaries it points at are NOT (spec §5.2.1).",
+    "",
+    "versioning:",
+    "  latest  -> the asset is always downloaded from the newest release; `url` and",
+    "            `sha256` stay null and the checksum comes from the release's own",
+    "            SHA2-256SUMS. This is the only mode yt-dlp uses (spec §5.1).",
+    "            `releaseApi` resolves the concrete tag (and records the version,",
+    "            spec §5.2.1); `releaseUrl`/`checksumUrl` are the fallback for when the",
+    "            API is unreachable or rate-limited.",
+    "  pinned  -> `url` and `sha256` are both filled in and must match, byte for byte.",
+    "",
+    "Keys are Rust target triples, because that is what the bundler looks for",
+    "(`externalBin`: <name>-<triple>[.exe], verified in tauri-bundler",
+    "bundle/settings.rs::copy_binaries)."
+  ],
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "yt-dlp",
+      "role": "Downloader",
+      "bundled": true,
+      "license": "Unlicense",
+      "licenseUrl": "https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE",
+      "homepage": "https://github.com/yt-dlp/yt-dlp",
+      "versioning": "latest",
+      "releaseApi": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+      "releaseUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/latest/{asset}",
+      "checksumUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/latest/SHA2-256SUMS",
+      "minVersion": "2025.11.12",
+      "platforms": {
+        "x86_64-unknown-linux-gnu": {
+          "asset": "yt-dlp_linux",
+          "executableName": "yt-dlp",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "yt-dlp_linux_aarch64",
+          "executableName": "yt-dlp",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "x86_64-pc-windows-msvc": {
+          "asset": "yt-dlp.exe",
+          "executableName": "yt-dlp.exe",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "aarch64-apple-darwin": {
+          "asset": "yt-dlp_macos",
+          "executableName": "yt-dlp",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "x86_64-apple-darwin": {
+          "asset": "yt-dlp_macos",
+          "executableName": "yt-dlp",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "universal-apple-darwin": {
+          "asset": "yt-dlp_macos",
+          "executableName": "yt-dlp",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        }
+      }
+    },
+    {
+      "name": "qjs",
+      "role": "JavaScript runtime (QuickJS-NG)",
+      "bundled": true,
+      "license": "MIT",
+      "licenseUrl": "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE",
+      "homepage": "https://github.com/quickjs-ng/quickjs",
+      "versioning": "pinned",
+      "version": "0.17.0",
+      "minVersion": "0.12.0",
+      "note": [
+        "QuickJS-NG ships separate arm64 and x86_64 macOS binaries; the universal",
+        "entry below is a lipo of the two, produced by scripts/fetch_bundled_tools.mjs",
+        "on a macOS runner. That is also why its sha256 differs from the two slices.",
+        "yt-dlp requires the file to be called `qjs` (spec §5.2.1)."
+      ],
+      "platforms": {
+        "x86_64-unknown-linux-gnu": {
+          "asset": "qjs-linux-x86_64",
+          "executableName": "qjs",
+          "archiveKind": "none",
+          "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-linux-x86_64",
+          "sha256": "0bfc02511a9f549c28b53880d988fc7cd5d361e90c5e8afdfcd7dc6774ceace5"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "qjs-linux-aarch64",
+          "executableName": "qjs",
+          "archiveKind": "none",
+          "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-linux-aarch64",
+          "sha256": "3372133484edf50a69f3c67903af41206d22a061e930e3cfb63269272ef56d2e"
+        },
+        "x86_64-pc-windows-msvc": {
+          "asset": "qjs-windows-x86_64.exe",
+          "executableName": "qjs.exe",
+          "archiveKind": "none",
+          "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-windows-x86_64.exe",
+          "sha256": "2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77"
+        },
+        "aarch64-apple-darwin": {
+          "asset": "qjs-darwin-arm64",
+          "executableName": "qjs",
+          "archiveKind": "none",
+          "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-darwin-arm64",
+          "sha256": "8be3ddfe3397d2e692e4e1e8972ee9d032a0a580505d2f8b4ea528cf1b651c11"
+        },
+        "x86_64-apple-darwin": {
+          "asset": "qjs-darwin-x86_64",
+          "executableName": "qjs",
+          "archiveKind": "none",
+          "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-darwin-x86_64",
+          "sha256": "9e5e101b4fd13cda3204222ca9f8be35412c41dcdef3745829633b7a67245412"
+        },
+        "universal-apple-darwin": {
+          "asset": null,
+          "executableName": "qjs",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null,
+          "builtFrom": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin"
+          ]
+        }
+      }
+    }
+  ]
+}
