@@ -329,12 +329,11 @@ async fn read_version_banner(
         Ok(result) if result.success() => {
             let text = stdout.text();
             if text.trim().is_empty() {
-                if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
-                    eprintln!(
-                        "PROBE-DEBUG {path:?}: success but empty stdout, stderr={:?}",
-                        result.stderr_tail
-                    );
-                }
+                explain_probe(
+                    path,
+                    "exited 0 with nothing on stdout",
+                    Some(&result.stderr_tail),
+                );
                 None
             } else {
                 Some(text)
@@ -344,20 +343,43 @@ async fn read_version_banner(
         // something; only an empty answer counts as unusable.
         Ok(other) => {
             let text = stdout.text();
-            if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
-                eprintln!(
-                    "PROBE-DEBUG {path:?}: exit={:?} stdout={text:?} stderr={:?}",
-                    other.exit_code, other.stderr_tail
-                );
+            if !text.trim().is_empty() {
+                return Some(text);
             }
-            (!text.trim().is_empty()).then_some(text)
-        }
-        Err(err) => {
-            if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
-                eprintln!("PROBE-DEBUG {path:?}: spawn error {err}");
-            }
+            explain_probe(
+                path,
+                &format!("exited with {:?}", other.exit_code),
+                Some(&other.stderr_tail),
+            );
             None
         }
+        Err(err) => {
+            explain_probe(path, &format!("could not be started: {err}"), None);
+            None
+        }
+    }
+}
+
+/// Print why a candidate was rejected, but only when `SDP_DEBUG_PROBE` is set.
+///
+/// "The Tools page says ffmpeg is not installed" is otherwise impossible to
+/// diagnose from the outside, and the candidate list on screen does not say
+/// *why* each one was passed over. Off by default because a tool's stderr can be
+/// long and noisy.
+///
+/// Only paths and OS error strings are printed — never an argument value, so
+/// nothing secret can leak through a diagnostic (AGENTS.md §7).
+fn explain_probe(path: &Path, what: &str, stderr_tail: Option<&[String]>) {
+    if std::env::var_os("SDP_DEBUG_PROBE").is_none() {
+        return;
+    }
+    match stderr_tail {
+        Some(tail) if !tail.is_empty() => eprintln!(
+            "scaricatore-di-porto: {} {what}; it said: {}",
+            path.display(),
+            tail.join(" | ")
+        ),
+        _ => eprintln!("scaricatore-di-porto: {} {what}", path.display()),
     }
 }
 
