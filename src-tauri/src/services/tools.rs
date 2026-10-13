@@ -227,50 +227,68 @@ pub fn candidates(tool: &str, lookup: &Lookup, triple: &str) -> Vec<(ToolSource,
 /// first token that parses as a dotted number wins, so
 /// * `2026.08.19` (yt-dlp) → `2026.08.19`
 /// * `0.17.0` (qjs) → `0.17.0`
-/// * `ffmpeg version 6.1.1 Copyright…` → `6.1.1`
-/// * `v2.3.4` → `2.3.4`
+/// * `ffmpeg version n9.0.2 Copyright…` → `9.0.2`
+///
+/// The leading-letter strip is not a guess about style: it is what makes the
+/// ffmpeg banner parse. Measured on a real `ffmpeg -version` on 2026-10-13:
+/// `ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers` — the
+/// `n` prefix is part of the version since ffmpeg 7.
 ///
 /// Returns `None` when there is no such token, because a version we cannot read
 /// must not be compared against `minVersion` (spec §5.1).
 pub fn parse_version_banner(text: &str) -> Option<String> {
     for line in text.lines() {
         for token in line.split_whitespace() {
-            let trimmed = token.trim_start_matches('v');
-            // A bare `1` is a number but not a version; require the dot.
-            if !trimmed.contains('.') {
+            let digits = token.trim_start_matches(|c: char| !c.is_ascii_digit());
+            // A bare `1` is a number but not a version; require the dot. This is
+            // what keeps `qjs --version` printing "0" from becoming 0.0.0 and
+            // then being compared against the 0.12.0 floor.
+            if !digits.contains('.') {
                 continue;
             }
-            if manifest::parse_version(trimmed).is_some() {
-                return Some(trimmed.to_owned());
+            if manifest::parse_version(digits).is_some() {
+                return Some(digits.to_owned());
             }
         }
     }
     None
 }
 
-/// Run `<path> --version` and return its banner, or `None`.
+/// The arguments that make a tool print its version.
+///
+/// Spec §5.2 says "`--version` (or equivalent)", and the exceptions are real:
+/// ffmpeg's documented flag is `-version` (`ffmpeg --version` happens to work
+/// too, but relying on it would be assuming). Checked against the real
+/// `ffmpeg -version` on 2026-10-13.
+pub fn version_args(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "ffmpeg" | "ffprobe" => &["-version"],
+        _ => &["--version"],
+    }
+}
+
+/// Run the tool's version flag and return its banner, or `None`.
 ///
 /// `None` covers every reason a candidate is unusable: it does not exist, it is
 /// not executable, it crashes, or it takes longer than
 /// [`VERSION_PROBE_TIMEOUT`]. The caller only needs "is this usable", and the
 /// Tools page shows the path it tried.
-pub async fn probe_version(path: &Path, temp_dir: Option<&Path>) -> Option<String> {
+pub async fn probe_version(path: &Path, tool: &str, temp_dir: Option<&Path>) -> Option<String> {
     if !path.is_file() {
         return None;
     }
-    let banner = read_version_banner(path, temp_dir, VERSION_PROBE_TIMEOUT).await?;
-    Some(banner)
+    read_version_banner(path, version_args(tool), temp_dir, VERSION_PROBE_TIMEOUT).await
 }
 
-/// `--version` with an arbitrary timeout, shared by the probe and the updater.
+/// The version banner run with an arbitrary timeout, shared by the probe and
+/// the updater.
 async fn read_version_banner(
     path: &Path,
+    args: &[&str],
     temp_dir: Option<&Path>,
     timeout: Duration,
 ) -> Option<String> {
-    let mut command = ToolCommand::new(path)
-        .arg("--version")
-        .label("tool version");
+    let mut command = ToolCommand::new(path).args(args).label("tool version");
     if let Some(dir) = temp_dir {
         command = command.temp_dir(dir);
     }
@@ -381,7 +399,7 @@ pub async fn resolve(
     temp_dir: Option<&Path>,
 ) -> Option<ResolvedTool> {
     for (source, path) in candidates(tool, lookup, triple) {
-        let Some(banner) = probe_version(&path, temp_dir).await else {
+        let Some(banner) = probe_version(&path, tool, temp_dir).await else {
             continue;
         };
         return Some(ResolvedTool {
@@ -714,7 +732,7 @@ pub async fn update_ytdlp(
     channel: crate::state::YtdlpChannel,
     temp_dir: Option<&Path>,
 ) -> Result<UpdateOutcome, AppError> {
-    let before = probe_version(path, temp_dir)
+    let before = probe_version(path, manifest::YTDLP, temp_dir)
         .await
         .and_then(|b| parse_version_banner(&b));
 
@@ -747,7 +765,7 @@ pub async fn update_ytdlp(
         quarantine_repair(path).await;
     }
 
-    let after = probe_version(path, temp_dir)
+    let after = probe_version(path, manifest::YTDLP, temp_dir)
         .await
         .and_then(|b| parse_version_banner(&b));
     Ok(classify_update(
@@ -1003,18 +1021,59 @@ mod tests {
     }
 
     #[test]
-    fn version_banners_are_parsed_from_the_three_real_shapes() {
-        // These three strings were produced by the real binaries on 2026-10-13.
+    fn version_banners_are_parsed_from_the_real_tool_output() {
+        // Verbatim output of the real binaries on 2026-10-13:
+        //   yt-dlp 2026.08.19 --version  -> "2026.08.19"
+        //   qjs 0.17.0 --version         -> "0.17.0"
+        //   ffmpeg n9.0.2 -version       -> "ffmpeg version n9.0.2 Copyright (c) 2000-2026 …"
         assert_eq!(
             parse_version_banner("2026.08.19").as_deref(),
             Some("2026.08.19")
         );
         assert_eq!(parse_version_banner("0.17.0").as_deref(), Some("0.17.0"));
         assert_eq!(
+            parse_version_banner(
+                "ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers"
+            )
+            .as_deref(),
+            Some("9.0.2"),
+            "the `n` prefix of a modern ffmpeg version is part of the token, not junk"
+        );
+        assert_eq!(
             parse_version_banner("ffmpeg version 6.1.1 Copyright (c) 2000-2023").as_deref(),
-            Some("6.1.1")
+            Some("6.1.1"),
+            "the older, unprefixed form still parses"
         );
         assert_eq!(parse_version_banner("v2.3.4").as_deref(), Some("2.3.4"));
+    }
+
+    #[test]
+    fn a_nightly_yt_dlp_version_is_comparable_after_all() {
+        // Real yt-dlp nightlies are `YYYY.MM.DD.NNNNNN`, which *is* dotted
+        // numeric. An earlier note in this file claimed otherwise; checked
+        // against the actual naming, they parse and compare normally.
+        assert_eq!(
+            parse_version_banner("2025.11.12.251112123456").as_deref(),
+            Some("2025.11.12.251112123456")
+        );
+        assert!(manifest::satisfies_min_version(
+            "2025.11.12.251112123456",
+            "2025.11.12"
+        ));
+        assert!(!manifest::satisfies_min_version(
+            "2025.11.11.251111000000",
+            "2025.11.12"
+        ));
+    }
+
+    #[test]
+    fn the_version_flag_is_the_one_each_tool_documents() {
+        assert_eq!(version_args("yt-dlp"), &["--version"]);
+        assert_eq!(version_args("qjs"), &["--version"]);
+        // ffmpeg's documented flag. Verified against a real `ffmpeg -version` on
+        // 2026-10-13 rather than from memory.
+        assert_eq!(version_args("ffmpeg"), &["-version"]);
+        assert_eq!(version_args("ffprobe"), &["-version"]);
     }
 
     #[test]
@@ -1086,7 +1145,7 @@ mod tests {
     async fn probing_a_file_that_does_not_exist_is_not_an_error() {
         let dir = TempDir::new().expect("temp dir");
         let missing = dir.path().join("nope");
-        assert_eq!(probe_version(&missing, None).await, None);
+        assert_eq!(probe_version(&missing, "yt-dlp", None).await, None);
     }
 
     #[tokio::test]
@@ -1099,7 +1158,7 @@ mod tests {
         let path = dir.path().join("not-a-program");
         fs::write(&path, b"this is not an executable image").expect("write");
         make_executable(&path).expect("chmod");
-        assert_eq!(probe_version(&path, None).await, None);
+        assert_eq!(probe_version(&path, "yt-dlp", None).await, None);
     }
 
     #[tokio::test]

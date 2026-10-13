@@ -27,8 +27,17 @@
 //!
 //! Unknown commands print their usage on stderr and exit `2`, so a typo in a
 //! test is a visible failure instead of a hang.
+//!
+//! ## Multi-call: impersonating a real tool
+//!
+//! Copying this binary to `yt-dlp`, `qjs`, `ffmpeg`… makes it behave like that
+//! program (`--version`, `yt-dlp -U`, …) instead of like `fake_tool`. That is
+//! what `tests/tools.rs` uses to exercise the lookup of spec §5.2 with no real
+//! tool on any of the three OSes — and it is why the lookup tests never need a
+//! shell script.
 
 use std::io::{self, BufWriter, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -36,10 +45,124 @@ use std::time::Duration;
 /// say otherwise. Long enough that only a *working* tree-kill can end them.
 const DEFAULT_SLEEP_MS: u64 = 120_000;
 
+/// Version a fake `yt-dlp` reports until it is updated.
+const DEFAULT_YTDLP_VERSION: &str = "2026.01.01";
+
+/// What a fake `yt-dlp` reports after `-U`.
+const UPDATED_YTDLP_VERSION: &str = "2026.12.24";
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = run(&args);
+    let raw: Vec<String> = std::env::args().collect();
+    let program = raw.first().cloned().unwrap_or_default();
+    let args: Vec<String> = raw.into_iter().skip(1).collect();
+
+    // Multi-call first: argv[0] decides which tool this run is pretending to be.
+    let stem = Path::new(&program)
+        .file_stem()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let code = match stem.as_str() {
+        "yt-dlp" => run_ytdlp(&args),
+        "qjs" => run_qjs(&args),
+        "ffmpeg" => run_ffmpeg(&args),
+        _ => run(&args),
+    };
     std::process::exit(code);
+}
+
+/// The version file a fake `yt-dlp` keeps next to itself, so `-U` can change
+/// what a *later* `--version` reports — which is how `tests/tools.rs` proves the
+/// updater really re-probed the binary instead of trusting its own wording.
+fn version_file() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|dir| dir.join("fake-ytdlp.version"))
+}
+
+fn read_version() -> String {
+    version_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| DEFAULT_YTDLP_VERSION.to_owned())
+}
+
+fn run_ytdlp(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("--version") => {
+            println!("{}", read_version());
+            0
+        }
+        Some("-U") | Some("--update") => {
+            let next = std::env::var("FAKE_YTDLP_UPDATE_TO")
+                .unwrap_or_else(|_| UPDATED_YTDLP_VERSION.to_owned());
+            if let Some(path) = version_file() {
+                let _ = std::fs::write(&path, &next);
+            }
+            // yt-dlp prints progress on stderr and finishes with "Done!"; the
+            // classifier must work with that, not with an exit code alone.
+            eprintln!("[youtube] Downloading simulator: 0% of 1.00MiB at 1.00KiB/s ETA 00:10");
+            eprintln!("Done!");
+            0
+        }
+        Some("--update-to") => {
+            let channel = args.get(1).map(String::as_str).unwrap_or("stable");
+            if let Some(path) = version_file() {
+                // A nightly build's version is not a plain dotted number, which
+                // is exactly what `parse_version_banner` must refuse to guess.
+                let next = if channel == "nightly" {
+                    format!("{UPDATED_YTDLP_VERSION}.240101123456")
+                } else {
+                    UPDATED_YTDLP_VERSION.to_owned()
+                };
+                let _ = std::fs::write(&path, next);
+            }
+            eprintln!("Updated to {channel}");
+            0
+        }
+        Some("broken") => {
+            eprintln!("ERROR: fake yt-dlp was told to fail");
+            1
+        }
+        Some(other) => {
+            eprintln!("fake yt-dlp: unsupported argument {other:?}");
+            2
+        }
+        None => 2,
+    }
+}
+
+fn run_qjs(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("--version") => {
+            println!(
+                "{}",
+                std::env::var("FAKE_QJS_VERSION").unwrap_or_else(|_| "0.17.0".to_owned())
+            );
+            0
+        }
+        Some(other) => {
+            eprintln!("fake qjs: unsupported argument {other:?}");
+            2
+        }
+        None => 2,
+    }
+}
+
+fn run_ffmpeg(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        // ffmpeg's documented flag is `-version`; see tools::version_args.
+        Some("-version") => {
+            println!("ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers");
+            0
+        }
+        Some(other) => {
+            eprintln!("fake ffmpeg: unsupported argument {other:?}");
+            2
+        }
+        None => 2,
+    }
 }
 
 fn usage() -> String {
