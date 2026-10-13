@@ -31,6 +31,24 @@ pub fn tools_dir(app: &AppHandle) -> io::Result<PathBuf> {
     Ok(dir.join("tools"))
 }
 
+/// The user's home directory, when the OS exposes one.
+///
+/// Used only to build the well-known tool locations of spec §5.2
+/// (`~/.deno/bin`, `~/.local/bin`). `None` simply drops those two entries
+/// rather than guessing a path.
+pub fn home_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    } else {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    }
+}
+
 /// Per-app private temp dir handed to child processes as `TMPDIR`/`TEMP`/`TMP`
 /// (spec §4.9). Created with mode `0700` on Unix because QuickJS writes EJS
 /// scripts there.

@@ -1,6 +1,7 @@
 //! Shared application state: persisted settings and the handles the rest of the
 //! backend will hang off it (spec §3 `state.rs`, spec §2.8).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,10 +10,45 @@ use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult, ErrorCode, ErrorInfo};
+use crate::services::manifest::{self, ToolsManifest};
 use crate::services::paths;
+use crate::services::tools::{self, Lookup};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+
+/// Which releases the yt-dlp updater may install (spec §5.5, §11.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum YtdlpChannel {
+    /// `yt-dlp -U`
+    #[default]
+    Stable,
+    /// `yt-dlp --update-to nightly`
+    Nightly,
+}
+
+impl YtdlpChannel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Nightly => "nightly",
+        }
+    }
+}
+
+fn channel_from_str(raw: &str) -> Option<YtdlpChannel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "stable" => Some(YtdlpChannel::Stable),
+        "nightly" => Some(YtdlpChannel::Nightly),
+        _ => None,
+    }
+}
+
+fn de_channel<'de, D: serde::Deserializer<'de>>(d: D) -> Result<YtdlpChannel, D::Error> {
+    let raw = String::deserialize(d)?;
+    Ok(channel_from_str(&raw).unwrap_or_default())
+}
 
 /// UI theme (spec §11.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -89,6 +125,20 @@ pub struct Settings {
     pub theme: Theme,
     /// `None` means "use the OS Downloads folder".
     pub default_output_dir: Option<PathBuf>,
+    /// Spec §5.2 lookup order #1: "Use my own path" from the Tools page, keyed
+    /// by tool name (`yt-dlp`, `qjs`, `ffmpeg`, `ffprobe`, …).
+    ///
+    /// A `BTreeMap` rather than a `HashMap` so the serialised settings file has
+    /// a stable key order: a document that reorders itself on every save makes
+    /// every diff noisy and hides real changes.
+    pub tool_paths: BTreeMap<String, PathBuf>,
+    /// Spec §5.5, §11.8: which channel `-U`/`--update-to` installs.
+    #[serde(deserialize_with = "de_channel")]
+    pub ytdlp_channel: YtdlpChannel,
+    /// The Setup wizard has been completed (spec §11.1: "Shown once,
+    /// re-openable from Settings → Tools"). Kept separate from the tools
+    /// themselves so the app can show the wizard again on request.
+    pub setup_wizard_completed: bool,
 }
 
 impl Default for Settings {
@@ -98,6 +148,9 @@ impl Default for Settings {
             language: Language::default(),
             theme: Theme::default(),
             default_output_dir: None,
+            tool_paths: BTreeMap::new(),
+            ytdlp_channel: YtdlpChannel::default(),
+            setup_wizard_completed: false,
         }
     }
 }
@@ -112,6 +165,17 @@ impl Settings {
                 self.default_output_dir = None;
             }
         }
+        // An override must be an absolute path (spec §4.8) and must name a
+        // tool: a relative or nameless entry is dropped instead of being
+        // silently honoured, because the lookup runs before any validation and
+        // `spawn` refuses relative paths.
+        self.tool_paths
+            .retain(|name, path| !name.trim().is_empty() && path.is_absolute());
+    }
+
+    /// The user's override for `tool`, if any.
+    pub fn tool_override(&self, tool: &str) -> Option<&Path> {
+        self.tool_paths.get(tool).map(PathBuf::as_path)
     }
 
     pub fn to_json(&self) -> Result<String, AppError> {
@@ -191,17 +255,25 @@ pub struct AppState {
     settings: RwLock<Settings>,
     settings_path: PathBuf,
     recovery: Option<Recovery>,
+    tools: ToolContext,
 }
 
 impl AppState {
-    /// Load the settings file, recovering from a corrupt document.
+    /// Load the settings file, recovering from a corrupt document, and resolve
+    /// every directory the tool layer needs (spec §5.2).
     pub fn load(app: &tauri::AppHandle) -> Result<Self, AppError> {
-        Self::from_path(paths::settings_file(app)?)
+        let context = ToolContext::from_app(app)?;
+        Self::from_path_with_tools(paths::settings_file(app)?, context)
     }
 
-    /// Same as [`AppState::load`] but with an explicit path, so tests can stay
-    /// inside a temp directory.
+    /// Same as [`AppState::load`] but with an explicit settings path and no tool
+    /// directories, so tests can stay inside a temp directory.
     pub fn from_path(path: PathBuf) -> Result<Self, AppError> {
+        Self::from_path_with_tools(path, ToolContext::isolated())
+    }
+
+    /// Full constructor: the settings path **and** where the tools live.
+    pub fn from_path_with_tools(path: PathBuf, tools: ToolContext) -> Result<Self, AppError> {
         let outcome = match Settings::load(&path) {
             Ok(loaded) => loaded,
             Err(AppError::SettingsCorrupt { path, detail }) => LoadedSettings {
@@ -224,7 +296,13 @@ impl AppState {
             settings: RwLock::new(outcome.settings),
             settings_path: path,
             recovery: outcome.recovery,
+            tools,
         })
+    }
+
+    /// Where the tool layer reads its directories from.
+    pub fn tools(&self) -> &ToolContext {
+        &self.tools
     }
 
     /// In-memory snapshot; never blocks on `.await` because it is a sync call.
@@ -260,6 +338,103 @@ impl AppState {
 
     pub fn settings_path(&self) -> &Path {
         &self.settings_path
+    }
+}
+
+/// Everything the tool layer needs that does not change while the app runs
+/// (spec §5.2).
+///
+/// Resolved once at startup: the target triple, where downloaded tools go, where
+/// the bundled ones are, and the private temp dir handed to children (spec
+/// §4.9). Doing it per call would mean re-deriving the same answers from the
+/// filesystem on every probe, and a lookup that changes its mind between two
+/// calls in the same operation is a bug that only shows up on someone else's
+/// machine.
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    manifest: ToolsManifest,
+    triple: String,
+    tools_dir: PathBuf,
+    bundled_dir: PathBuf,
+    temp_dir: Option<PathBuf>,
+}
+
+impl ToolContext {
+    /// Resolve from the running app.
+    pub fn from_app(app: &tauri::AppHandle) -> Result<Self, AppError> {
+        let manifest =
+            ToolsManifest::embedded().map_err(|err| AppError::Unsupported(err.to_string()))?;
+        let triple = manifest::current_target_triple().map_err(AppError::Unsupported)?;
+        let tools_dir = paths::tools_dir(app)?;
+        // The bundled directory is where the executable lives; if that cannot be
+        // determined the app still works, it simply has no bundled baseline and
+        // the Tools page says so.
+        let bundled_dir = tools::bundled_dir().unwrap_or_else(|| tools_dir.clone());
+        let temp_dir = paths::private_temp_dir(app).ok();
+        Ok(Self {
+            manifest,
+            triple,
+            tools_dir,
+            bundled_dir,
+            temp_dir,
+        })
+    }
+
+    /// Everything empty, for tests that only exercise the settings commands.
+    pub fn isolated() -> Self {
+        let root = std::env::temp_dir().join("scaricatore-di-porto-isolated");
+        Self {
+            manifest: ToolsManifest {
+                schema_version: manifest::SCHEMA_VERSION,
+                tools: Vec::new(),
+            },
+            triple: String::new(),
+            tools_dir: root.join("tools"),
+            bundled_dir: root.join("bundled"),
+            temp_dir: None,
+        }
+    }
+
+    /// A context pointed at directories the caller controls.
+    pub fn in_dir(root: &Path) -> Self {
+        Self {
+            manifest: ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}")),
+            triple: manifest::current_target_triple().unwrap_or_default(),
+            tools_dir: root.join("tools"),
+            bundled_dir: root.join("bundled"),
+            temp_dir: Some(root.join("tmp")),
+        }
+    }
+
+    pub fn manifest(&self) -> &ToolsManifest {
+        &self.manifest
+    }
+
+    pub fn triple(&self) -> &str {
+        &self.triple
+    }
+
+    pub fn tools_dir(&self) -> &Path {
+        &self.tools_dir
+    }
+
+    pub fn bundled_dir(&self) -> &Path {
+        &self.bundled_dir
+    }
+
+    pub fn temp_dir(&self) -> Option<&Path> {
+        self.temp_dir.as_deref()
+    }
+
+    /// Build the spec §5.2 lookup for `tool`, honouring the user's override.
+    pub fn lookup(&self, settings: &Settings, tool: &str) -> Lookup {
+        Lookup {
+            override_path: settings.tool_override(tool).map(Path::to_path_buf),
+            tools_dir: self.tools_dir.clone(),
+            bundled_dir: self.bundled_dir.clone(),
+            path_dirs: tools::path_dirs(std::env::var("PATH").ok().as_deref()),
+            well_known_dirs: tools::well_known_dirs(paths::home_dir().as_deref()),
+        }
     }
 }
 
@@ -335,16 +510,66 @@ mod tests {
     #[test]
     fn values_serialise_in_the_frontend_shape() {
         let s = Settings {
-            schema_version: 1,
             language: Language::En,
             theme: Theme::Dark,
             default_output_dir: None,
+            ..Settings::default()
         };
         let json = serde_json::to_value(&s).expect("serialise");
         assert_eq!(json["language"], "en");
         assert_eq!(json["theme"], "dark");
-        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["schemaVersion"], SETTINGS_SCHEMA_VERSION);
         assert!(json["defaultOutputDir"].is_null());
+        assert_eq!(json["ytdlpChannel"], "stable");
+        assert!(json["setupWizardCompleted"].is_boolean());
+        assert!(json["toolPaths"].is_object());
+    }
+
+    #[test]
+    fn a_tool_override_survives_a_round_trip_and_a_relative_one_is_dropped() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = settings_path(&dir);
+        let mut s = Settings::default();
+        s.tool_paths
+            .insert("qjs".to_owned(), PathBuf::from("/opt/mine/qjs"));
+        s.tool_paths
+            .insert("ffmpeg".to_owned(), PathBuf::from("relative/ffmpeg"));
+        s.tool_paths.insert(String::new(), PathBuf::from("/x"));
+
+        Settings::save(&path, &s).expect("save");
+        let loaded = Settings::load(&path).expect("load");
+        assert_eq!(
+            loaded.settings.tool_override("qjs"),
+            Some(Path::new("/opt/mine/qjs"))
+        );
+        // A relative path would be refused by `process.rs` (spec §4.8); it is
+        // dropped at normalisation rather than failing every later lookup.
+        assert_eq!(loaded.settings.tool_override("ffmpeg"), None);
+        assert_eq!(loaded.settings.tool_paths.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_ytdlp_channel_degrades_to_stable() {
+        let parsed: Settings = serde_json::from_str(r#"{"ytdlpChannel":"weekly"}"#).expect("parse");
+        assert_eq!(parsed.ytdlp_channel, YtdlpChannel::Stable);
+        let parsed: Settings =
+            serde_json::from_str(r#"{"ytdlpChannel":"NIGHTLY"}"#).expect("parse");
+        assert_eq!(parsed.ytdlp_channel, YtdlpChannel::Nightly);
+    }
+
+    #[test]
+    fn a_document_without_the_m0c_fields_still_loads_and_is_upgraded() {
+        // This is what a real M0-A settings file looks like.
+        let dir = TempDir::new().expect("temp dir");
+        let path = settings_path(&dir);
+        fs::write(&path, br#"{"schemaVersion":1,"theme":"dark"}"#).expect("write");
+
+        let loaded = Settings::load(&path).expect("load");
+        assert_eq!(loaded.settings.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(loaded.settings.theme, Theme::Dark);
+        assert_eq!(loaded.settings.ytdlp_channel, YtdlpChannel::Stable);
+        assert!(!loaded.settings.setup_wizard_completed);
+        assert!(loaded.settings.tool_paths.is_empty());
     }
 
     #[test]
@@ -460,11 +685,7 @@ mod tests {
     fn state_saves_and_reloads_through_the_same_path() {
         let dir = TempDir::new().expect("temp dir");
         let path = settings_path(&dir);
-        let state = AppState {
-            settings: RwLock::new(Settings::default()),
-            settings_path: path.clone(),
-            recovery: None,
-        };
+        let state = AppState::from_path(path.clone()).expect("state loads");
 
         let mut updated = state.settings();
         updated.theme = Theme::Dark;
