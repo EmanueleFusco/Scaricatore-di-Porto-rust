@@ -875,3 +875,65 @@ provare il pulsante di cancellazione contro un processo vero.
 ### Next step
 
 **M0-C**, se il verde su Windows è confermato.
+
+---
+
+## 2026-10-13 — M0-B / conferma finale: 80/80 verdi su Windows
+
+### Done
+
+Nessuna modifica al codice: questa è la **verifica** delle correzioni delle run precedenti.
+
+### Verified by running (output integrale del job `process tests (windows-x64)` fornito dal proprietario)
+
+| target | esito |
+| :-- | :-- |
+| `src/lib.rs` | **60 passed, 0 failed** |
+| `tests/process_tree.rs` | **15 passed, 0 failed** |
+| `tests/settings_ipc.rs` | **5 passed, 0 failed** |
+| doc-tests | 0 |
+| **totale** | **80 / 80** |
+
+### La prova che il manifest era davvero la causa
+
+I nomi dei binari di test sono **identici** fra la run in cui `settings_ipc` non partiva e questa:
+
+```
+prima (non partiva)                 adesso (5/5 ok)
+settings_ipc-5ddef0135047f4f5.exe   settings_ipc-5ddef0135047f4f5.exe
+process_tree-96a841a92988742c.exe   process_tree-96a841a92988742c.exe
+```
+
+**Stessi byte, esito opposto.** Fra le due run l'unica modifica al codice è `build.rs`, che non
+cambia il codice generato ma aggiunge due flag al linker. Non è quindi un caso fortunato: è il
+manifest Common Controls v6 a cambiare la possibilità di caricare l'eseguibile, isolato.
+
+### D15 chiusa, e su due strade indipendenti
+
+* `paths.rs` → `atomic_write_replaces_existing_content_and_leaves_no_temp_file ... ok`: `rename`
+  sostituisce la destinazione su Windows, come suggerivano i documenti di `std`
+  (`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`);
+* `settings_ipc` → `settings_survive_a_restart ... ok`: stesso percorso, attraverso l'IPC.
+
+### Altre due cose controllate, per onestà
+
+* **60 test su Windows contro 61 su Linux**: `create_private_dir_uses_mode_0700` è
+  `#[cfg(unix)]` (modalità 0700 è un concetto Unix). Atteso, non una mancanza.
+* **`an_unwritable_settings_file_reports_a_localised_error` passa per il motivo giusto?** Sì,
+  verificato: non usa giochi di permessi, mette un *file* al posto della cartella di configurazione,
+  quindi la scrittura fallisce su ogni sistema. Era già pensato per non essere Linux-shaped, a
+  differenza dei due test di `process.rs` corretti prima. Nessun terzo caso della stessa classe.
+
+### Not verified / stubbed
+
+* **`process_tree` impiega 4,63 s su Windows contro 0,35 s su Linux.** Non è un problema (è
+  lontano da qualsiasi timeout) e dipende da costo di `CreateProcess` + `TerminateJobObject` e dalla
+  grana di 25 ms con cui i test interrogano lo stato dei processi. Annotato, non investigato.
+* **`CREATE_NO_WINDOW` resta verificato solo per compilazione**: nessun test headless può accorgersi
+  di una finestra di console che non si apre. Serve guardare l'app a mano su Windows.
+* Nessun processo reale coinvolto: il falso tool non è `yt-dlp`. La prova che
+  `yt-dlp → ffmpeg → runtime JS` muoiano tutti insieme arriva da M1.
+
+### Next step
+
+**M0-C.** Le condizioni di uscita di M0-B sono soddisfatte e verificate.
