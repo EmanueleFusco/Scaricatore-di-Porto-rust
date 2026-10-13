@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Manifest di applicazione Windows che dichiara la dipendenza da
+  Microsoft.Windows.Common-Controls v6.
+
+  Perche' esiste, e perche' non e' quello di Tauri:
+
+  `tauri-build` passa il proprio manifest **solo ai binari**, perche' usa
+  `embed-resource`, che emette `cargo:rustc-link-arg-bins` (verificato in
+  embed-resource 3.0.12, src/lib.rs:443). I binari di test che producono
+  `cargo test` non lo ricevono.
+
+  Senza questo manifest un eseguibile che importa i simboli di comctl32 v6
+  carica la comctl32 "legacy" (v5), che non li esporta, e il processo non
+  parte affatto:
+
+      STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139)
+
+  E' un bug noto di Tauri, non nostro:
+    - tauri#13419 "STATUS_ENTRYPOINT_NOT_FOUND error when running ... if you
+      use the mock function in tauri::test on Windows"
+    - tauri#14580 (ancora aperto) "STATUS_ENTRYPOINT_NOT_FOUND when using
+      tauri::Window in library tests on Windows"
+    - discussione tauri#11179, con la stessa soluzione
+  Nel nostro caso colpisce `tests/settings_ipc.rs`, che usa
+  `tauri::test::mock_builder()`, e non `tests/process_tree.rs`, che non
+  tocca Tauri e non importa quindi comctl32 v6.
+
+  Contenuto identico a `tauri-build/src/windows-app-manifest.xml`
+  (MIT/Apache-2.0), copiato per non dover dipendere da un file dentro
+  ~/.cargo/registry.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

@@ -580,3 +580,63 @@ di non leggerlo come «è stato ucciso?», e il test la verifica esplicitamente 
 percorsi `/usr/bin/...` non assoluti su Windows, poi questo). La regola emersa è in `PROGRESS.md`: in
 un test, mai un valore che cambia da una piattaforma all'altra scritto alla cieca — o un
 `cfg!(windows)`, o una sua funzione dedicata che lo dichiari.
+
+---
+
+## 2026-10-13 — D28: i binari di test su Windows non avevano il manifest Common Controls v6
+
+**Sintomo** (prima volta che i test di IPC giravano su Windows):
+
+```
+Running tests\settings_ipc.rs
+Caused by: process didn't exit successfully: `settings_ipc-....exe`
+  (exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND)
+```
+
+Non è un test che fallisce: il **processo non parte**, prima di `main()`. E solo
+`settings_ipc` è affetto, mentre `process_tree` sulla stessa macchina passa 15/15.
+
+**Causa, verificata nelle fonti, non dedotta.**
+
+1. `tauri-build` passa il proprio manifest al **binario applicativo** usando `embed-resource`, che
+   emette `cargo:rustc-link-arg-bins` (letto in `embed-resource-3.0.12/src/lib.rs:443`). **`-bins`, non
+   `-tests`**: i binari prodotti da `cargo test` non lo ricevono.
+2. Un eseguibile senza quel manifest, che importa i simboli di `comctl32` v6, carica la `comctl32`
+   "legacy" (v5), che non li esporta → `STATUS_ENTRYPOINT_NOT_FOUND`.
+3. `tests/settings_ipc.rs` usa `tauri::test::mock_builder()` e quindi importa la catena della
+   finestra/webview → comctl32 v6. `tests/process_tree.rs` non tocca Tauri → non importa quei
+   simboli → parte senza problemi. **Ecco perché solo uno dei due muore.**
+
+Bug noto di Tauri, non nostro, con tre riferimenti che si triangolano:
+
+* [tauri#13419](https://github.com/tauri-apps/tauri/issues/13419) — «STATUS_ENTRYPOINT_NOT_FOUND error
+  when running … if you use the mock function in `tauri::test` on Windows»;
+* [tauri#14580](https://github.com/tauri-apps/tauri/issues/14580) — ancora **open**: basta che
+  `tauri::Window` compaia nella firma di una funzione di una libreria perché `cargo test` non parta;
+* [discussione tauri#11179](https://github.com/orgs/tauri-apps/discussions/11179) — con la soluzione.
+
+**Soluzione adottata**: `src-tauri/windows-app-manifest.xml` (identico a
+`tauri-build/src/windows-app-manifest.xml`, MIT/Apache-2.0) più, in `build.rs`, due righe:
+
+```rust
+println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+println!("cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}", manifest.display());
+```
+
+Tre dettagli che non sono ovvi e che sono il punto di questa decisione:
+
+* **`-tests`, non `rustc-link-arg` globale.** I workaround che circolano online usano il flag
+  globale, che è applicato anche al binario applicativo: lì il manifest c'è già (via
+  `tauri-build`) e si finisce con risorse duplicate ed errore di link. `-tests` è chirurgico.
+* **`CARGO_CFG_TARGET_OS` / `CARGO_CFG_TARGET_ENV`, non `#[cfg(windows)]`.** Un build script è
+  compilato per l'**host**, non per il target: con `#[cfg(windows)]` il flag non verrebbe emesso
+  durante `cargo clippy --target x86_64-pc-windows-msvc` su questa macchina Linux, e proprio la
+  verifica che uso per controllare il codice Windows would be silently blind. Verificato
+  esplicitamente: cross-compilando per Windows da Linux i due flag **escono**; compilando per
+  Linux **non escono** (0 occorrenze).
+* **Niente `/WX`.** I workaround lo aggiungono per trasformare i warning del linker in errori; qui
+  non serve a nulla e amplierebbe il raggio del fallimento.
+
+**Non verificato:** l'esito su runner Windows arriva dalla prossima run. Quello che ho potuto
+verificare qui è (a) XML valido, (b) i flag emessi per il target Windows e non per Linux,
+(c) `cargo test` e `clippy` verdi su entrambe le piattaforme.
