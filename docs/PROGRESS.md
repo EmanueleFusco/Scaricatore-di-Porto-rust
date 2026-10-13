@@ -1207,3 +1207,64 @@ piattaforme. Il primopezzo di M1 che tocca M0-C è `services/jsruntime.rs`: i
 flag `--no-js-runtimes --js-runtimes quickjs:<path>` vanno verificati con
 `--help` sul binario fissato, e lì si chiude anche il `TODO(verify)` su
 `minVersion` (D42).
+
+## 2026-10-13 — M0-C / Cinque test che sapevano una sola risposta
+
+La prima run di `m0-tools` sulla CI: `check` verde dopo D48, ma rossi
+`process tests (windows-x64)` e `bundle (windows-x64)`. Il log: 5 test falliti,
+tutti sulla gestione dei path. **Non un bug di produzione: i test erano scritti
+solo per l'host su cui li avevo scritti.** Dettagli e prove in D49.
+
+- **Done**
+  - `well_known_dirs` separata in `well_known_dirs_for(home, windows,
+    user_profile, local_app_data)`: entrambi i rami sono ora eseguibili da una
+    sola macchina, come già faceva `override_candidate`.
+  - Il ramo Windows composto come testo: `Path::join` prende il separatore
+    dell'host e restituiva `C:\Users\tester/.deno\bin`.
+  - Test riscritti perché chiedano di *questa* macchina: nuovi helper `host_dir`
+    e `host_exe` in `services::tools`, path nativi anche in `state.rs` e in
+    `tests/settings_ipc.rs`.
+  - Aggiunte le asserzioni che prima non esistevano: la lista Unix non deve
+    contenere `WinGet`, quella Windows deve essere esattamente le due directory
+    nell'ordine di spec §5.2, e con un ambiente vuoto la lista Windows è vuota.
+- **Verified by running**
+  - `cargo fmt --all -- --check` → OK; `cargo clippy --all-targets -- -D warnings`
+    → OK; `cargo test --no-fail-fast` → **179 verdi** (133 lib + 3 bundled_tools
+    + 9 download + 15 process_tree + 6 settings_ipc + 13 tools).
+  - `npm run check` → 0 errori, 0 warning; `npm test` → **77 verdi**;
+    `npm run check:tools` → manifest OK.
+  - **Revert-check**: invertendo l'ordine delle due directory Windows il test
+    va rosso con `left: […WinGet\Links, ….deno\bin]` / `right: […\.deno\bin,
+    …WinGet\Links]`; ripristinato torna verde. Il test custodisce davvero.
+  - Risposte di `std` verificate dalla sorgente (Rust 1.95.0,
+    `library/std/src/sys/path/windows.rs`): `is_absolute = has_root &&
+    prefix().is_some()`, quindi `C:\opt\bin1` assoluta, `/opt/mine/qjs` **no**;
+    `extension()` usa `rsplit_file_at_dot`, quindi `qjs.exe` → `Some("exe")` e
+    l'override non viene ricomposto. Non dalla memoria.
+- **Not verified / stubbed**
+  - **I cinque test non sono stati eseguiti su Windows.** Il giudice è il runner
+    Windows della CI. Le ragioni sono verificate dalla sorgente di std, ma
+    "verificato" e "sarà verde" restano due cose diverse.
+  - `cargo check --all-targets --target x86_64-pc-windows-msvc` non gira qui:
+    si ferma su `ring` (`failed to find tool "lib.exe"`). Nessun `mingw-w64`
+    disponibile e wine non è utilizzabile senza un linker. Quindi nemmeno la
+    compilazione dei test per Windows è stata controllata da questa macchina.
+  - Ancora non diagnosticato: `bundle (macos-universal)`. Ipotesi aperta, nessun
+    log.
+- **Spec items marked "verify" che I checked**
+  - `Path::is_absolute` su Windows → verificato dalla sorgente std (citata sopra).
+  - Nient'altro in questa sessione.
+- **Decisions/deviations**
+  - D49: i test non sono stati indeboliti, sono stati riscritti; e la funzione
+    è stata resa dipendente dai soli suoi argomenti perché altrimenti il ramo
+    Windows verrebbe asserito solo dal runner che già falliva.
+  - D48 (sessione precedente) restava il vero autore del fallimento di `check`.
+- **Next step**
+  1. Committare e rilanciare il workflow: `process tests (windows-x64)` deve
+     andare verde, e con lui `bundle (windows-x64)` se la causa era una sola.
+  2. Il log di `bundle (macos-universal)`, che è un'altra storia e non l'ho
+     ancora guardato. Ipotesi: il passo `lipo -info` aggiunto in M0-C, mai
+     eseguito.
+  3. **Attenzione alla disciplina**: se dopo questa run che ha prodotto gli
+     artifact si aggiunge un commit, gli artifact non corrispondono più a
+     `main`. Rilanciare il workflow prima della merge.

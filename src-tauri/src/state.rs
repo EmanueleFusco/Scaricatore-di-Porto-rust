@@ -530,17 +530,29 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let path = settings_path(&dir);
         let mut s = Settings::default();
+        // Spelled the way this host spells an absolute path. `/opt/mine/qjs` is rooted
+        // but driveless, so `is_absolute()` is false for it on Windows and
+        // `normalise` correctly drops it as relative — the same code, a
+        // different answer, and a test written only on Linux cannot see it.
+        let absolute = if cfg!(windows) {
+            r"C:\opt\mine\qjs"
+        } else {
+            "/opt/mine/qjs"
+        };
         s.tool_paths
-            .insert("qjs".to_owned(), PathBuf::from("/opt/mine/qjs"));
+            .insert("qjs".to_owned(), PathBuf::from(absolute));
         s.tool_paths
             .insert("ffmpeg".to_owned(), PathBuf::from("relative/ffmpeg"));
-        s.tool_paths.insert(String::new(), PathBuf::from("/x"));
+        s.tool_paths.insert(
+            String::new(),
+            PathBuf::from(if cfg!(windows) { r"C:\x" } else { "/x" }),
+        );
 
         Settings::save(&path, &s).expect("save");
         let loaded = Settings::load(&path).expect("load");
         assert_eq!(
             loaded.settings.tool_override("qjs"),
-            Some(Path::new("/opt/mine/qjs"))
+            Some(Path::new(absolute))
         );
         // A relative path would be refused by `process.rs` (spec §4.8); it is
         // dropped at normalisation rather than failing every later lookup.

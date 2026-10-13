@@ -27,6 +27,7 @@
 //!   writable copy is made on first launch and is the only thing the updater
 //!   (spec §5.5) is allowed to replace.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -134,18 +135,47 @@ pub fn path_dirs(path_var: Option<&str>) -> Vec<PathBuf> {
 /// be invisible. They are checked on every Unix system, not only on macOS:
 /// `/usr/local/bin` is where a hand-built binary lands on Linux too.
 pub fn well_known_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    well_known_dirs_for(
+        home,
+        cfg!(windows),
+        std::env::var_os("USERPROFILE").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+    )
+}
+
+/// The same list, built from stated inputs instead of read from the process.
+///
+/// Every fact the Windows branch needs is a build flag plus two environment
+/// variables, so without this a Linux machine cannot reach that branch at all.
+/// And an assertion that only runs on the Windows runner is an assertion nobody
+/// runs until the Windows runner is green — which is exactly how five path
+/// tests in this file got to their first CI run with every one of them wrong.
+/// Same reason [`override_candidate`] takes `windows` as a parameter.
+pub fn well_known_dirs_for(
+    home: Option<&Path>,
+    windows: bool,
+    user_profile: Option<&OsStr>,
+    local_app_data: Option<&OsStr>,
+) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if cfg!(windows) {
-        if let Some(profile) = std::env::var_os("USERPROFILE") {
-            dirs.push(PathBuf::from(profile).join(".deno").join("bin"));
+    if windows {
+        // Built as text, not with `Path::join`: `join` uses the separator of the
+        // *host*, so a Linux machine asking for the Windows list would get back
+        // `C:\Users\tester/.deno` — a path that exists on no operating system.
+        // The point of taking the platform as an argument is that the answer
+        // depends only on the arguments; keeping the host out of it is the
+        // whole reason this exists.
+        if let Some(profile) = user_profile {
+            dirs.push(PathBuf::from(format!(
+                r"{}\.deno\bin",
+                Path::new(profile).display()
+            )));
         }
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            dirs.push(
-                PathBuf::from(local)
-                    .join("Microsoft")
-                    .join("WinGet")
-                    .join("Links"),
-            );
+        if let Some(local) = local_app_data {
+            dirs.push(PathBuf::from(format!(
+                r"{}\Microsoft\WinGet\Links",
+                Path::new(local).display()
+            )));
         }
     } else {
         dirs.push(PathBuf::from("/opt/homebrew/bin"));
@@ -949,6 +979,35 @@ mod tests {
         }
     }
 
+    /// An absolute directory on *this* host, spelled the way this host spells
+    /// absolute paths.
+    ///
+    /// Not a convenience. `/usr/bin` is rooted but has no drive, so
+    /// `is_absolute()` is **false** for it on Windows: the code under test then
+    /// correctly drops it as a relative path, and a test written on Linux sees
+    /// that correct behaviour as a bug. Five tests in this file failed that way
+    /// on the first Windows CI run. Ask about the host you are on.
+    fn host_dir(name: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\opt").join(name)
+        } else {
+            PathBuf::from("/opt").join(name)
+        }
+    }
+
+    /// An absolute path to an executable named `tool`, already spelled the way
+    /// this host spells executables — so a test about lookup order is not
+    /// accidentally also a test about extension rules, which
+    /// `the_override_path_rules_are_checked_for_all_three_platforms` owns.
+    fn host_exe(dir: &str, tool: &str) -> PathBuf {
+        let file = if cfg!(windows) {
+            format!("{tool}.exe")
+        } else {
+            tool.to_owned()
+        };
+        host_dir(dir).join(file)
+    }
+
     #[test]
     fn executable_name_follows_the_platform_not_the_host() {
         assert_eq!(executable_name("qjs", LINUX), "qjs");
@@ -1031,13 +1090,11 @@ mod tests {
 
     #[test]
     fn an_override_wins_and_nothing_else_is_listed() {
+        let exe = host_exe("mine", "qjs");
         let mut lookup = lookup();
-        lookup.override_path = Some(PathBuf::from("/opt/mine/qjs"));
+        lookup.override_path = Some(exe.clone());
         let found = candidates("qjs", &lookup, LINUX);
-        assert_eq!(
-            found,
-            vec![(ToolSource::Override, PathBuf::from("/opt/mine/qjs"))]
-        );
+        assert_eq!(found, vec![(ToolSource::Override, exe)]);
     }
 
     #[test]
@@ -1104,16 +1161,18 @@ mod tests {
     #[test]
     fn path_dirs_are_split_read_and_never_made_relative() {
         let separator = if cfg!(windows) { ';' } else { ':' };
+        // Host-spelled, because the rule under test IS "drop whatever is not
+        // absolute": a rooted-but-driveless path like /usr/bin is not absolute
+        // on Windows, so the code would - correctly - return nothing at all.
+        let first = host_dir("bin1");
+        let second = host_dir("bin2");
         let raw = [
-            String::from("/usr/bin"),
-            String::from(""),
-            String::from("/opt/bin"),
+            first.display().to_string(),
+            String::new(),
+            second.display().to_string(),
         ]
         .join(&separator.to_string());
-        assert_eq!(
-            path_dirs(Some(&raw)),
-            vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/bin")]
-        );
+        assert_eq!(path_dirs(Some(&raw)), vec![first, second]);
         // A relative PATH entry is dropped: it would make the program path
         // relative, and `process.rs` refuses those (spec §4.8).
         let relative = format!("bin{}", separator);
@@ -1124,16 +1183,63 @@ mod tests {
     #[test]
     fn well_known_locations_include_the_ones_the_spec_lists() {
         let home = PathBuf::from("/home/tester");
-        let dirs = well_known_dirs(Some(&home));
-        let joined: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
-        assert!(joined.contains(&"/opt/homebrew/bin".to_owned()));
-        assert!(joined.contains(&"/usr/local/bin".to_owned()));
-        assert!(joined.contains(&"/opt/local/bin".to_owned()));
-        assert!(joined.iter().any(|d| d.contains(".deno")));
-        assert!(joined.iter().any(|d| d.contains(".local")));
+        // Both branches, from whichever machine is running. The Windows list is built
+        // from two environment variables and nothing else, so asserting it only
+        // on a Windows runner means it runs for the first time on the very
+        // runner whose other path tests were failing.
+        let unix: Vec<String> = well_known_dirs_for(Some(&home), false, None, None)
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        assert!(unix.contains(&"/opt/homebrew/bin".to_owned()));
+        assert!(unix.contains(&"/usr/local/bin".to_owned()));
+        assert!(unix.contains(&"/opt/local/bin".to_owned()));
+        assert!(unix.contains(&"/home/tester/.deno/bin".to_owned()));
+        assert!(unix.contains(&"/home/tester/.local/bin".to_owned()));
         if cfg!(target_os = "linux") {
-            assert!(joined.contains(&"/usr/bin".to_owned()));
-            assert!(joined.contains(&"/snap/bin".to_owned()));
+            assert!(unix.contains(&"/usr/bin".to_owned()));
+            assert!(unix.contains(&"/snap/bin".to_owned()));
+        }
+        assert!(
+            !unix.iter().any(|d| d.contains("WinGet")),
+            "the Unix list must not contain a Windows location"
+        );
+
+        // The Windows list, stated rather than inherited: exactly these two,
+        // in this order, because a different order would quietly change which
+        // binary wins when both are installed.
+        assert_eq!(
+            well_known_dirs_for(
+                None,
+                true,
+                Some(OsStr::new(r"C:\Users\tester")),
+                Some(OsStr::new(r"C:\Users\tester\AppData\Local")),
+            ),
+            vec![
+                PathBuf::from(r"C:\Users\tester\.deno\bin"),
+                PathBuf::from(r"C:\Users\tester\AppData\Local\Microsoft\WinGet\Links"),
+            ],
+            "the Windows list is exactly these two"
+        );
+
+        // With no environment there is genuinely nothing to offer. Inventing a
+        // path would be worse than finding nothing.
+        assert!(well_known_dirs_for(None, true, None, None).is_empty());
+
+        // And the function the app actually calls must read the process
+        // environment, or the branch just asserted would describe code that
+        // nothing calls.
+        let live: Vec<String> = well_known_dirs(Some(&home))
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        if cfg!(windows) {
+            assert!(
+                live.first().is_some_and(|d| d.ends_with(r".deno\bin")),
+                "the live Windows list starts with the deno dir, got {live:?}"
+            );
+        } else {
+            assert!(live.contains(&"/opt/homebrew/bin".to_owned()));
         }
     }
 

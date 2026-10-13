@@ -101,6 +101,16 @@ fn tool_settings_travel_through_the_ipc() {
     let app = app_with_settings_in(dir.path());
     let window = webview(&app);
 
+    // The override has to be absolute *on this host*: the document is normalised
+    // on the way in, and `/opt/mine/yt-dlp` is rooted-but-driveless, so on
+    // Windows it is correctly treated as a relative path and dropped. That is
+    // the behaviour the second half of this test relies on, arriving by
+    // accident through the first half.
+    let override_path = if cfg!(windows) {
+        r"C:\opt\mine\yt-dlp"
+    } else {
+        "/opt/mine/yt-dlp"
+    };
     let saved = call(
         &window,
         "settings_save",
@@ -108,7 +118,7 @@ fn tool_settings_travel_through_the_ipc() {
             "settings": {
                 "language": "en",
                 "theme": "dark",
-                "toolPaths": { "yt-dlp": "/opt/mine/yt-dlp" },
+                "toolPaths": { "yt-dlp": override_path },
                 "ytdlpChannel": "nightly",
                 "setupWizardCompleted": true
             }
@@ -116,7 +126,7 @@ fn tool_settings_travel_through_the_ipc() {
     )
     .expect("settings_save must succeed");
 
-    assert_eq!(saved["settings"]["toolPaths"]["yt-dlp"], "/opt/mine/yt-dlp");
+    assert_eq!(saved["settings"]["toolPaths"]["yt-dlp"], override_path);
     assert_eq!(saved["settings"]["ytdlpChannel"], "nightly");
     assert_eq!(saved["settings"]["setupWizardCompleted"], true);
 

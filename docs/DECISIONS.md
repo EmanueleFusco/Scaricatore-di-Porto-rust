@@ -1086,3 +1086,68 @@ errore futuro può essere lui stesso l'errore**, e l'unico modo che lo scopra è
 guardare la fonte e far girare il controllo. Esattamente come per `ETXTBSY`
 (D47) e per il parser delle versioni (D36): nessuno dei tre si vede leggendo il
 codice in piedi.
+
+### D49 — Cinque test che sapevano una sola risposta (solo-Linux)
+
+La prima run Windows ha fallito con 5 test rossi, tutti sulla gestione dei path.
+Non era un bug di produzione: **era il test a essere scritto male**, e il
+codice aveva ragione in tutti e cinque i casi.
+
+| test | cosa si aspettava | cosa rispondeva Windows | chi aveva ragione |
+| :-- | :-- | :-- | :-- |
+| `an_override_wins_and_nothing_else_is_listed` | `/opt/mine/qjs` | `/opt/mine/qjs.exe` | il codice: `.exe` è il nome giusto su Windows |
+| `path_dirs_are_split_read_and_never_made_relative` | 2 voci | `[]` | il codice: `/usr/bin` **non** è assoluto su Windows |
+| `well_known_locations_include_the_ones_the_spec_lists` | `/opt/homebrew/bin` | lista Windows | il codice: Homebrew non esiste lì |
+| `state::a_tool_override_survives_a_round_trip_…` | `Some("/opt/mine/qjs")` | `None` | il codice: relativa, quindi scartata (spec §4.8) |
+| `settings_ipc::tool_settings_travel_through_the_ipc` | il valore | `Null` | il codice: idem |
+
+La radice è una sola e la verifica è nella sorgente di std, non nella memoria
+(`library/std/src/sys/path/windows.rs`, Rust 1.95.0):
+
+```rust
+pub(crate) fn is_absolute(path: &Path) -> bool {
+    path.has_root() && path.prefix().is_some()
+}
+```
+
+`/opt/mine/qjs` ha una root ma **nessun prefisso**: su Windows non è assoluta.
+Il codice che la scarta fa esattamente quello che dice la regola, e il test lo
+ha scambiato per un difetto.
+
+**La correzione non è allentare le asserzioni.** Sarebbe stato il modo più
+veloce di farle passare e il modo peggiore di tenere il segreto: nessuno
+avrebbe più saputo che quel comportamento è intenzionale. I test sono stati
+riscritti perché chiedano **di questa macchina**:
+
+* `host_dir(name)` / `host_exe(dir, tool)` costruiscono un path assoluto nella
+  sintassi dell'host (`C:\opt\mine\qjs.exe` su Windows, `/opt/mine/qjs` su Unix).
+  Non è una comodità: è il punto dell'intervento.
+* `well_known_locations_…` ora asserisce **entrambi** i rami, e la funzione è
+  stata separata in `well_known_dirs_for(home, windows, user_profile,
+  local_app_data)`, cioè dagli stessi argomenti di `override_candidate`, che
+  già esisteva per lo stesso motivo (D27).
+
+**Perché separare la funzione invece di splittare il test per piattaforma.**
+Senza, la lista Windows sarebbe asserita solo dal runner Windows — cioè per la
+prima volta dal runner che aveva gli altri cinque test rossi. Un controllo che
+gira solo quando ilgioco è già rotto non è un controllo. Qui il ramo Windows
+viene eseguito da **Linux, a ogni push**, ed è per questo che una delle
+asserzioni nuove è volutamente negativity: la lista Unix non deve contenere
+`WinGet`, e quella Windows non deve contenere Homebrew.
+
+**Una cosa che il test nuovo ha trovato per conto suo.** Chiedendo a
+`well_known_dirs_for` la lista Windows da Linux, il risultato è stato
+`C:\Users\tester/.deno\bin`: `Path::join` sceglie il separatore dell'**host**,
+non quello della piattaforma richiesta. Non è un difetto di produzione (in
+produzione i due coincidono sempre), ma rende la funzione non determinata dai
+suoi soli argomenti, cioè non testabile. La funzione ora compone i path Windows
+come testo con `format!`, con il motivo scritto accanto.
+
+Come ogni correzione di questa sessione, è stata **verificata revertendola**:
+invertendo l'ordine delle due directory Windows il test va rosso per la
+ragione giusta, e tornando indietro va verde.
+
+**Il limite onesto:** questi cinque test non sono mai stati **eseguiti** su
+Windows. Le risposte di `std` sono verificate dalla sorgente, ma il giudice è il
+runner Windows della CI. E il `cargo check --target x86_64-pc-windows-msvc` non
+è disponibile qui: si ferma su `ring`, che vuole `lib.exe` di MSVC.
