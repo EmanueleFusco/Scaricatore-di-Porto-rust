@@ -8,14 +8,19 @@ pub mod state;
 
 use tauri::Manager;
 
+use crate::services::process;
 use crate::state::AppState;
 
 /// Exit hook: cancel every running child process before the process goes away
 /// (spec §4.2 "On app exit cancel all running items").
 ///
-/// M0-B adds `services/process.rs` and registers its cancel-all registry here;
-/// until then there is nothing to cancel, so this is intentionally empty.
-fn on_exit() {}
+/// `kill_all_running` walks the registry of live process trees. On Windows the
+/// Job Objects carry `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so even a crash of
+/// the app kills the trees; on Unix this explicit pass is what leaves no
+/// orphan behind.
+fn on_exit() {
+    process::kill_all_running();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

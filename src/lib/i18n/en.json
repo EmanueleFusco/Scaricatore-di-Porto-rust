@@ -47,6 +47,7 @@
   "error.tauri": "Internal application error",
   "error.settingsCorrupt": "Damaged settings",
   "error.unsupported": "Unsupported operation",
+  "error.process": "External program error",
 
   "a11y.skipToContent": "Skip to content",
   "a11y.sidebar": "Main navigation",

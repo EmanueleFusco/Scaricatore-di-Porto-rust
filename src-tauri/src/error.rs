@@ -15,6 +15,9 @@ pub enum ErrorCode {
     Tauri,
     SettingsCorrupt,
     Unsupported,
+    /// Spawning an external tool, or controlling its process tree, failed
+    /// (spec §4).
+    Process,
 }
 
 impl ErrorCode {
@@ -25,6 +28,7 @@ impl ErrorCode {
             Self::Tauri => "TAURI",
             Self::SettingsCorrupt => "SETTINGS_CORRUPT",
             Self::Unsupported => "UNSUPPORTED",
+            Self::Process => "PROCESS",
         }
     }
 
@@ -36,6 +40,7 @@ impl ErrorCode {
             Self::Tauri => "error.tauri",
             Self::SettingsCorrupt => "error.settingsCorrupt",
             Self::Unsupported => "error.unsupported",
+            Self::Process => "error.process",
         }
     }
 }
@@ -83,6 +88,11 @@ pub enum AppError {
 
     #[error("unsupported: {0}")]
     Unsupported(String),
+
+    /// Spawning a tool or controlling its process tree failed. `detail` always
+    /// names the tool and the OS error, never a secret.
+    #[error("{0}")]
+    Process(String),
 }
 
 impl AppError {
@@ -93,6 +103,7 @@ impl AppError {
             Self::Tauri(_) => ErrorCode::Tauri,
             Self::SettingsCorrupt { .. } => ErrorCode::SettingsCorrupt,
             Self::Unsupported(_) => ErrorCode::Unsupported,
+            Self::Process(_) => ErrorCode::Process,
         }
     }
 
@@ -145,6 +156,7 @@ mod tests {
             ErrorCode::Tauri,
             ErrorCode::SettingsCorrupt,
             ErrorCode::Unsupported,
+            ErrorCode::Process,
         ];
         let mut keys: Vec<_> = codes.iter().map(|c| c.message_key()).collect();
         keys.sort_unstable();

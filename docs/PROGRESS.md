@@ -428,3 +428,145 @@ git switch -c m0-process      # non lavorare direttamente su main
   (spawn, Job Object, process group), vanno eseguiti esplicitamente anche su Windows e macOS,
   altrimenti la copertura e' solo-linux anche quando sembra multi-OS.
 * `std::fs::rename` che sostituisce il file su Windows: documentato, non testato su Windows.
+
+---
+
+## 2026-10-13 — M0-B / process layer (`services/process.rs`, spec §4)
+
+Read this block first if you are a new session continuing the work.
+
+### Done
+
+* **`src-tauri/src/services/process.rs`** (about 1 100 lines with its tests) is the only module allowed
+  to spawn a process. Public API:
+  * `spawn_tool(ToolCommand, CancellationToken, LineSink) -> Result<ProcessResult, AppError>`;
+  * `spawn(cmd, sink) -> RunningTool` + `RunningTool::wait(token)` when the caller wants to cancel
+    from elsewhere too;
+  * `kill_all_running()` / `running_count()` — the registry the app-exit hook walks;
+  * `ProcessResult { label, pid, exit_code, cancelled, stderr_tail[≤200], duration_ms }`.
+* **`ToolCommand`** builds an argv array, never a string. The URL is a *separate field*, validated as
+  `http`/`https` only and appended after `--` by `argv()`, so "URL last" is a property of the type.
+  `validate()` refuses a relative program path (spec §4.8) and any NUL byte.
+* **Windows**: `creation_flags(CREATE_NO_WINDOW = 0x0800_0000)`, no `DETACHED_PROCESS`; one unnamed
+  Job Object per invocation with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so a **crash** of the app kills
+  the tree; kill via `TerminateJobObject`.
+* **Unix**: `process_group(0)` before the spawn; cancel = `killpg(SIGTERM)`, up to 2 s, then
+  `killpg(SIGKILL)`.
+* **Both pipes drained concurrently** by two tasks, with a 200-line stderr ring buffer
+  (`RingBuffer`) and a byte-level `LineReader` that survives partial reads, CRLF, 1 MiB single lines
+  and split multi-byte characters.
+* **Cancellation** is `tokio::select! { biased; child.wait(), token.cancelled() }`. No lock in the
+  module is ever held across an `.await`: the registry mutex is taken in single statements only.
+* **`RunningTool::drop` kills the tree**, so "dropping means stopped" is true on all three OSes (and it
+  is what keeps the Windows KILL_ON_JOB_CLOSE promise meaningful).
+* **`error.process`** added to `AppError`/`ErrorCode` and to `it.json`/`en.json` (`"Errore di un
+  programma esterno"` / `"External program error"`).
+* **`lib.rs`**: the previously empty `on_exit()` now calls `process::kill_all_running()`.
+* **New CI job `process-tests`** (windows-2022 + macos-latest, on tag or manual dispatch), and the
+  `release` job now depends on it. This is the gap M0-A's handoff pointed at: until now `cargo test`
+  only ever ran on Linux.
+* **`fake_tool`**, a dependency-free Rust fake external tool
+  (`src-tauri/tests/bin/fake_tool.rs`): prints to either stream, writes a line of any size, sleeps,
+  exits with a chosen code, prints an environment variable, echoes its argv, and spawns a **grandchild**
+  that sleeps.
+
+### Verified by running
+
+Every command below was executed on this machine (CachyOS, x86_64):
+
+| command | result |
+| :-- | :-- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo test` | **80 passed, 0 failed** (60 unit + 15 `process_tree` + 5 `settings_ipc`) |
+| `cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings` | clean — this is what compiles the Job Object code |
+| `cargo check --all-targets --target x86_64-pc-windows-msvc` | clean (tests included) |
+| `npm run check` | 0 errors, 0 warnings |
+| `npm test` | 28 passed |
+| `npm run check:ci` | 8 `run: |` blocks valid, YAML parses to 6 jobs |
+| `npx tauri build --bundles deb` | `.deb` **1.94 MiB**, only `usr/bin/scaricatore-di-porto` inside |
+
+* **Sizes measured**: app binary `target/release/scaricatore-di-porto` **4 823 984 B (4.60 MiB)**,
+  against the 4.58 MiB recorded in M0-A — about **+20 KiB** for the whole process layer, far under
+  the ≤ 15 MB target of spec §15. `Cargo.lock` gained exactly one new package, `tokio-macros`, a
+  proc-macro crate that adds nothing at runtime.
+* **The four scenarios of the M0-B prompt are really tested**, not asserted in the abstract:
+  1. normal run — exit code 0/3, stdout callback, stderr tail;
+  2. **40 000 lines on both streams at once** (≈500 KB each, far beyond a pipe buffer) finishes in
+     0.36 s. A single-pipe reader would block there for ever; the `timeout` turns that into a failure
+     rather than a hung CI. A single 1 MiB stderr line also comes back intact;
+  3. cancel — the grandchild's pid is polled until it is gone. It **is** gone, and the cancel returns
+     in well under the 2 s of spec §4.2;
+  4. killing a finished tool succeeds, and succeeds twice more.
+* Ran `cargo test --test process_tree` **8 times in a row**: 15/15 every time, no flake.
+* Also tested: drop-kills-the-tree, the app-exit hook killing two tools and being idempotent, a
+  finished tool leaving the registry, a non-`http` URL refused before anything is spawned, the private
+  temp dir reaching the child, and `fake_tool args` proving on a real command line that the URL really
+  lands after `--`.
+* macOS API surface checked by compiling a scratch crate that mirrors exactly the `#[cfg(unix)]` lines
+  of `process.rs` for `aarch64-apple-darwin` **and** `x86_64-apple-darwin`: clean.
+
+### Not verified / stubbed
+
+* **Nothing Windows has ever been *run*.** `cargo clippy --target x86_64-pc-windows-msvc` proves the
+  Job Object code **compiles**; it does not prove `AssignProcessToJobObject` succeeds on a real
+  Windows runner, nor that the cancellation kills a grandchild there. Only the new `process-tests` CI
+  job can say. Until that job has run once, treat "tree-kill works on Windows" as **unverified**.
+* **macOS has not been compiled at all.** Cross-compiling from Linux is impossible here:
+  `objc2-exception-helper` needs an Objective-C compiler for the target and `cc` rejects
+  `-arch arm64`. Only the libc/tokio symbols were checked (see above).
+* `std::fs::rename` over an existing file on Windows (D15) is still untested — but the new
+  `process-tests` job runs the whole suite there, so the question gets answered on its first run.
+* **`READER_DRAIN_TIMEOUT` (5 s) is defensive code with no test.** It only matters if something
+  *escapes* the job/process group and holds the pipe open; building that scenario needs `setsid` on
+  Unix and breakaway flags on Windows. Documented in D25/DECISIONS rather than dressed up as tested.
+* **Spec §4.10** (orphan cleanup of stale `.sdp-tmp-*` directories at startup) is **deliberately not
+  done here**: "only those belonging to no queued/interrupted item" needs the queue, which is M2. What
+  *is* in place is the naming rule (`ITEM_TEMP_PREFIX`, `item_temp_dir`) and the private per-app temp
+  dir of §4.9 (`temp_env` sets `TMPDIR`/`TEMP`/`TMP`).
+* Spec §4.5 mentions passing `--encoding utf-8` to yt-dlp if non-UTF-8 output shows up on Windows.
+  Not applicable yet: the output decoding (`from_utf8_lossy`, spec §4.5) is done and tested; the flag
+  belongs to the yt-dlp argument builder of M1.
+
+### Spec items marked "verify" that I checked
+
+| item | how | result |
+| :-- | :-- | :-- |
+| `CREATE_NO_WINDOW = 0x08000000` | Windows SDK value for the flag | correct; `DETACHED_PROCESS` deliberately not used |
+| `JobObjectExtendedLimitInformation` = 9, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` = 8192 | `windows` 0.62.2 generated sources | correct |
+| `CreateJobObjectW` needs the `Win32_Security` feature (it takes `SECURITY_ATTRIBUTES`) | `#[cfg(feature = "Win32_Security")]` on the binding | true; feature enabled |
+| `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` needs `Win32_System_Threading` (it embeds `IO_COUNTERS`) | same | true; feature enabled |
+| `PCWSTR::null()` satisfies `P: Param<PCWSTR>` | `impl<T,U> Param<T, CopyType> for U where U: CanInto<T>` + `impl<T> CanInto<T> for T` | compiles on the Windows target |
+| `tokio::process::Child` exposes the process handle | tokio 1.53.2 sources: `Child::raw_handle()` (windows-only); it does **not** implement `AsRawHandle` itself | used `raw_handle()` |
+| `Child::wait` is cancel-safe, `try_wait` fuses the exit status | tokio 1.53.2 `process/mod.rs` | true; the `select!` relies on it |
+| a tokio child that is not reaped keeps its pid reserved | tokio keeps the `StdChild` alive; the global reaper only reaps orphans | true, which is what makes `killpg` safe (D21) |
+| `libc::killpg` / `SIGTERM` / `SIGKILL` / `ESRCH` exist on macOS | libc 0.2.190 `unix/mod.rs` (shared) and `bsd/apple/mod.rs` | yes, with the `killpg$UNIX2003` link name on macOS x86_64 |
+| `Command::process_group` exists on tokio and is `#[cfg(unix)]` | tokio 1.53.2 `process/mod.rs` | yes, uses `std`'s, which is stable since Rust 1.64 |
+| `TerminateJobObject` on a job with no processes | MS documentation | **not documented** → the code queries `ActiveProcesses` first (D22) |
+
+### Decisions/deviations (also in DECISIONS.md)
+
+D19 fake tool is a Cargo *example* (a `[[bin]]` was measured installing `/usr/bin/fake_tool` in the
+`.deb`) · D20 the Job Object is attached after `CreateProcess`, with the race that implies · D21 a
+reaped pid is never signalled again · D22 `TerminateJobObject` on an empty job · D23 the new
+`process-tests` CI job and its quota cost · D24 `tokio/macros` belongs in normal dependencies ·
+D25 `TreeHandle` declares `Send`/`Sync` because `windows::HANDLE` does not.
+
+### Next step
+
+**M0-C**: `tools.manifest.json`, `scripts/fetch_bundled_tools.mjs`, bundled yt-dlp + qjs via
+`bundle.externalBin`, `services/tools.rs` with the lookup order of spec §5.2, the first-run copy of
+yt-dlp into app data, the on-demand downloader with Range resume, `yt-dlp -U`, the Settings → Tools
+page and the first-run wizard. `PHASE_PROMPTS.md` "M0-C" has the full list.
+
+Two things that are now easier than they were:
+
+* `spawn_tool` exists, so the tool self-test (`yt-dlp --version`, 5 s timeout) is a few lines and can
+  be tested offline against `fake_tool` with `SDP_FAKE_TOOL`;
+* `item_temp_dir` exists, so the M2 queue has its per-item temp rule (spec §4.9) already.
+
+### Needs a human
+
+* Push the branch and read the **`process-tests`** result: it is the first real answer about Windows
+  and about `rename`-over-destination on Windows.
+* Merge `m0-process` into `main` only after that CI run, and only if the Windows job is green.

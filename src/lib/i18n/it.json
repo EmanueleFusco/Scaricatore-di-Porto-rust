@@ -47,6 +47,7 @@
   "error.tauri": "Errore interno dell'applicazione",
   "error.settingsCorrupt": "Impostazioni danneggiate",
   "error.unsupported": "Operazione non supportata",
+  "error.process": "Errore di un programma esterno",
 
   "a11y.skipToContent": "Vai al contenuto",
   "a11y.sidebar": "Navigazione principale",

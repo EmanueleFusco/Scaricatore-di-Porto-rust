@@ -347,3 +347,153 @@ right call for the already-pushed copies, and stays.
 
 **Lesson:** before running a history rewrite, copy the affected paths *out of the repository*. The
 filter removes them from the checkout, and a backup is only a backup if you go and use it.
+---
+
+## 2026-10-13 — M0-B (process layer, spec §4)
+
+### D19 — `fake_tool` is a Cargo **example**, not a `[[bin]]`
+
+The first version declared the fake tool as a `[[bin]]` of the app package, because only bin targets
+get `CARGO_BIN_EXE_<name>` and so only bin targets are built by `cargo test --test <name>`.
+
+**That shipped the test helper to users.** Measured, not guessed: `dpkg-deb -c` on the `.deb` produced
+by `npx tauri build --bundles deb` listed
+
+```
+usr/bin/fake_tool
+usr/bin/scaricatore-di-porto
+```
+
+— the Tauri Linux bundler installs *every* `[[bin]]` of the package into `/usr/bin`, not just the main
+one. A 344 KB test helper has no business in a user installer.
+
+A second problem showed up on the way: with two bins, `npx tauri build` fails with
+
+```
+failed to find main binary, make sure you have a `package > default-run` in the Cargo.toml file
+```
+
+so `default-run` had to be added as well.
+
+Now declared as `[[example]]` instead:
+
+| | `[[bin]]` | `[[example]]` |
+| :-- | :-- | :-- |
+| built by `cargo test` | yes | yes |
+| built by `tauri build` | yes → **installed in `/usr/bin`** | no |
+| in the installer | yes | no |
+
+Re-measured after the change: the same `.deb` now contains only `usr/bin/scaricatore-di-porto`, and
+`target/release/` contains no `fake_tool` at all. Bundle size is unchanged (1.94 MiB).
+
+**Cost, accepted and documented:** Cargo only builds examples for the *default* target set, so
+`cargo test --test process_tree` does not build the helper and the suite fails with an explicit
+message naming the fix ("run it as `cargo test`"). The supported commands in `AGENTS.md` §4 are
+`cargo test` without filters, and CI uses that. `SDP_FAKE_TOOL=<path>` overrides the lookup.
+
+`.sh` cannot run on Windows and `.cmd` cannot run on Unix, so the helper is ~200 lines of Rust with no
+dependencies at all; that part was never in doubt.
+
+### D20 — the Job Object is attached *after* `CreateProcess`, and the race is real
+
+Spec §4.2 wants every child in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `tokio`'s
+`Command` (and `std`'s) offers no hook to assign a job at creation time, so the sequence is:
+
+```
+CreateProcess (CREATE_NO_WINDOW)  ->  CreateJobObjectW  ->  SetInformationJobObject
+                                  ->  AssignProcessToJobObject
+```
+
+Between `CreateProcess` and `AssignProcessToJobObject` there is a window — microseconds, but not zero —
+in which the child could itself spawn a grandchild that would then land outside the job. The fully
+correct version is `PROC_THREAD_ATTRIBUTE_JOB_LIST` via
+`CreateProcessW(EXTENDED_STARTUPINFO_PRESENT)`, which assigns atomically at creation; that means
+bypassing `tokio::process` for Windows and re-implementing async process handling. Not worth it here.
+
+If the assignment fails, `spawn()` kills the child and returns an error — it **fails closed**: it
+never silently runs an unmanaged process tree.
+
+**What this means in practice:** for yt-dlp (a Python interpreter that has to boot, import and parse
+its arguments before it spawns anything) the window is closed by many orders of magnitude. The test
+that would catch a real regression — "cancel leaves no `ffmpeg`, no `qjs`, no `deno`" (spec §15 item
+12) — runs on Windows in the new CI job from D23.
+
+### D21 — on Unix, a reaped pid must never be signalled again
+
+`killpg(pgid, SIGKILL)` on a pid the OS has already given to somebody else would kill an unrelated
+process group. That can happen as soon as the child is reaped.
+
+Two mitigations, both in the code:
+
+* `TreeHandle::forget_group()` zeroes the pgid the moment the child has been reaped; `kill_tree()`
+  then does nothing instead of signalling a stranger.
+* the grace loop polls `child.try_wait()` and stops as soon as the direct child is gone, so the window
+  between "reaped" and "the final `killpg`" is microseconds rather than the whole 2 s.
+
+The alternative — `waitid(P_PID, …, WNOWAIT)` to look at the exit status without reaping — was
+rejected: tokio's own reaper can reap the child concurrently on Linux (`pidfd`), so it would not
+actually close the window.
+
+`RunningTool::drop` therefore kills the tree, and after a clean `wait()` that kill is a guaranteed
+no-op.
+
+### D22 — `TerminateJobObject` on an empty job: not documented, so we do not rely on it
+
+The Microsoft documentation for `TerminateJobObject` says nothing about what it returns when the job
+has no processes, and spec §4 / M0-B asks for a `kill_tree` that "works if the child has already
+exited (no panic, no error)". Guessing is not an option (AGENTS.md §2.3), so the Windows
+implementation reads `JobObjectBasicAccountingInformation` first and returns success immediately when
+`ActiveProcesses == 0`. Only a non-empty job reaches `TerminateJobObject`.
+
+`QueryInformationJobObject` / `JobObjectBasicAccountingInformation` / `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`
+were all read out of the `windows` 0.62.2 sources in `~/.cargo/registry`, not from memory.
+
+### D23 — new CI job `process-tests` (Windows + macOS, tag or manual only)
+
+The handoff at the end of M0-A said it plainly: *"i test girano solo su Linux […] se M0-B aggiunge
+test che dipendono dal sistema (spawn, Job Object, process group), vanno eseguiti esplicitamente
+anche su Windows e macOS"*. Spec §4 is precisely that code, so a linux-only run would be a
+multi-OS-shaped single-OS test.
+
+`process-tests` runs `cargo test` on `windows-2022` and `macos-latest`. Same gate as `bundle` (tag or
+`workflow_dispatch`), **not** on every push, because of the private-repository minute budget of D12:
+a dev-profile build of the Tauri tree on macOS costs about 6 minutes of wall clock and 60
+Linux-equivalent minutes of quota. It is in the `needs` of the `release` job, so a broken process
+layer blocks a release while still costing nothing on an ordinary push.
+
+It will also answer, for the first time, the `std::fs::rename`-over-the-destination question that
+D15 has been carrying as unverified since M0-A.
+
+### D24 — `tokio` needs the `macros` feature in normal dependencies
+
+`tokio::select!` is **production** code here (spec §4.4), not a test helper. The first version put
+`macros` in `[dev-dependencies]` and it happened to work on Linux only because Cargo unified the
+features; `cargo build --target x86_64-pc-windows-msvc` failed with "cannot find `select` in `tokio`".
+`macros` pulls in `tokio-macros`, a proc-macro crate used at compile time: nothing is added to the
+shipped binary.
+
+### D25 — `windows::HANDLE` is not `Send`/`Sync`, so `TreeHandle` declares it
+
+`windows` 0.62.2 `Win32::Foundation::HANDLE` is a `*mut c_void` newtype with no `Send`/`Sync` impl
+(checked by grepping the whole `windows`, `windows-core` and `windows-result` sources). Without the
+declaration `RunningTool` would be `!Send` and `tokio::spawn` of the registry, and the `Arc` sharing
+between the tool and the registry, would not compile.
+
+The `unsafe impl Send`/`Sync` is justified in the code: every method takes `&self` and only *uses* the
+handle, never replaces or moves it, and the handle is closed exactly once in `Drop`, which needs
+`&mut self` and therefore cannot race with another `&self` call.
+
+### Open questions / things only a human or the CI can answer
+
+* `assign_process_to_job_object` and the whole Windows cancellation path are **compiled** (clippy on
+  `x86_64-pc-windows-msvc` is clean) but have **never been executed**. Only the new CI job can say
+  whether the Job Object really kills an ffmpeg grandchild.
+* macOS is **compiled nowhere**: cross-compiling from Linux needs an Objective-C toolchain for
+  `objc2-exception-helper`, which does not exist here. The Unix-specific API surface was checked
+  against `aarch64-apple-darwin` and `x86_64-apple-darwin` in a scratch crate that mirrors exactly
+  the `#[cfg(unix)]` lines of `process.rs` (`killpg`, `SIGTERM`, `SIGKILL`, `ESRCH`,
+  `Command::process_group`, `CancellationToken`) — that is a real check of the symbols, not of the
+  whole crate.
+* The bounded reader drain (`READER_DRAIN_TIMEOUT`) is defensive code with no test: exercising it
+  needs a grandchild that *escapes* the process group (`setsid`) on Unix and a breakaway-flag process
+  on Windows. It is documented as unverified rather than dressed up.

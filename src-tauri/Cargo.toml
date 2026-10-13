@@ -34,11 +34,68 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+# Process layer (spec §4). Only the features actually used are enabled
+# (AGENTS.md §6 "tokio only with the features needed").
+#   process  -> spawn/wait on external tools
+#   io-util  -> drain stdout/stderr
+#   rt       -> spawn the two reader tasks
+#   sync     -> the registry behind the app-exit hook
+#   time     -> the 2 s SIGTERM grace period of spec §4.2
+#   macros   -> `select!` on the child and the CancellationToken (spec §4.4).
+#               Proc-macro only: it adds nothing to the shipped binary.
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+    "time",
+] }
+# `CancellationToken` (spec §4.4).
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+# killpg() for the process-group tree-kill of spec §4.2. Not used on Windows,
+# where the same job is done with the `windows` crate below.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (spec §4.2).
+# Feature list taken from the generated module gates in windows 0.62:
+#   CreateJobObjectW  -> Win32_Security (it takes SECURITY_ATTRIBUTES)
+#   IO_COUNTERS       -> Win32_System_Threading
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 # `test` gives us tauri::test::mock_* so the IPC handlers can be exercised
 # without a window (spec §15 "integration tests run offline on all 3 OSes").
 tauri = { version = "2.12", features = ["test"] }
+# Only the test profile needs a multi-thread runtime; the app itself uses
+# Tauri's runtime.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# Fake external tool for the process-layer integration tests (spec §4, §15:
+# "fake yt-dlp/ffmpeg/qjs scripts … to test events, cancellation, stderr
+# draining"). A `.sh` cannot run on Windows and a `.cmd` cannot run on Unix, so
+# it is a small Rust program: cross-platform, offline, no dependencies.
+#
+# It is declared as an `example`, not as a `[[bin]]`, and that is deliberate: the
+# Tauri Linux bundler installs **every** `[[bin]]` of the package into
+# `/usr/bin` (verified by listing the contents of the produced .deb), which
+# would ship this test helper to every user. `cargo test` builds examples;
+# `tauri build` never does, so the helper only exists while the tests run.
+[[example]]
+name = "fake_tool"
+path = "tests/bin/fake_tool.rs"
+test = false
+bench = false
+doc = false
 
 # Release profile mandated by spec §1 "Weight rules":
 # opt-level = "s", lto = true, codegen-units = 1, panic = "abort", strip = true.
