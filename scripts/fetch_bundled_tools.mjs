@@ -242,6 +242,21 @@ export function validateManifest(manifest) {
       if (entry.sha256 && !/^[0-9a-f]{64}$/.test(entry.sha256)) {
         problems.push(`${tool.name}/${triple}: sha256 must be 64 lowercase hex characters`);
       }
+      // `builtFrom` exists to say which slices Tauri will assemble a universal
+      // target from, and Tauri assembles `universal-apple-darwin` from exactly
+      // two. A third slice would be downloaded and thrown away; a single one
+      // would produce a bundle that is not universal while claiming to be.
+      const builtFrom = entry.builtFrom ?? [];
+      if (builtFrom.length > 0 && isUniversalTriple(triple)) {
+        const same = builtFrom.length === UNIVERSAL_SLICES.length &&
+          UNIVERSAL_SLICES.every((slice) => builtFrom.includes(slice));
+        if (!same) {
+          problems.push(
+            `${tool.name}/${triple}: builtFrom is [${builtFrom.join(", ")}] but ` +
+              `${UNIVERSAL_TRIPLE} is assembled from [${UNIVERSAL_SLICES.join(", ")}]`,
+          );
+        }
+      }
     }
   }
   return problems;
@@ -453,29 +468,83 @@ function recordVersion(destination, triple) {
 // The two bundled tools
 // ---------------------------------------------------------------------------
 
-/** macOS universal qjs: `lipo` the two slices (spec §5.2.1, CI runs this on macOS). */
+/**
+ * The universal macOS target Tauri builds, and the two slices it builds it
+ * from.
+ *
+ * Not a guess about Rust triples: `tauri build --target universal-apple-darwin`
+ * runs cargo **once per architecture**, and `tauri-build` then asks for the
+ * external binaries by `TARGET` (read from the environment, so per-arch):
+ *
+ *     let target_triple = env::var("TARGET").unwrap();            // aarch64-apple-darwin
+ *     copy_binaries(ResourcePaths::new(
+ *       &external_binaries(paths, &target_triple, &target), true), ...)
+ *
+ * and only at the end `tauri-bundler` asks once, with `self.target`:
+ *
+ *     external_bin: ... external_binaries(bins, &target, &target_platform)
+ *
+ * So a universal build needs **all three** names on disk, per tool:
+ *
+ *     binaries/yt-dlp-aarch64-apple-darwin        <- build script, pass 1
+ *     binaries/yt-dlp-x86_64-apple-darwin        <- build script, pass 2
+ *     binaries/yt-dlp-universal-apple-darwin     <- bundler, packaging
+ *
+ * Missing the first two is the `resource path 'binaries/yt-dlp-aarch64-apple-
+ * darwin' doesn't exist` failure the CI hit on 2026-10-13, in the build script
+ * of the very first per-arch pass.
+ */
+export const UNIVERSAL_TRIPLE = "universal-apple-darwin";
+export const UNIVERSAL_SLICES = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+
+/** True for the one target Tauri assembles from several slices. */
+export function isUniversalTriple(triple) {
+  return triple === UNIVERSAL_TRIPLE;
+}
+
+/**
+ * The name `lipo -thin` wants for a slice, which is not the Rust triple.
+ *
+ * Rust says `aarch64-apple-darwin`; `lipo` and the Mach-O `fat_arch` headers say
+ * `arm64`. Read off a real asset on 2026-10-13 (`yt-dlp_macos`, magic
+ * `0xcafebabe`, nfat_arch 2): `x86_64` and `arm64`.
+ */
+export function lipoArchName(triple) {
+  const [arch] = triple.split("-");
+  if (!arch) fail(`cannot read an architecture out of the triple "${triple}"`);
+  return arch === "aarch64" ? "arm64" : arch;
+}
+
+/**
+ * A universal macOS build cannot be assembled without `lipo`.
+ *
+ * Checked once, before any download, and with one message used everywhere: the
+ * first version of this guard lived inside `buildUniversalQjs` only, and the
+ * tools are fetched in manifest order — `yt-dlp` comes before `qjs`, so on a
+ * non-macOS machine yt-dlp reached `lipo` first and failed with 37 MB already
+ * downloaded and whatever `lipo` says when it is not installed. Failing before
+ * the first byte is the difference between a sentence and a mystery.
+ */
+function requireMacOsForUniversal(triple) {
+  if (!isUniversalTriple(triple) || process.platform === "darwin") return;
+  fail(
+    `the universal macOS build needs lipo, which only exists on macOS.\n` +
+      `  You asked for ${triple} on ${process.platform}, and nothing was downloaded.\n` +
+      `  Use --target aarch64-apple-darwin (or x86_64-apple-darwin) for a native build.`,
+  );
+}
+
+/**
+ * macOS universal qjs: `lipo` the two slices (spec §5.2.1, CI runs this on macOS). */
 async function buildUniversalQjs(manifest, triple, scratch) {
-  if (process.platform !== "darwin") {
-    fail(
-      `the universal macOS qjs can only be assembled with lipo, which needs a macOS runner.\n` +
-        `  You asked for ${triple} on ${process.platform}.\n` +
-        `  Use --target aarch64-apple-darwin (or x86_64-apple-darwin) for a native build.`,
-    );
-  }
+  requireMacOsForUniversal(triple);
   const { entry } = platformEntry(manifest, "qjs", triple);
   const slices = entry.builtFrom ?? [];
   if (slices.length < 2) fail(`${triple}: builtFrom must name at least two slices, got ${slices.length}`);
 
   const paths = [];
   for (const slice of slices) {
-    const source = platformEntry(manifest, "qjs", slice);
-    if (!source.entry.url || !source.entry.sha256) fail(`${slice} is not pinned`);
-    const bytes = await download(source.entry.url, join(scratch, `qjs-${slice}`));
-    const actual = sha256(bytes);
-    if (actual !== source.entry.sha256) {
-      fail(`checksum mismatch for ${source.entry.asset}\n  expected ${source.entry.sha256}\n  actual   ${actual}`);
-    }
-    paths.push(join(scratch, `qjs-${slice}`));
+    paths.push(await downloadSlice(manifest, "qjs", slice, scratch));
   }
 
   const output = join(scratch, "qjs-universal");
@@ -486,6 +555,95 @@ async function buildUniversalQjs(manifest, triple, scratch) {
   }
   const bytes = await readFile(output);
   return bytes;
+}
+
+/**
+ * Download one slice and verify it against the manifest checksum.
+ *
+ * Shared by `buildUniversalQjs` (which needs the bytes to lipo together) and by
+ * `perArchBytes` (which needs them to leave on disk under their own name), so
+ * both go through the same verification instead of one of them trusting a file
+ * the other already downloaded.
+ */
+async function downloadSlice(manifest, name, slice, scratch) {
+  const source = platformEntry(manifest, name, slice);
+  if (!source.entry.url || !source.entry.sha256) fail(`${slice} is not pinned`);
+  const path = join(scratch, `${name}-${slice}`);
+  const bytes = await download(source.entry.url, path);
+  const actual = sha256(bytes);
+  if (actual !== source.entry.sha256) {
+    fail(
+      `checksum mismatch for ${source.entry.asset}\n  expected ${source.entry.sha256}\n  actual   ${actual}`,
+    );
+  }
+  return path;
+}
+
+/**
+ * One per-architecture file, for the build script of a universal pass.
+ *
+ * Two ways to get it, and which one applies is a fact about the tool, taken
+ * from the manifest rather than guessed:
+ *
+ * * `builtFrom` present (qjs) — the slice is a separate release asset, already
+ *   checksummed, downloaded like any other;
+ * * `builtFrom` absent (yt-dlp) — the universal asset is *already* a fat
+ *   binary, so the slice is carved out of it. `yt-dlp_macos` verified on
+ *   2026-10-13 by reading its Mach-O header on Linux, no macOS needed: magic
+ *   `0xcafebabe`, `nfat_arch` 2, `x86_64` (73 808 B) + `arm64` (37 047 744 B).
+ *
+ * If a future asset were single-architecture, `lipo -thin` fails loudly here
+ * rather than producing a bundle that boots on one CPU and not the other.
+ */
+async function perArchBytes(manifest, name, slice, universalPath, scratch) {
+  const { entry } = platformEntry(manifest, name, UNIVERSAL_TRIPLE);
+  if ((entry.builtFrom ?? []).length > 0) {
+    return await downloadSlice(manifest, name, slice, scratch);
+  }
+  const output = join(scratch, `${name}-${slice}-thin`);
+  const arch = lipoArchName(slice);
+  try {
+    execFileSync("lipo", ["-thin", arch, universalPath, "-output", output], { stdio: "pipe" });
+  } catch (err) {
+    fail(
+      `lipo -thin ${arch} failed for ${name}/${slice}.\n` +
+        `  The universal asset must contain that architecture.\n` +
+        `  ${err.stderr?.toString().trim() || err.message}`,
+    );
+  }
+  return await readFile(output);
+}
+
+/**
+ * Write the two per-architecture files that a universal build's build script
+ * asks for, reading the universal file already on disk.
+ *
+ * The universal file is read from its destination rather than passed in, so
+ * this behaves the same whether the universal file was just fetched or was
+ * already there and skipped.
+ */
+async function installPerArchSiblings(manifest, name, outputDir, scratch, options) {
+  for (const slice of UNIVERSAL_SLICES) {
+    const destination = destinationPath(outputDir, name, slice);
+    if (!options.force && existsSync(destination)) {
+      const { size } = await stat(destination);
+      process.stdout.write(
+        `${name}: ${slice} already present (${destination}, ${size} bytes) — use --force\n`,
+      );
+      continue;
+    }
+    const bytes = await perArchBytes(
+      manifest,
+      name,
+      slice,
+      destinationPath(outputDir, name, UNIVERSAL_TRIPLE),
+      scratch,
+    );
+    await install(bytes, destination);
+    process.stdout.write(
+      `${name}: installed ${slice} -> ${destination} (${bytes.length} bytes)\n`,
+    );
+  }
 }
 
 async function fetchTool(manifest, name, triple, scratch) {
@@ -707,6 +865,10 @@ async function modePrintSha256(manifest) {
 }
 
 async function modeFetch(manifest, triple, options) {
+  // Before anything else, and before the first byte: asking for a universal
+  // macOS build anywhere else cannot work, and there is no point discovering
+  // it 37 MB later.
+  requireMacOsForUniversal(triple);
   const names = manifest.tools.filter((tool) => tool.bundled).map((tool) => tool.name);
   const wanted = options.only ?? names;
   for (const name of wanted) {
@@ -725,11 +887,21 @@ async function modeFetch(manifest, triple, options) {
       if (!options.force && existsSync(destination)) {
         const { size } = await stat(destination);
         process.stdout.write(`${name}: already present (${destination}, ${size} bytes) — use --force\n`);
+        // The per-arch siblings are part of the same set. Without this, a
+        // resumed run would find the universal file already there, skip it, and
+        // never write the two files the build script is about to ask for — the
+        // same failure as before, but only on the second run.
+        if (isUniversalTriple(triple)) {
+          await installPerArchSiblings(manifest, name, options.outputDir, scratch, options);
+        }
         continue;
       }
       const bytes = await fetchTool(manifest, name, triple, scratch);
       await install(bytes, destination);
       process.stdout.write(`${name}: installed -> ${destination} (${bytes.length} bytes)\n`);
+      if (isUniversalTriple(triple)) {
+        await installPerArchSiblings(manifest, name, options.outputDir, scratch, options);
+      }
       // Spec §5.2.1: "the latest stable yt-dlp at build time (recording its
       // version)". Only asked of the host's own triple — a binary fetched for
       // another target cannot be executed here, and executing a foreign binary

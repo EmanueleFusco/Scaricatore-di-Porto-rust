@@ -1268,3 +1268,75 @@ solo per l'host su cui li avevo scritti.** Dettagli e prove in D49.
   3. **Attenzione alla disciplina**: se dopo questa run che ha prodotto gli
      artifact si aggiunge un commit, gli artifact non corrispondono più a
      `main`. Rilanciare il workflow prima della merge.
+
+## 2026-10-13 — M0-C / Il bundle universale vuole tre nomi per tool
+
+`bundle (macos universal)` era rosso con
+`resource path 'binaries/yt-dlp-aarch64-apple-darwin' doesn't exist`, mentre
+Linux e macOS arm64 erano verdi. Dettagli e fonti in D50.
+
+- **Done**
+  - `fetch_bundled_tools.mjs --target universal-apple-darwin` produce ora **tre**
+    file per tool: i due per-architettura (che `build.rs` chiede, una volta per
+    ogni passaggio di cargo) e quello universale (che il bundler chiede alla
+    fine). Prima ne produceva uno.
+  - `UNIVERSAL_SLICES` e `lipoArchName` ricavati, non indovinati: le slice sono
+    un fatto di Tauri, `lipo` vuole `arm64` dove Rust dice `aarch64`.
+  - `yt-dlp` le due slice escono da `lipo -thin` sull'asset universale; `qjs`
+    sono i due asset nativi che il `lipo -create` gia' scaricava.
+  - Il ramo "gia' presente" scrive comunque le slice: altrimenti un secondo run
+    ritrovava l'universale, saltava tutto, e non scriveva mai i due file che il
+    build script sta per chiedere — lo stesso difetto, ma solo dalla seconda
+    volta.
+  - `validateManifest`: `builtFrom` deve elencare esattamente le slice che Tauri
+    assembla.
+  - La guardia `lipo` è centralizzata e gira **prima del primo byte**: prima
+    falliva dopo 37 MB scaricati, perché `yt-dlp` viene prima di `qjs` nella
+    lista e arrivava a `lipo` per primo.
+  - Passo di CI `lipo -info` (un file, mai eseguito) sostituito da `Every bundled
+    file is the architecture its name promises` (sei file, sei modi di fallire).
+  - **`scripts/ci-steps.test.mjs`, nuovo**: 7 test che eseguono quel passo con un
+    `lipo` finto che risponde in base al **contenuto** del file.
+- **Verified by running**
+  - `npm test` → **92 verdi** (erano 77: +8 fetch, +7 passo di CI).
+  - `npm run check:tools` → manifest OK; `npm run check:ci` → 9 blocchi `run: |`
+    validi; `cargo fmt --check` OK; `cargo clippy -D warnings` → 0 errori;
+    `cargo test` → 8 suite verdi; `npm run check` → 0 errori, 0 warning.
+  - **Il passo di CI, eseguito davvero** contro un `lipo` finto, in sei scenari:
+    caso buono (0), file per-arch mancante (1), universale mono-arch (1),
+    universale senza arm64 (1), slice che è un fat binary (1), slice
+    dell'architettura sbagliata (1). Tutti con l'esito atteso.
+  - **Due difetti trovati eseguendolo**, non leggendolo: `Non-fat file` contiene
+    `fat file` (il passo rifiutava i 6 file giusti), e un ramo morto tolto.
+  - **Revert-check**: `builtFrom` con una slice sola e con una terza slice → il
+    controllo del manifesto segnala entrambe le situazioni.
+  - Asset `yt-dlp_macos` verificato **su Linux**: magic `0xcafebabe`, `nfat_arch`
+    2, `x86_64` 73 808 B + `arm64` 37 047 744 B. È un vero fat binary, quindi
+    `lipo -thin` è applicabile.
+  - Da Linux, `--target universal-apple-darwin` → messaggio chiaro e **zero byte
+    scaricati** (cartella non creata).
+- **Not verified / stubbed**
+  - **`lipo -create`, `lipo -thin` e `tauri build` universale non sono mai
+    girati qui: non esistono su Linux.** Verificato su questa macchina: la logica
+    di fetch (nomi, checksum, ordinamento), il passo di CI contro il finto,
+    l'intestazione Mach-O dell'asset. Il resto lo vedrà il runner macOS.
+  - Nessun `.app` universale è stato costruito né aperto.
+- **Spec items marked "verify" che I checked**
+  - Quale nome chiede `build.rs` durante un build universale → `env::var("TARGET")`
+    in `tauri-build/src/lib.rs`, cioè per-architettura (citato in D50).
+  - Quale nome chiede il bundler → `self.target` in
+    `tauri-bundler/src/bundle/settings.rs`, cioè `universal-apple-darwin`.
+  - `yt-dlp_macos` è universale → letta l'intestazione Mach-O, vedi sopra.
+- **Decisions/deviations**
+  - D50: tre nomi per tool; `lipo -thin` per yt-dlp; `builtFrom` vincolato alle
+    slice di Tauri; passo di CI da uno a sei file, con due difetti trovati
+    eseguendolo.
+- **Next step**
+  1. Committare e rilanciare il workflow. `bundle (macos universal)` deve andare
+     verde; se fallisce, **il log sarà molto più utile di prima**: i sei file
+     sono controllati per nome e per contenuto prima che il bundle venga
+     impacchettato.
+  2. `process tests (windows-x64)` e `bundle (windows-x64)`: D49 li corregge ma
+     non sono mai stati eseguiti su Windows.
+  3. Poi il discorso di `cargo-xwin` + wine per compilare i test per Windows da
+     Linux, che è ancora aperto.

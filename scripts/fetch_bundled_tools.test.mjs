@@ -12,10 +12,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  UNIVERSAL_SLICES,
   destinationPath,
   exeSuffix,
   externalBinProblems,
   externalBinProblemsWith,
+  isUniversalTriple,
+  lipoArchName,
   parseSumFile,
   validateManifest,
 } from "./fetch_bundled_tools.mjs";
@@ -250,6 +253,84 @@ describe("externalBin and the manifest agree", () => {
       bundle: { externalBin: ["binaries/yt-dlp", "binaries/qjs", "binaries/ffmpeg"] },
     });
     expect(problems.join("\n")).toContain("spec §0.7 allows only yt-dlp and qjs");
+  });
+});
+
+describe("the universal macOS target needs three names per tool", () => {
+  // The CI failure this exists for:
+  //   resource path `binaries/yt-dlp-aarch64-apple-darwin` doesn't exist
+  // `tauri build --target universal-apple-darwin` runs cargo once per
+  // architecture, and tauri-build asks for the external binaries by `TARGET`,
+  // so it wants the per-arch names; the bundler asks once at the end and wants
+  // the universal one. Missing either half breaks the build.
+
+  it("knows the two slices Tauri assembles universal-apple-darwin from", () => {
+    expect(UNIVERSAL_SLICES).toEqual(["aarch64-apple-darwin", "x86_64-apple-darwin"]);
+  });
+
+  it("reads the name lipo wants out of a triple, not the Rust one", () => {
+    // Rust says aarch64; lipo and the Mach-O fat headers say arm64.
+    expect(lipoArchName("aarch64-apple-darwin")).toBe("arm64");
+    expect(lipoArchName("x86_64-apple-darwin")).toBe("x86_64");
+  });
+
+  it("recognises the one target that is a bundle of slices", () => {
+    expect(isUniversalTriple("universal-apple-darwin")).toBe(true);
+    for (const native of [...UNIVERSAL_SLICES, "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]) {
+      expect(isUniversalTriple(native)).toBe(false);
+    }
+  });
+
+  it("names a file the way the build script will look for it", () => {
+    // destinationPath is what both passes agree on: one suffix stripped, one
+    // kept, depending on which of them is asking.
+    expect(destinationPath("/out", "yt-dlp", "universal-apple-darwin")).toBe(
+      "/out/yt-dlp-universal-apple-darwin",
+    );
+    for (const slice of UNIVERSAL_SLICES) {
+      expect(destinationPath("/out", "yt-dlp", slice)).toBe(`/out/yt-dlp-${slice}`);
+      expect(lipoArchName(slice)).toMatch(/^(arm64|x86_64)$/);
+    }
+  });
+
+  it("the manifest's builtFrom lists exactly the slices Tauri assembles", () => {
+    // qjs is a real example: it is lipo'd together, so its builtFrom IS the
+    // slice list, and a drift between the two would ship a bundle that is not
+    // universal while every name says it is.
+    const problems = validateManifest(MANIFEST);
+    expect(problems).toEqual([]);
+    const qjs = MANIFEST.tools.find((t) => t.name === "qjs");
+    expect([...qjs.platforms["universal-apple-darwin"].builtFrom].sort()).toEqual(
+      [...UNIVERSAL_SLICES].sort(),
+    );
+  });
+
+  it("catches a builtFrom that does not match the slices Tauri builds", () => {
+    const broken = structuredClone(MANIFEST);
+    const qjs = broken.tools.find((t) => t.name === "qjs");
+    qjs.platforms["universal-apple-darwin"].builtFrom = ["aarch64-apple-darwin"];
+    const problems = validateManifest(broken).join("\n");
+    expect(problems).toContain("but universal-apple-darwin is assembled from");
+  });
+
+  it("catches a third slice that would be downloaded and thrown away", () => {
+    const broken = structuredClone(MANIFEST);
+    const qjs = broken.tools.find((t) => t.name === "qjs");
+    qjs.platforms["universal-apple-darwin"].builtFrom = [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "armv7-apple-darwin",
+    ];
+    expect(validateManifest(broken).join("\n")).toContain(
+      "but universal-apple-darwin is assembled from",
+    );
+  });
+
+  it("leaves a native target alone: it has no slices to reconcile", () => {
+    const native = structuredClone(MANIFEST);
+    const qjs = native.tools.find((t) => t.name === "qjs");
+    expect(validateManifest(native)).toEqual([]);
+    expect(qjs.platforms["aarch64-apple-darwin"].builtFrom ?? []).toEqual([]);
   });
 });
 

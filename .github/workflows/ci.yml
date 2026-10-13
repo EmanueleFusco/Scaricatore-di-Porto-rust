@@ -385,12 +385,56 @@ jobs:
       - name: Report which tools are about to be bundled
         run: ls -l src-tauri/binaries
 
-      # Il qjs universale e' l'unico file che la CI **compone** invece di
-      # scaricare (lipo delle due slice, spec §5.2.1). Se il lipo fallisce o
-      # produce qualcosa di solo-un-architettura, conviene saperlo PRIMA che
-      # finisca dentro l'app bundle, non al primo avvio su un Intel.
-      - name: The universal qjs really is universal
-        run: lipo -info src-tauri/binaries/qjs-universal-apple-darwin
+      # Ogni file deve essere l'architettura che il SUO NOME promette, non solo
+      # "l'universale e' universale": un file che mente sul proprio nome produce
+      # un .app che parte su una CPU e non sull'altra, e la cosa migliore che
+      # possa capitare e' che fallisca qui invece che su un Intel al primo
+      # avvio. I due file per-archettonura servono al build script (che chiede
+      # i nomi per-arch, una volta per ogni slice); quello universale serve al
+      # bundler. Vedi D50.
+      - name: Every bundled file is the architecture its name promises
+        run: |
+          set -euo pipefail
+          check_fat() {
+            file="$1"; shift
+            if [ ! -f "$file" ]; then echo "::error::$file non esiste"; exit 1; fi
+            info="$(lipo -info "$file")"
+            echo "$info"
+            # Le due forme esatte, non "fat file": la riga di un file singolo
+            # e' "Non-fat file: ..." e contiene la sottostringa "fat file", quindi
+            # un controllo piu' largo accetterebbe - o peggio rifiuterebbe - il
+            # file sbagliato. Verificato qui con un lipo finto (D50).
+            case "$info" in
+              *"Architectures in the fat file"*) ;;
+              *) echo "::error::$file doveva essere un fat binary: $info"; exit 1 ;;
+            esac
+            for arch in "$@"; do
+              case " $info " in
+                *" $arch "*) ;;
+                *) echo "::error::$file non contiene $arch: $info"; exit 1 ;;
+              esac
+            done
+          }
+          check_single() {
+            file="$1"; want="$2"
+            if [ ! -f "$file" ]; then echo "::error::$file non esiste"; exit 1; fi
+            info="$(lipo -info "$file")"
+            echo "$info"
+            # Basta questo: un fat binary produce "Architectures in the fat
+            # file: ... are: ...", che non contiene mai "is architecture:", quindi
+            # una slice che e' in realta universale viene gia' respinta qui.
+            # Un secondo controllo "e' un fat file?" sarebbe un ramo che nessun
+            # test puo' raggiungere, cioe' un'affermazione che non puoi verificare.
+            case "$info" in
+              *"is architecture: $want") ;;
+              *) echo "::error::$file doveva essere solo $want: $info"; exit 1 ;;
+            esac
+          }
+          for tool in yt-dlp qjs; do
+            check_fat "src-tauri/binaries/$tool-universal-apple-darwin" x86_64 arm64
+            check_single "src-tauri/binaries/$tool-aarch64-apple-darwin" arm64
+            check_single "src-tauri/binaries/$tool-x86_64-apple-darwin" x86_64
+          done
 
       # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche'
       # se fallisce non deve bloccare il .app nativo arm64, che e' quello che

@@ -1151,3 +1151,93 @@ ragione giusta, e tornando indietro va verde.
 Windows. Le risposte di `std` sono verificate dalla sorgente, ma il giudice è il
 runner Windows della CI. E il `cargo check --target x86_64-pc-windows-msvc` non
 è disponibile qui: si ferma su `ring`, che vuole `lib.exe` di MSVC.
+
+### D50 — Un bundle universale vuole **tre** nomi per tool, non uno
+
+`bundle (macos universal)` è fallito così:
+
+```
+cargo:rustc-env=TAURI_ENV_TARGET_TRIPLE=aarch64-apple-darwin
+resource path `binaries/yt-dlp-aarch64-apple-darwin` doesn't exist
+```
+
+La causa, verificata in `crates/tauri-build/src/lib.rs` e
+`crates/tauri-bundler/src/bundle/settings.rs`:
+
+```rust
+// tauri-build: dentro build.rs, quindi una volta per ogni cargo
+let target_triple = env::var("TARGET").unwrap();              // aarch64-apple-darwin
+copy_binaries(ResourcePaths::new(
+  &external_binaries(paths, &target_triple, &target), true), &target_triple, target_dir, ...)
+
+// tauri-bundler: una volta sola, alla fine
+external_bin: self.bundle_settings.external_bin
+  .map(|bins| external_binaries(bins, &target, &target_platform)),   // target = universal-apple-darwin
+```
+
+`tauri build --target universal-apple-darwin` **lancia cargo una volta per
+architettura**. A ogni passaggio `build.rs` chiede i nomi **per-architettazione**;
+solo alla fine il bundler chiede il nome **universale**. Occorrono tutti e trei:
+
+```
+binaries/<tool>-aarch64-apple-darwin       <- build script, passaggio 1
+binaries/<tool>-x86_64-apple-darwin       <- build script, passaggio 2
+binaries/<tool>-universal-apple-darwin    <- bundler, impacchettamento
+```
+
+Noi ne producevamo uno. Da qui il fallimento, su `yt-dlp`, al primo dei due
+passaggi di compilazione.
+
+**Come si ottengono le due slice, e perché i due tool sono casi diversi.**
+
+* `qjs` ha `builtFrom` nell'universale: le due slice sono due asset separati,
+  gia' con checksum, che scarichiamo e lipo-iamo. Le slice sono gia' in mano.
+* `yt-dlp` non ha `builtFrom`: l'asset universale **e' gia' un fat binary**, e le
+  slice si ricavano con `lipo -thin`. Verificato leggendo l'intestazione
+  Mach-O **su Linux, senza macOS**: magic `0xcafebabe`, `nfat_arch` 2,
+  `x86_64` (73 808 B) + `arm64` (37 047 744 B), asset `yt-dlp_macos` (37 146 048 B).
+
+Quindi `lipo -thin` è la strada giusta, e se un asset futuro fosse a
+architettura singola `lipo -thin` fallisce qui, adesso, invece di produrre un
+`.app` che parte su una CPU e non sull'altra.
+
+`UNIVERSAL_SLICES` e `lipoArchName` sono i due fatti che il codice deve sapere:
+le slice sono di Tauri (non nostre), e `lipo` vuole `arm64` dove Rust dice
+`aarch64`. Entrambi sono derivati, non indovinati, e hanno test propri.
+
+**Un controllo che è anche una difesa.** `validateManifest` pretende ora che
+`builtFrom` elenchi esattamente le slice che Tauri assembla: una terza slice
+verrebbe scaricata e buttata via, una sola produrrebbe un bundle che si dichiara
+universale e non lo e'. E come ogni correzione di questa sessione, e' stata
+verificata revertendola.
+
+**Il passo di CI e' stato eseguito, e aveva un bug.** Il vecchio passo era
+`lipo -info` su **un** file, scritto il giorno prima e mai eseguito. Sostituito
+da `Every bundled file is the architecture its name promises`, che controlla tutti
+e sei e puo' fallire su sei modi diversi. Eseguito qui con un `lipo` finto, e ha
+trovato subito due difetti miei:
+
+1. **`Non-fat file` contiene la sottostringa `fat file`.** Il controllo di rifiuto
+   scattava quindi sui file *giusti*. Il passo era rotto per i 6/6 file e avrebbe
+   reso rosso il job che doveva accertare che il bundle fosse a posto. Risolto
+   usando le due forme esatte (`Architectures in the fat file` /
+   `Non-fat file`). Nessun `lipo` reale era servito a trovarlo: `Non-fat file`
+   vuol dire *non* grasso, e la parola contiene lo spezzone che cercavo.
+2. **Un ramo morto.** `check_single` aveva anche un controllo "e' un fat binary?".
+   Irraggiungibile: `lipo -info` su un fat binary stampa
+   `Architectures in the fat file:`, che non contiene mai `is architecture:`, quindi
+   il primo controllo lo ha gia' respinto. Tolto: un ramo che nessun test puo'
+   raggiungere e' un'affermazione che nessuno puo' verificare.
+
+Il passo ora e' coperto da `scripts/ci-steps.test.mjs`: 7 test che lo eseguono
+davvero, su Linux, a ogni push, contro un `lipo` finto che risponde in base al
+**contenuto** del file e non al suo nome — l'unico modo per provare la cosa che
+conta, cioe' un file che mente sul proprio nome. Il primo tentativo di questi
+test era sbagliato (il finto decideva dal nome, quindi non poteva rappresentare
+il caso) ed e' stato rifatto.
+
+**Il limite onesto:** `lipo -create`, `lipo -thin` e `tauri build` universale non
+sono mai girati qui. Non esistono su Linux. Le uniche cose verificate su questa
+macchina sono la logica di fetch (nomi, checksum, ordinamento), il passo di CI
+contro il `lipo` finto, e l'intestazione Mach-O dell'asset yt-dlp. Il resto lo
+vedrà il runner macOS.
