@@ -1344,3 +1344,100 @@ Prerequisiti verificati qui: `clang` 23.1.1 (serve `clang-cl`), `llvm-tools` di
 rustup (`ring` usa assembly, si installa con `rustup component add llvm-tools`),
 `wine` 11.19. **L'esempio `fake_tool` va compilato a parte**: con
 `--test <nome>` Cargo non lo costruisce, e serve a `process_tree`.
+
+### D52 — Un path scritto al posto dei contenuti, e la guardia che lo rende impossibile
+
+Seconda run di `bundle (macos universal)`. La prima si era fermata su
+`resource path ... doesn't exist` (D50); questa è arrivata fino al passo di CI,
+che ha fatto il suo lavoro:
+
+```
+Architectures in the fat file: …/yt-dlp-universal-apple-darwin are: x86_64 arm64
+Non-fat file: …/yt-dlp-aarch64-apple-darwin is architecture: arm64
+Non-fat file: …/yt-dlp-x86_64-apple-darwin is architecture: x86_64
+Architectures in the fat file: …/qjs-universal-apple-darwin are: x86_64 arm64
+fatal error: …/lipo: can't figure out the architecture type of:
+  …/binaries/qjs-aarch64-apple-darwin
+```
+
+Cinque file su sei corretti, e il sesto non è un Mach-O.
+
+**Prima la pista sbagliata, poi quella giusta.** La prima lettura del messaggio
+suggerisce un asset sbagliato, e infatti sono andato a verificare gli asset
+prima di guardare il codice: `qjs-darwin-arm64` e `qjs-darwin-x86_64` scaricati
+e letti su Linux, sono entrambi Mach-O `MH_EXECUTE` (`filetype 2`, `cpu 0x100000c`
+e `0x1000007`). Asset e manifesto sono **corretti**. Il difetto è come li
+scriviamo.
+
+**La causa, in tre righe di codice.**
+
+```js
+async function downloadSlice(…) { …; return path; }              // restituiva un PATH
+…
+if ((entry.builtFrom ?? []).length > 0) {
+  return await downloadSlice(manifest, name, slice, scratch);     // passato come payload
+}
+…
+await writeFile(temporary, bytes);                               // scriveva il PATH come contenuto
+```
+
+`binaries/qjs-aarch64-apple-darwin` conteneva la **stringa**
+`/tmp/sdp-tools-XXXXXX/qjs-aarch64-apple-darwin`: una trentina di byte di testo.
+Il checksum era corretto — combaciava con quello scaricato, che era quello
+giusto. Il fetch si dichiarava **riuscito**. Solo due passi dopo `lipo` si
+accorgeva che il file non era un eseguibile, e lo diceva in un modo che non
+nomina la causa: «can't figure out the architecture type», una frase
+sull'architettura quando il problema è che non è un Mach-O.
+
+**Perché solo qjs.** I due strumenti prendono due rami diversi di
+`perArchBytes`: qjs ha `builtFrom` e passa da `downloadSlice` (il path), yt-dlp
+no e usa `lipo -thin` con `readFile` (i byte). Solo il primo era rotto. Un ramo
+che si esercita solo su una delle due piattaforme è un ramo che può essere
+sbagliato a metà senza che nulla se ne accorga.
+
+**Il rimedio, in due parti.** La prima è far scegliere al chiamante:
+`downloadSlice` restituisce `{ bytes, path }` e i due chiamanti dichiarano
+esplicitamente quale dei due gli serve (`(await …).path` per `lipo -create`,
+`.bytes` per la scrittura). In JavaScript non c'è il compilatore che ti
+obbliga, ma la scelta è scritta e si vede.
+
+La seconda è una guardia in `install()`, che rifiuta un payload di tipo stringa
+**al momento dell'errore**:
+
+```js
+if (typeof bytes === "string") {
+  fail(`internal error: asked to write a string to ${destination}\n  …`);
+}
+```
+
+Una riga che trasforma un mistero in una frase, sul posto giusto. È il tipo di
+controllo che in un linguaggio con i tipi non serve e in JavaScript serve, perché
+`writeFile` accetta una stringa e la scrive senza protestare. Ha **quattro
+test**, incluso quello che verifica che il rifiuto non lasci un file a metà.
+
+**Il passo di CI ha fatto il suo lavoro, e questo è il punto.** `lipo -info` non
+è stato quello che ha trovato il difetto: il difetto era a monte e non gli
+arrivava. Quello che ha fatto è stato **non lasciarlo passare in silenzio**, e
+farlo in un modo che ha permesso di capire in quattro secondi che 5 file su 6
+erano giusti. Un controllo che dice solo «fallito» avrebbe obbligato a
+ricostruire la catena da capo; uno che dice «questo file non è un eseguibile»
+mette il dito sul file.
+
+**Il ciclo è chiuso su due livelli.** La guardia prende lo sbaglio alla fonte,
+il passo di CI prende qualunque cosa altro sia sbagliata al confine. Se uno dei
+due manca, l'altro c'è.
+
+**L'ennesima volta la stessa cosa.** È il settimo difetto di questa classe, e
+sono tutti nati da codice che non era mai stato eseguito. La volta prima (D51)
+ero stato fortunato: il proxy che avevo scritto per misurare wine diceva la
+stessa cosa del test vero, e avrei potuto fermarmi lì con un fatto sbagliato.
+Questa volta la catena si è rotta e non me ne sono accorto, perché **il
+comportamento esiste solo su macOS**: su Linux il ramo `lipo -thin` funziona,
+quindi il codice sembrava a posto. È il limite vero di questo approccio, e va
+detto: `cargo-xwin` copre Windows, ma per macOS non esiste niente di
+paragonabile, e D50 l'aveva già scritto che `lipo` e `tauri build` universale
+non girano su Linux.
+
+**Non verificato, ancora:** il fetch universale vero e `tauri build --target
+universal-apple-darwin` restano senza esecuzione. La prossima run dirà se la
+catena regge fino in fondo.

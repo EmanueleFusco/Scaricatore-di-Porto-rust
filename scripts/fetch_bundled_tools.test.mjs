@@ -11,12 +11,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   UNIVERSAL_SLICES,
   destinationPath,
   exeSuffix,
   externalBinProblems,
   externalBinProblemsWith,
+  install,
   isUniversalTriple,
   lipoArchName,
   parseSumFile,
@@ -253,6 +256,55 @@ describe("externalBin and the manifest agree", () => {
       bundle: { externalBin: ["binaries/yt-dlp", "binaries/qjs", "binaries/ffmpeg"] },
     });
     expect(problems.join("\n")).toContain("spec §0.7 allows only yt-dlp and qjs");
+  });
+});
+
+describe("install refuses a path where the contents belong", () => {
+  // The bug the universal fetch shipped on 2026-10-13: `downloadSlice` returned
+  // a path, `perArchBytes` passed it straight on, and `install` wrote that path
+  // *as the contents* of binaries/qjs-aarch64-apple-darwin. Thirty bytes of
+  // text, reported as a successful fetch. `lipo` then said "can't figure out
+  // the architecture type" two steps later, which is a sentence about the wrong
+  // thing entirely.
+  //
+  // JavaScript does not check types, and the symptom arrives far from the
+  // mistake, so the check lives where the mistake is made.
+
+  it("refuses a string payload and says what it is", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sdp-install-"));
+    const destination = join(dir, "qjs-aarch64-apple-darwin");
+    await expect(install("/tmp/sdp-tools-abc/qjs-aarch64-apple-darwin", destination)).rejects.toThrow(
+      /asked to write a string/,
+    );
+    // And nothing was written: refusing must not leave a half file behind.
+    expect(existsSync(destination)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("names the real cause rather than blaming the manifest", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sdp-install-"));
+    const destination = join(dir, "qjs");
+    await expect(install("/tmp/some/path", destination)).rejects.toThrow(
+      /bug in\s+fetch_bundled_tools\.mjs, not in the manifest or the network/,
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes bytes, and is not a veto on the ordinary case", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sdp-install-"));
+    const destination = join(dir, "qjs-aarch64-apple-darwin");
+    // The first four bytes of every Mach-O, fat or not.
+    const payload = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01]);
+    await install(payload, destination);
+    expect(readFileSync(destination)).toEqual(payload);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("leaves no .tmp file behind on success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sdp-install-"));
+    await install(Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), join(dir, "qjs"));
+    expect(readdirSync(dir)).toEqual(["qjs"]);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

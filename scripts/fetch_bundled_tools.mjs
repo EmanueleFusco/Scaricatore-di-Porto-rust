@@ -417,7 +417,21 @@ export function destinationPath(outputDir, name, triple) {
   return join(outputDir, `${name}-${triple}${exeSuffix(triple)}`);
 }
 
-async function install(bytes, destination) {
+export async function install(bytes, destination) {
+  // Guard, not decoration. `install` has no other way to notice that it was
+  // handed a string instead of bytes: `writeFile` accepts a string happily and
+  // writes it, so a path that reached here would become a small text file and
+  // the fetch would report success. That happened once (see `downloadSlice`),
+  // and it was only noticed two steps later by `lipo`, which reported an
+  // architecture problem about a file that was never an executable. One cheap
+  // type check turns a mystery into a sentence at the point of the mistake.
+  if (typeof bytes === "string") {
+    fail(
+      `internal error: asked to write a string to ${destination}\n` +
+        `  A path was passed where the contents were expected. This is a bug in\n` +
+        `  fetch_bundled_tools.mjs, not in the manifest or the network.`,
+    );
+  }
   await mkdir(dirname(destination), { recursive: true });
   // Write beside the destination and rename, so a killed build never leaves a
   // half-written executable that the bundler would happily copy into the app.
@@ -544,7 +558,8 @@ async function buildUniversalQjs(manifest, triple, scratch) {
 
   const paths = [];
   for (const slice of slices) {
-    paths.push(await downloadSlice(manifest, "qjs", slice, scratch));
+    // `.path`: lipo needs a file, not bytes.
+    paths.push((await downloadSlice(manifest, "qjs", slice, scratch)).path);
   }
 
   const output = join(scratch, "qjs-universal");
@@ -560,10 +575,16 @@ async function buildUniversalQjs(manifest, triple, scratch) {
 /**
  * Download one slice and verify it against the manifest checksum.
  *
- * Shared by `buildUniversalQjs` (which needs the bytes to lipo together) and by
- * `perArchBytes` (which needs them to leave on disk under their own name), so
- * both go through the same verification instead of one of them trusting a file
- * the other already downloaded.
+ * Returns `{ bytes, path }` and *not* one of the two, because the two callers
+ * need different ones and picking wrong is silent: `buildUniversalQjs` needs a
+ * file to hand to `lipo -create`, `perArchBytes` needs the content to write.
+ *
+ * This is not a hypothetical. The first version returned only `path`, and the
+ * universal fetch wrote that path string *as the contents* of
+ * `binaries/qjs-aarch64-apple-darwin` — a thirty-byte text file. Nothing failed
+ * at that point; the build went on and the damage surfaced two steps later as
+ * `lipo: can't figure out the architecture type`, which says nothing about the
+ * real cause. Making the caller choose is the cheapest way to stop that.
  */
 async function downloadSlice(manifest, name, slice, scratch) {
   const source = platformEntry(manifest, name, slice);
@@ -576,7 +597,7 @@ async function downloadSlice(manifest, name, slice, scratch) {
       `checksum mismatch for ${source.entry.asset}\n  expected ${source.entry.sha256}\n  actual   ${actual}`,
     );
   }
-  return path;
+  return { bytes, path };
 }
 
 /**
@@ -598,7 +619,9 @@ async function downloadSlice(manifest, name, slice, scratch) {
 async function perArchBytes(manifest, name, slice, universalPath, scratch) {
   const { entry } = platformEntry(manifest, name, UNIVERSAL_TRIPLE);
   if ((entry.builtFrom ?? []).length > 0) {
-    return await downloadSlice(manifest, name, slice, scratch);
+    // `.bytes`: the caller writes this to disk, and what goes on disk must be
+    // the slice and not the place the slice was downloaded to.
+    return (await downloadSlice(manifest, name, slice, scratch)).bytes;
   }
   const output = join(scratch, `${name}-${slice}-thin`);
   const arch = lipoArchName(slice);

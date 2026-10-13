@@ -1392,3 +1392,51 @@ macchina Linux. Dettagli in D51.
   2. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
   3. Script e prerequisite di `cargo-xwin` da mettere in `GUIDA_OPERATIVA.md`
      (personale, fuori dal repository).
+
+## 2026-10-13 — M0-C / Un path scritto al posto dei contenuti
+
+Seconda run di `bundle (macos universal)`: il passo di CI ha trovato che
+`binaries/qjs-aarch64-apple-darwin` non è un Mach-O. Dettagli in D52.
+
+- **Done**
+  - `downloadSlice` restituisce `{ bytes, path }`: i due chiamanti dichiarano
+    quale serve. Prima restituiva solo `path` e quel path finiva **scritto come
+    contenuto** del file.
+  - Guardia in `install()`: un payload di tipo stringa viene rifiutato al
+    momento dell'errore, con quattro test.
+  - Il comportamento esiste **solo su macOS**: su Linux il ramo `lipo -thin`
+    funziona, quindi il codice sembrava corretto.
+- **Verified by running**
+  - Asset di qjs scaricati e letti su Linux: `qjs-darwin-arm64` e
+    `qjs-darwin-x86_64` sono Mach-O `MH_EXECUTE`, arm64 e x86_64. **Asset e
+    manifesto sono corretti** — la prima ipotesi (asset sbagliato) era falsa.
+  - `npm test` → **96 verdi** (erano 92: +4 sulla guardia).
+  - La guardia attiva davvero: passando un percorso, `install` fallisce con
+    `internal error: asked to write a string to …`.
+  - Linux: fmt OK, clippy 0 errori, 8 suite Rust verdi, `svelte-check` 0/0,
+    `check:tools` OK, `check:ci` 9 blocchi validi.
+  - Windows via wine: `cargo xwin test --lib` → **132/132**.
+- **Not verified / stubbed**
+  - **Il fetch universale vero e `tauri build --target universal-apple-darwin`
+    non sono mai stati eseguiti.** Non girano su Linux: `lipo`, `tauri build` e
+    la composizione del `.app` non esistono qui. La catena fino a `install` è
+    corretta per costruzione e per test; da lì in poi è la CI che deve dirlo.
+  - Per macOS **non esiste** un equivalente di `cargo-xwin`: la copertura
+    locale che ho per Windows non ce l'ho per macOS, ed è il limite reale di
+    questo approccio.
+  - Ancora da diagnosticare: i due job Windows. La suite completa sotto wine è
+    178/178, quindi la causa più probabile è il bug di D51, già corretto; ma
+    `bundle (windows-x64)` scarica i binari Windows da GitHub, cosa che qui non
+    posso verificare.
+- **Spec items marked "verify" che I checked**
+  - Gli asset macOS di QuickJS-NG sono Mach-O eseguibili: letta l'intestazione
+    su Linux, `filetype 2`, cpu `0x100000c` (arm64) e `0x1000007` (x86_64).
+- **Decisions/deviations**
+  - D52: `{ bytes, path }` esplicito più guardia in `install()`, perché in
+    JavaScript il tipo sbagliato è silenzioso e il sintomo arriva due passi dopo
+    in un messaggio che non nomina la causa.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. Servono comunque le righe `FAILED` dei due job Windows: la suite sotto wine
+     è verde, ma «molto probabile» non è «verificato».
+  3. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
