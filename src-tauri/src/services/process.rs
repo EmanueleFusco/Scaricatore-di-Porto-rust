@@ -1055,6 +1055,38 @@ mod tests {
         OsString::from(value)
     }
 
+    /// A path that is **absolute on the platform the test is running on**.
+    ///
+    /// Not a detail: on Windows `Path::new("/usr/bin/yt-dlp").is_absolute()` is
+    /// `false`, because there is no drive prefix and no UNC root. A hardcoded
+    /// POSIX path would make `validate()` reject it (correctly!) and the tests
+    /// below would either fail for the wrong reason or — worse — pass while
+    /// never reaching the check they exist to cover. That is exactly what
+    /// happened on the first Windows CI run.
+    fn absolute_path(leaf: &str) -> PathBuf {
+        let mut path = if cfg!(windows) {
+            PathBuf::from(r"C:\tools")
+        } else {
+            PathBuf::from("/usr/tools")
+        };
+        path.push(leaf);
+        assert!(
+            path.is_absolute(),
+            "the sample path {} must be absolute on this platform",
+            path.display()
+        );
+        path
+    }
+
+    /// An absolute path to a tool, valid everywhere.
+    fn sample_tool() -> PathBuf {
+        absolute_path(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        })
+    }
+
     // -- RingBuffer ---------------------------------------------------------
 
     #[test]
@@ -1225,7 +1257,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_an_absolute_program_and_an_https_url() {
-        let command = ToolCommand::new("/usr/bin/yt-dlp").url("https://example.org/v");
+        let command = ToolCommand::new(sample_tool()).url("https://example.org/v");
         assert!(command.validate().is_ok(), "must accept");
     }
 
@@ -1247,19 +1279,26 @@ mod tests {
 
     #[test]
     fn validate_refuses_a_non_http_url() {
-        let command = ToolCommand::new("/usr/bin/yt-dlp").url("file:///etc/passwd");
-        assert!(command.validate().is_err());
+        // `sample_tool()`, not a hardcoded path: with a relative path the test
+        // would pass on the "absolute" rule and never reach the URL check.
+        let command = ToolCommand::new(sample_tool()).url("file:///etc/passwd");
+        let error = command.validate().expect_err("must refuse");
+        assert!(
+            error.to_string().contains("http"),
+            "must fail on the scheme, not on something else: {error}"
+        );
     }
 
     #[test]
     fn validate_refuses_a_nul_byte_anywhere() {
-        let command = ToolCommand::new("/usr/bin/yt-dlp").arg("--a\0b");
+        // Same reasoning as above: each case below has to reach the NUL check.
+        let command = ToolCommand::new(sample_tool()).arg("--a\0b");
         assert!(command.validate().is_err());
 
-        let command = ToolCommand::new("/usr/bin/yt-dlp").env("A\0B", "1");
+        let command = ToolCommand::new(sample_tool()).env("A\0B", "1");
         assert!(command.validate().is_err());
 
-        let command = ToolCommand::new("/usr/bin/yt-dlp").env("A", "1\0");
+        let command = ToolCommand::new(sample_tool()).env("A", "1\0");
         assert!(command.validate().is_err());
     }
 
@@ -1267,8 +1306,26 @@ mod tests {
     fn validate_does_not_require_the_program_to_exist() {
         // Existence is a tool-resolution concern (spec §5.2), not an argv one:
         // this function must stay a pure check so it can be unit-tested.
-        let command = ToolCommand::new("/definitely/not/here/yt-dlp");
+        let command = ToolCommand::new(absolute_path("definitely-not-here/yt-dlp"));
         assert!(command.validate().is_ok());
+    }
+
+    #[test]
+    fn a_backslash_path_is_relative_on_unix_and_absolute_on_windows() {
+        // Documents the platform difference that caused the first Windows CI
+        // failure: the separator is not the issue, the drive prefix is.
+        let windows_style = PathBuf::from(r"C:\tools\yt-dlp.exe");
+        assert_eq!(
+            windows_style.is_absolute(),
+            cfg!(windows),
+            "is_absolute() of a drive-prefixed path must follow the target OS"
+        );
+        let posix_style = PathBuf::from("/usr/tools/yt-dlp");
+        assert_eq!(
+            posix_style.is_absolute(),
+            !cfg!(windows),
+            "a path without a drive prefix is not absolute on Windows"
+        );
     }
 
     // -- temp dir -----------------------------------------------------------
@@ -1288,7 +1345,7 @@ mod tests {
 
     #[test]
     fn temp_dir_builder_adds_the_three_variables() {
-        let command = ToolCommand::new("/usr/bin/yt-dlp").temp_dir("/cache/tmp");
+        let command = ToolCommand::new(sample_tool()).temp_dir("/cache/tmp");
         assert_eq!(command.env, temp_env(Path::new("/cache/tmp")));
     }
 

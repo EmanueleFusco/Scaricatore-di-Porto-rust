@@ -608,3 +608,67 @@ minuti-equivalente Linux per run, ~43% della quota mensile gratuita).
 Aspettare la run manuale già avviata: quando `check` diventa verde deve comparire
 `process tests (windows-x64)` e `process tests (macos-arm64)`. È l'unica verifica ancora mancante
 per M0-B.
+
+---
+
+## 2026-10-13 — M0-B bis / la prima run Windows: due test scritti a forma di Linux
+
+### Done
+
+* **Corretti due test che fallivano solo su Windows**, e altri due che passavano per il motivo
+  sbagliato (vedi sotto). Il codice di `validate()` non è stato toccato: aveva ragione.
+* Aggiunto `sample_tool()` / `absolute_path()` nella sezione test: costruiscono un percorso
+  **assoluto sulla piattaforma in esecuzione** (`C:\tools\yt-dlp.exe` su Windows,
+  `/usr/tools/yt-dlp` su Unix e macOS) e contengono un `assert!(path.is_absolute())` interno, così
+  se un domani l'ipotesi si rompe il test fallisce rumorosamente invece di mentire in silenzio.
+* Aggiunto `a_backslash_path_is_relative_on_unix_and_absolute_on_windows`, che fissa per iscritto la
+  differenza di piattaforma invece di lasciarla nella memoria di chi scrive i test.
+
+### Causa vera
+
+```rust
+let command = ToolCommand::new("/usr/bin/yt-dlp").url("https://example.org/v");
+assert!(command.validate().is_ok(), "must accept");
+```
+
+Su Windows `Path::new("/usr/bin/yt-dlp").is_absolute()` è **`false`**: niente prefisso di drive, niente
+radice UNC. Un percorso che comincia con `/` lì è *relativo*. `validate()` lo rifiutava
+correttamente (spec §4.8 vuole percorsi assoluti), il test no.
+
+Il guaio più subdolo: `validate_refuses_a_non_http_url` e `validate_refuses_a_nul_byte_anywhere`
+usavano lo stesso percorso, quindi su Windows **fallivano prima sul controllo "assoluto"** e non
+arrivavano mai a provare né lo schema URL né il byte NUL. Verde, ma incapaci di scovare la
+regressione per cui esistono. Ora l'asserzione controlla anche *perché* è fallita:
+
+```rust
+assert!(error.to_string().contains("http"),
+        "must fail on the scheme, not on something else: {error}");
+```
+
+Lezione per le fasi seguenti: **nei test, mai un percorso hardcoded.** Ogni `PathBuf` in un test
+deve passare da un helper che conosce la piattaforma, o il test è Linux-shaped e mente.
+
+### Verified by running
+
+* `cargo fmt --all -- --check` → pulito.
+* `cargo clippy --all-targets -- -D warnings` → pulito (Linux).
+* `cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings` → pulito. **Compila,
+  non esegue:** la correzione è verificata per tipo e per logica, non per comportamento.
+* `cargo test` su Linux → **61 unit** (era 60) + 15 `process_tree` + 5 `settings_ipc`, tutti verdi.
+
+### Not verified / stubbed
+
+* **I 15 test di `process_tree` non sono mai arrivati a girare su Windows.** `cargo test` si ferma
+  dopo il fallimento della lib, quindi i test di integrazione — che sono quelli che provano davvero
+  Job Object, `CREATE_NO_WINDOW` e il tree-kill — **non sono partiti**. Vanno rilanciati.
+* **`process tests (macos-arm64)`: esito non ancora comunicato.** Se è verde, è la prima verifica
+  reale che `process_group` + `killpg` funzionino su Darwin. Se è saltato, il buco resta aperto.
+* **Domanda di D15 ancora aperta:** `settings_survive_a_restart` (cioè
+  `std::fs::rename` che sostituisce il file su Windows) sta in `settings_ipc`, che per lo stesso
+  motivo non è mai partito su Windows.
+
+### Next step
+
+Rilanciare `process-tests` e arrivare ai test di integrazione su Windows. Se `AssignProcessToJobObject`
+fallisce sul runner, il piano B è documentato in D20/D21 (`taskkill /T /F` come fallback quando il
+Job Object non è assegnabile, per esempio sotto un runner che è già dentro un job).
