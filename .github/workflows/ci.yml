@@ -105,7 +105,14 @@ jobs:
 
       - run: npm run build
 
-      # La versione vive in tre manifest indipendenti e finisce nel NOME dei file
+      # Offline validation of tools.manifest.json: schema, both bundled tools
+      # declared for this target, pinned checksums that look like checksums.
+      # Runs on EVERY push, costs about a second, and fails before anything is
+      # built if the manifest and the spec disagree.
+      - name: Validate the tools manifest
+        run: npm run check:tools
+
+      # The version lives in three manifest indipendenti e finisce nel NOME dei file
       # prodotti. Senza questo controllo si pubblicherebbe v0.2.0 contenente
       # "..._0.1.0_amd64.deb": binari sbagliati con etichetta sbagliata, e su una
       # release pubblicata non si corregge. Costa 10 secondi.
@@ -250,6 +257,25 @@ jobs:
       # NOTA: non si usa `cargo build --release` da solo. Tauri decide
       # "dev vs release" con la feature `custom-protocol`, e solo la CLI la
       # attiva: senza, l'app cercherebbe il frontend sul server di sviluppo.
+      #
+      # I tool inclusi (spec §5.2.1) arrivano da `fetch_bundled_tools.mjs`: senza
+      # questa chiave `bundle.externalBin` fallirebbe con un errore poco chiaro.
+      # Il triple viene derivato dal runner (rustc --print host-tuple), cosi' il
+      # bundle universale cerca `qjs-universal-apple-darwin` e non il binario
+      # nativo: il job universale imposta SDP_TARGET_TRIPLE.
+      - name: Fetch the bundled tools
+        run: npm run fetch:tools
+
+      - name: Report which tools are about to be bundled
+        run: ls -l src-tauri/binaries
+
+      # Spec §5.2.1: "with no internet, the bundled yt-dlp and qjs run
+      # (--version)". Qui la verifica avviene DAVVERO, sui binari appena
+      # scaricati e verificati, prima che finiscano nell'installer.
+      - name: Run the real bundled tools
+        working-directory: src-tauri
+        run: cargo test --test bundled_tools -- --nocapture
+
       - name: Build the bundle
         run: npx tauri build
 
@@ -314,7 +340,19 @@ jobs:
 
       - run: npm ci
 
-      # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche',
+      # Il bundle universale cerca `qjs-universal-apple-darwin`, che solo un
+      # `lipo` sulle due slice native può produrre (spec §5.2.1): la variabile
+      # d'ambiente è il modo più semplice per dirlo allo script di fetch senza
+      # duplicare il resto del job.
+      - name: Fetch the bundled tools (universal)
+        env:
+          SDP_TARGET_TRIPLE: universal-apple-darwin
+        run: npm run fetch:tools
+
+      - name: Report which tools are about to be bundled
+        run: ls -l src-tauri/binaries
+
+      # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche'
       # se fallisce non deve bloccare il .app nativo arm64, che e' quello che
       # serve al test manuale su Apple Silicon. `macos-latest` e' arm64: per la
       # slice Intel serve il target `x86_64-apple-darwin` (installato sopra) e il

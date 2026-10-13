@@ -706,3 +706,302 @@ già prevista da spec §5.2.1 riga 165 e §5.5.
 
 Nota di processo: la frase era stata riportata così com'è nelle note precedenti senza chiederne il
 significato. Le note di M0-C useranno "nessun bootstrap di rete al primo avvio", che è non ambiguo.
+
+---
+
+## 2026-10-13 — M0-C (tools manifest, bundled yt-dlp + qjs, provisioning, UI)
+
+### D31 — Il manifest è **compilato dentro il binario**, non è una risorsa
+
+`tools.manifest.json` sta nella root del repository ed è letto con `include_str!`.
+
+L'alternativa (un file di risorse accanto all'eseguibile) sembra più ovvia e
+sarebbe sbagliata: la sua posizione cambia fra le quattro destinazioni
+(`Contents/Resources` su macOS, `/usr/share` nel `.deb`, la mount di sola
+lettura dell'AppImage, `%LOCALAPPDATA%` sotto NSIS) e una risoluzione sbagliata
+non dà un errore — dà "gli strumenti non ci sono" su una sola piattaforma.
+
+Con `include_str!` l'app non deve cercare nulla, e il manifest viaggia
+nell'aggiornamento dell'app, che è esattamente ciò che spec §5.1 chiede ("the
+manifest can be refreshed by the app's own update, no code change needed").
+
+Un test (`the_manifest_shipped_in_the_repository_is_valid`) lo parsa a ogni
+`cargo test`: un manifesto malformato è un errore di compilazione, non una
+sorpresa al primo avvio.
+
+### D32 — Nomi degli asset e checksum: misurati, non ricordati
+
+Tutto quello che riguarda "il nome del file nella release" è stato preso dalle
+API GitHub il 2026-10-13 e non dalla memoria. La ragione è che la spec lo dice
+esplicitamente ("names changed between tags") e che il costo dell'errore qui è
+silenzioso: un nome sbagliato non fa fallire la compilazione, fa fallire la CI
+dopo il download, o peggio fa mancare un tool dall'installer.
+
+| cosa | valore verificato |
+| :-- | :-- |
+| yt-dlp, release stabile più recente | `2026.08.19` |
+| asset yt-dlp per target | `yt-dlp_linux`, `yt-dlp_linux_aarch64`, `yt-dlp.exe`, `yt-dlp_macos` (universale) |
+| checksum yt-dlp | dal `SHA2-256SUMS` della stessa release (formato `<sha256>␠␠<nome>`) |
+| QuickJS-NG, tag scelto | `v0.17.0` (≥ 0.12.0 richiesto da spec §5.3) |
+| asset qjs per target | `qjs-linux-x86_64`, `qjs-linux-aarch64`, `qjs-windows-x86_64.exe`, `qjs-darwin-arm64`, `qjs-darwin-x86_64` |
+| sha256 qjs v0.17.0 (linux x86_64) | `0bfc02511a9f549c28b53880d988fc7cd5d361e90c5e8afdfcd7dc6774ceace5` |
+| sha256 qjs v0.17.0 (linux aarch64) | `3372133484edf50a69f3c67903af41206d22a061e930e3cfb63269272ef56d2e` |
+| sha256 qjs v0.17.0 (windows x86_64) | `2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77` |
+| sha256 qjs v0.17.0 (darwin arm64) | `8be3ddfe3397d2e692e4e1e8972ee9d032a0a580505d2f8b4ea528cf1b651c11` |
+| sha256 qjs v0.17.0 (darwin x86_64) | `9e5e101b4fd13cda3204222ca9f8be35412c41dcdef3745829633b7a67245412` |
+| licenze | yt-dlp **Unlicense**, QuickJS-NG **MIT**: entrambe lette dai file LICENSE dei repository |
+
+**QuickJS-NG non pubblica checksum.** Lo script li calcola al primo download e
+li scrive nel manifest; da quel momento sono verificati come quelli di yt-dlp. È
+il massimo che si può fare senza fidarsi di qualcun altro, ed è detto qui.
+
+**Il bundle universale macOS non è un asset.** QuickJS-NG pubblica due slice;
+l'entry `universal-apple-darwin` del manifest dichiara `builtFrom` e lo script le
+unisce con `lipo` sul runner macOS. Per questo quell'entry non ha `sha256`: non
+è scaricata. Un test lo verifica.
+
+### D33 — `releases/latest/download/` è risultato inaffidabile: si risolve il tag via API
+
+Misurato il 2026-10-13: l'URL `…/releases/latest/download/yt-dlp_linux` ha
+risposto **404 per minuti**, sia con curl sia con Node, su HTTP/1.1 e HTTP/2,
+mentre lo stesso file con il **tag esplicito** nella stessa finestra rispondeva
+200. Non è stato trovato un pattern (header, user agent, accept-encoding,
+connessioni riusate): è un comportamento del bordo di GitHub.
+
+Lo script quindi chiama `https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest`,
+prende `tag_name` e gli URL esatti degli asset, e **registra la versione** che sta
+per costruire — che è anche ciò che spec §5.2.1 chiede ("recording its version").
+Il template `latest` resta nel manifest come ripiego se l'API non risponde, e i
+tentativi sono ripetuti con attese crescenti.
+
+Costo: una richiesta all'API per build (il limite anonimo è 60/ora/IP e una build
+ne fa una). Beneficio: una build non fallisce per un alias che si è raffreddato.
+
+### D34 — `deno` **non** è nel manifest, per ora
+
+La prima stesura del manifest lo dichiarava con `versioning: "pinned"` e
+`version: null`. La validazione l'ha rifiutata — che è esattamente il suo
+compito: un'entry che non si può installare è uno stato a metà che il backend
+dovrebbe gestire in modo speciale.
+
+Le opzioni erano riempirlo (inventando un tag) o toglierlo. L'abbiamo tolto: il
+suo versionamento è una decisione di M1 (spec §5.3.2, Deno lazy con consenso) e
+finché non c'è, l'app lo **rileva** (è nella lookup order, quindi Homebrew e
+`~/.deno/bin` lo trovano) ma non lo scarica. Nel manifest entrerà con versione e
+checksum veritiere in M1. `tools::extra_tools()` elenca `ffmpeg` e `ffprobe`
+per lo stesso motivo: spec §5 dice di *preferire* l'installazione di sistema.
+
+Conseguenza onesta: la pagina Strumenti oggi **non può** installare niente, e il
+bottone non è mostrato. Non è un vicolo cieco (D30): ogni riga offre "Usa il mio
+percorso" e `tools_install` risponde con un errore localizzato che spiega il
+motivo, invece di una promessa non mantenuta.
+
+### D35 — `reqwest` 0.12, non 0.13: i nomi delle feature di spec §1 esistono solo sulla 0.12
+
+Spec §1 riga 49 prescrive `default-features = false, features =
+["rustls-tls", "stream", "json"]`. Quelle feature **non esistono più** in
+reqwest 0.13, che le ha rinominate (`rustls`, `rustls-no-provider`,
+`native-tls`, …). Con 0.13 si sarebbe potuto scrivere `features = ["rustls-tls"]`
+solo scoprendo, dal messaggio di Cargo, che il nome è sbagliato.
+
+Nella 0.12 `rustls-tls` = `rustls-tls-webpki-roots` = `__rustls-ring`: si usa
+**ring**, non aws-lc-rs, quindi nessun assembler e nessun `cmake` su Windows. È
+la stessa combinazione di `tauri-plugin-http`, il plugin ufficiale.
+
+Radici: le `webpki-roots` sono incorporate nel binario e identiche sui tre
+sistemi. Il prezzo è che una CA aziendale installata nel sistema non viene
+usata; per un'app che scarica da GitHub e Hugging Face è la scelta più
+prevedibile. Nota per il futuro: se un utente segnalerà un proxy aziendale, il
+passaggio è `rustls-tls-native-roots` (verificare i requisiti di build).
+
+Dipendenze aggiunte, con l'impatto che impatta (AGENTS.md §8):
+`reqwest`+`rustls` (~3 MB, obbligata da spec §1), `sha2` (~50 kB),
+`zip`+`tar`+`flate2`+`lzma-rs` (~400 kB, tutte Rust puro). Nessuna di queste
+richiede un toolchain C: `zip` ha `default-features = false` perché il suo
+default include `xz`, che lega liblzma.
+
+### D36 — Le feature di versione sono per-tool, e il parser accetta il prefisso `n` di ffmpeg
+
+`--version` non è universale: spec §5.2 dice "`--version` **(or equivalent)**" e
+l'eccezione è reale. Verificato su un `ffmpeg` vero il 2026-10-13: il flag
+documentato è `-version`.
+
+E il banner reale è `ffmpeg version n9.0.2 Copyright (c) 2000-2026 …`: il
+prefisso `n` fa parte del token. Un parser che accetta solo token interamente
+numerici avrebbe letto **"ffmpeg non ha un numero di versione"** e mostrato
+"versione sconosciuta" su ogni macchina con ffmpeg 7 o successivo.
+
+Correzione collegata: una versione notturna di yt-dlp è `YYYY.MM.DD.NNNNNN`,
+che **è** numerica a punti e si confronta normalmente. Una nota precedente di
+questo file diceva il contrario; la misura sul nome reale ha corretto la nota.
+
+### D37 — L'unica porta aperta verso http è `loopback_http()`, e rifiuta ogni host non-loopback
+
+I test del downloader hanno bisogno di un server HTTP in chiaro. La prima
+versione aveva un flag `allow_insecure`, che chiunque avrebbe potuto puntare
+sull'internet: un'eccezione "solo per i test" che si può puntare ovunque non è
+un'eccezione.
+
+Ora `Transport::loopback_http()` accetta `localhost`, `127.x.y.z` e `[::1]` e
+nient'altro. I test hanno trovato due buchi nella versione iniziale:
+`http://127.0.0.1.evil.com` passava (`starts_with("127.")`, che è un host
+internet come un altro) e `http://127.0.0.1@evil.com` passava perché il
+userinfo veniva letto al posto dell'host.
+
+### D38 — Un solo guard di path traversal per zip e tar, e rifiuta la `\` su ogni sistema
+
+Le specifiche dei due formati descrivono nomi in modo diverso, quindi la tentazione
+è di scrivere due guard. Una sola funzione (`safe_extract_path`) copre
+entrambi, e in più rifiuta la barra rovesciata **anche su Linux**: lì
+`a\..\..\etc` è un nome di file innocuo, sulla stessa app spacchettata su Windows
+è un traversal. Una guardia che regge solo sulla macchina che ha scritto il
+codice non è una guardia.
+
+I link simbolici dentro un `.tar` non vengono mai materializzati: un archivio di
+tool non ha motivo di contenerne e onorarli è il modo tipico di uscire dalla
+cartella di destinazione. C'è un test che lo afferma.
+
+### D39 — In un build di sviluppo la ricerca del tool incluso guarda anche il nome col triple
+
+Il bundler mette i tool inclusi **accanto all'eseguibile principale, senza il
+suffisso `-<triple>`** (verificato in `tauri-bundler`
+`bundle/settings.rs::copy_binaries`, che toglie `-<target>` dal nome; `bin_dir` è
+`Contents/MacOS` su macOS, `/usr/bin` nel `.deb`, `$INSTDIR` sotto NSIS, la
+squashfs nell'AppImage).
+
+Ma `tauri dev` non copia nulla, e quello che lo script di fetch lascia in
+`src-tauri/binaries/` ha **ancora** il suffisso. Senza il candidato in più, la
+prima volta che si preme F5 dopo `npm run fetch:tools` si sarebbe vista una pagina
+Strumenti che dice che yt-dlp non esiste, subito dopo averlo scaricato. Il
+candidato extra esiste solo in build di debug e non cambia l'ordine di
+un'installazione vera.
+
+### D40 — Il `lookup` non usa più funzioni "da" che ricavano l'ambiente
+
+`lookup_from` / `lookup_for` costruivano il `Lookup` duplicando le tre righe di
+`ToolContext::lookup`. Sono state rimosse: un solo posto legge `PATH`, la home e
+gli override, ed è quello che i test possono raggiungere.
+
+### D41 — `tools_install` esiste e risponde "non ancora", invece di non esistere
+
+La spec §5.2.1 dice che la pagina Strumenti deve offrire un Install per ogni
+composizione scaricabile e che "features whose tool is missing are visible but
+disabled … never a dead end". Oggi non c'è **niente** di scaricabile nel manifest,
+quindi il comando esiste, accetta il nome e risponde `UNSUPPORTED` con un dettaglio
+che dice perché e quando arriverà. Un bottone che non fa niente è peggio di
+un'assenza.
+
+### D42 — `minVersion` di yt-dlp: `2025.11.12`, con le prove che ho e quelle che non ho
+
+Spec §5.3 (QuickJS → Deno) richiede `--js-runtimes`, che nel 2026 esiste
+sicuramente. **Non** ho pinning la release esatta che lo ha introdotto: la ricerca
+nel changelog di yt-dlp non l'ha trovata (il changelog non nomina mai
+`--js-runtimes`).
+
+Quello che **ho** verificato è la release `2025.11.12`, il cui testo dice
+«**An external JavaScript runtime is now required for full YouTube support**».
+È un pavimento conservativo e ragionevole, non un fatto esatto sul flag.
+
+→ **TODO(verify) in M1**, quando si implementa la strategia QuickJS: verificare
+con `--help` del binario fissato quale sia la release minima reale, e correggere
+`minVersion` nel manifest se è più bassa. Il codice non dipende dal valore: legge
+il minimo dal manifest, quindi la correzione è una riga di JSON.
+
+### D43 — Il `-U` non viene mai eseguito su un tool che non è nostro
+
+Spec §5.5 dice di aggiornare "the binary's own updater on the **app-data copy**".
+Se la risoluzione trova un yt-dlp da Homebrew o da un gestore di pacchetti,
+aggiornarlo non è affare nostro: il comando risponde `updated: false` con un
+messaggio che dice da dove viene e di aggiornarlo lì. Aggiornare il solo file
+proprio è l'unica interpretazione che non rompe il sistema dell'utente.
+
+### D44 — Il classificatore dell'aggiornamento usa il codice di uscita **prima** del testo
+
+Prima versione: se il testo non conteneva "up to date", l'aggiornamento era
+riportato come riuscito. Con `ERROR: unable to download` e uscita non-zero
+l'aggiornamento risultava **riuscito**. Il test l'ha trovato. Ora un'uscita non
+zero non è mai un aggiornamento, e il testo serve solo quando l'uscita è 0 ma
+non è stato possibile confrontare le versioni.
+
+Nota sul perché è difficile stabilirlo dal solo testo: `-U` scrive su **stderr**
+e "already up to date" è un'uscita 0 normale. Per questo esiste una funzione
+dedicata con i casi esatti coperti dai test.
+
+### D45 — La CI scarica i tool prima di costruire, e li **esegue**
+
+`bundle.externalBin` senza i file fallisce con un errore poco leggibile, quindi i
+job `bundle` e `bundle-macos-universal` ora chiamano `npm run fetch:tools` prima
+di `tauri build`, e stampano `ls -l src-tauri/binaries` nel log.
+
+In più, prima di costruire girano `cargo test --test bundled_tools`: il vero
+yt-dlp e il vero qjs, presi da quanto appena scaricato, devono rispondere a
+`--version`. Questo è il criterio di uscita di spec §14 per M0 ("yt-dlp + qjs
+work offline right after install") verificato **davvero** e non dichiarato.
+
+Il job `check`, che gira a ogni push, aggiunge `npm run check:tools`: validazione
+del manifest **offline**, senza rete, in circa un secondo.
+
+### D46 — Il test del falso tool è multi-call: decide da `argv[0]`
+
+`fake_tool` copiato come `yt-dlp`, `qjs` o `ffmpeg` si comporta come quel
+programma, `-U` compreso (cambia la versione che risponderà alla chiamata
+successiva). È così che la lookup di spec §5.2 si prova offline su tre sistemi
+senza dipendere da quale yt-dlp è installato sulla macchina che esegue i test.
+
+Tre cose imparate scrivendo i test, che vale la pena non dimenticare:
+
+1. **`ffprobe`/`ffmpeg` rispondono a `-version`**, non a `--version` (D36);
+2. **uno script di shell finto non è "un file che non gira"**: su Linux e macOS
+   gira, e il test passa per il motivo sbagliato. I byte non eseguibili sono
+   l'unico modo onesto di simularlo su tre sistemi;
+3. **chiudere una socket con dati non letti manda RST**, e l'RST fa perdere al
+   client il corpo **già ricevuto**: sembrava un bug del downloader, era il
+   server di test.
+
+### D47 — `ETXTBSY`: Linux diceva "yt-dlp non c'è" per colpa del filesystem
+
+Il test della copia al primo avvio falliva **una volta su tre**, sempre su un
+test diverso, e solo quando i test girano in parallelo. Il sintomo era
+`resolve()` che restituiva `None`: la copia appena creata in app data non era
+eseguibile.
+
+Il motivo, stampato: `spawn error starting "…/tools/yt-dlp/yt-dlp": Text file
+busy (os error 26)`.
+
+`ETXTBSY` è ciò che Linux risponde a `execve` quando **qualcosa** tiene ancora
+il binario aperto in scrittura. Ed è esattamente la situazione che questo
+progetto crea: spec §5.2.1 copia yt-dlp in app data e lo esegue subito dopo.
+
+Una scansione di `/proc/*/fd` fatta al momento del fallimento **non trova
+nessun titolare**: chi scriveva aveva già chiuso. È la firma di un errore
+transitorio, non di un bug stabile.
+
+Cosa è stato fatto, due pezzi:
+
+1. **`process.rs` ritenta lo spawn** su `ETXTBSY`: 5 tentativi, 20 ms di
+   attesa, complessivi 100 ms — ben sotto la sonda più corta dell'app (5 s), e
+   c'è un test che lo vincola. Un `Command` non si può riusare, quindi
+   l'argv si calcola una volta e il `Command` viene ricreato a ogni tentativo.
+2. **`install_app_data_copy` fa `fsync`** del file prima del rename e della
+   cartella dopo. Non è la causa dell'`ETXTBSY`, ma è la correttezza che
+   comunque mancava: senza, un'interruzione di corrente può lasciare un
+   eseguibile che parte e poi muore.
+
+Il punto da tenere: **senza il ritento, il sintomo per l'utente sarebbe stato
+"yt-dlp non è installato"**, che è la diagnosi più sbagliata possibile: il
+file c'era, era giusto, e sarebbe bastato aspettare 20 ms. Non è una difesa
+"per il test": è la difesa per il caso reale in cui un antivirus, un indicizzatore
+o un backup tiene aperto per un istante il file appena scritto.
+
+Cosa **non** ho determinato: chi teneva il file aperto in quel momento. Due
+ipotesi restano aperte — un altro processo della suite che leggeva la sorgente
+condivisa `target/debug/examples/fake_tool`, o una finestra del kernel sulla
+scrittura. Il ritento copre entrambe, quindi la domanda non blocca il lavoro, ma
+è registrata qui perché qualcuno potrebbe volerla chiudere.
+
+Nota di processo: i due fix sono entrambi ragionevoli **separatamente**, ma solo
+la ripetizione del test li ha distinti. Senza il `fsync` il ritento da solo
+avrebbe potuto sembrare sufficiente; senza il ritento il `fsync` da solo
+avrebbe potuto sembrare sufficiente. La lezione è la stessa di D29: «compila» e
+«funziona» sono due affermazioni diverse, e qui anche «passa una volta su tre» e
+«passa» lo erano.

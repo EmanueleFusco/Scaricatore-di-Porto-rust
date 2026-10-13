@@ -329,6 +329,12 @@ async fn read_version_banner(
         Ok(result) if result.success() => {
             let text = stdout.text();
             if text.trim().is_empty() {
+                if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
+                    eprintln!(
+                        "PROBE-DEBUG {path:?}: success but empty stdout, stderr={:?}",
+                        result.stderr_tail
+                    );
+                }
                 None
             } else {
                 Some(text)
@@ -336,11 +342,22 @@ async fn read_version_banner(
         }
         // A tool that answers on stderr and exits non-zero is still telling us
         // something; only an empty answer counts as unusable.
-        Ok(_) => {
+        Ok(other) => {
             let text = stdout.text();
+            if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
+                eprintln!(
+                    "PROBE-DEBUG {path:?}: exit={:?} stdout={text:?} stderr={:?}",
+                    other.exit_code, other.stderr_tail
+                );
+            }
             (!text.trim().is_empty()).then_some(text)
         }
-        Err(_) => None,
+        Err(err) => {
+            if std::env::var_os("SDP_DEBUG_PROBE").is_some() {
+                eprintln!("PROBE-DEBUG {path:?}: spawn error {err}");
+            }
+            None
+        }
     }
 }
 
@@ -614,6 +631,12 @@ pub fn install_app_data_copy(
         ))
     })?;
     make_executable(&partial)?;
+    // fsync before the rename, so the file that becomes visible under its real
+    // name is on disk and not only in the page cache. Without it, a power loss
+    // can leave an executable that starts and then dies.
+    if let Ok(file) = fs::File::open(&partial) {
+        let _ = file.sync_all();
+    }
     fs::rename(&partial, &target).map_err(|err| {
         let _ = fs::remove_file(&partial);
         AppError::Io(io::Error::new(
@@ -621,6 +644,10 @@ pub fn install_app_data_copy(
             format!("installing the app-data copy of yt-dlp: {err}"),
         ))
     })?;
+    // And fsync the directory, so the rename itself survives.
+    if let Ok(dir) = fs::File::open(&target_dir) {
+        let _ = dir.sync_all();
+    }
     Ok(target)
 }
 

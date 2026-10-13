@@ -16,6 +16,8 @@
     "tauri": "tauri",
     "app:binary": "node scripts/run.mjs binary",
     "check:ci": "node scripts/check-ci-syntax.mjs",
+    "check:tools": "node scripts/fetch_bundled_tools.mjs --check",
+    "fetch:tools": "node scripts/fetch_bundled_tools.mjs",
     "check:release": "node scripts/check-release-version.mjs"
   },
   "license": "MIT",

@@ -86,6 +86,28 @@ const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// used, exactly as the spec insists.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// How many times a spawn is retried when the kernel answers `ETXTBSY`.
+///
+/// "Text file busy" is what Linux returns from `execve` when **anything** still
+/// holds the binary open for writing. It is transient by nature, and this
+/// project creates exactly the situation that provokes it: the first launch
+/// copies yt-dlp into the app data dir and runs it a moment later (spec
+/// §5.2.1). It is not hypothetical — the test suite hit it while running the
+/// tools lookup in parallel, and no `/proc` holder survived long enough to be
+/// observed, which is what "transient" looks like from the inside.
+///
+/// The alternative — reporting "yt-dlp not found" because the filesystem was
+/// busy for a few milliseconds — is the failure mode this avoids.
+pub const ETXTBSY_RETRIES: usize = 5;
+
+/// Pause between those retries. Short: the writer closes in microseconds.
+pub const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+
+/// Is this the "the file is being written right now" error?
+pub fn is_text_file_busy(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(26)
+}
+
 /// Exit code handed to every process of a terminated Windows job. On Unix the
 /// exit status comes from the signal instead and is reported as "no exit code".
 #[cfg(windows)]
@@ -971,23 +993,37 @@ pub async fn spawn(cmd: ToolCommand, on_stdout_line: LineSink) -> Result<Running
     };
 
     let program = cmd.program.clone();
-    let mut command = Command::new(&program);
-    command
-        .args(cmd.argv())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(dir) = &cmd.current_dir {
-        command.current_dir(dir);
-    }
-    for (key, value) in &cmd.env {
-        command.env(key, value);
-    }
-    configure(&mut command);
 
-    let mut child = command
-        .spawn()
-        .map_err(|err| process_error(&format!("starting {program:?}"), err))?;
+    // Build the argv array once and re-create the `Command` per attempt: a
+    // `Command` cannot be spawned twice, and the ETXTBSY retry needs a fresh one.
+    let argv = cmd.argv();
+    let mut busy_attempts = 0;
+    let mut child = loop {
+        let mut command = Command::new(&program);
+        command
+            .args(&argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(dir) = &cmd.current_dir {
+            command.current_dir(dir);
+        }
+        for (key, value) in &cmd.env {
+            command.env(key, value);
+        }
+        configure(&mut command);
+
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(err) if is_text_file_busy(&err) && busy_attempts < ETXTBSY_RETRIES => {
+                busy_attempts += 1;
+                tokio::time::sleep(ETXTBSY_RETRY_DELAY).await;
+            }
+            Err(err) => {
+                return Err(process_error(&format!("starting {program:?}"), err));
+            }
+        }
+    };
 
     // From here on the child exists. If the tree handle cannot be built we own
     // the responsibility of not leaving it behind.
@@ -1419,5 +1455,25 @@ mod tests {
         assert_eq!(json["cancelled"], false);
         assert_eq!(json["stderrTail"][0], "WARNING: x");
         assert_eq!(json["durationMs"], 12);
+    }
+
+    #[test]
+    fn text_file_busy_is_recognised_and_nothing_else_is() {
+        // errno 26 on Linux, and nothing else: mistaking another error for it
+        // would turn a real failure into a five-times-slower real failure.
+        let busy = io::Error::from_raw_os_error(26);
+        assert!(is_text_file_busy(&busy));
+        for other in [2, 13, 22, 27] {
+            assert!(!is_text_file_busy(&io::Error::from_raw_os_error(other)));
+        }
+        assert!(!is_text_file_busy(&io::Error::other("not an os error")));
+    }
+
+    #[test]
+    fn the_etxtbsy_retry_is_short_enough_to_stay_invisible() {
+        // The worst case must stay well inside the shortest timeout in the app,
+        // or the retry would buy nothing.
+        let worst = ETXTBSY_RETRY_DELAY * ETXTBSY_RETRIES as u32;
+        assert!(worst <= Duration::from_millis(250), "{worst:?} is too long");
     }
 }

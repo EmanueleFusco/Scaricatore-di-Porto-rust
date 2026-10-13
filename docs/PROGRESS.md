@@ -1011,3 +1011,177 @@ scrive il codice e non a chi lo fa girare:
 ### Next step
 
 **M0-C**, senza altri prerequisiti da questa parte.
+
+---
+
+## 2026-10-13 — M0-C (manifest, tool inclusi, provisioning, pagina Strumenti, CI)
+
+### Done
+
+* **`tools.manifest.json`** (spec §5.1): `yt-dlp` in modo *always latest* con checksum
+  dal `SHA2-256SUMS` della release, `qjs` (QuickJS-NG) con tag e sha256 fissati.
+  Solo questi due sono inclusi (spec §0.7). `deno` **non** c'è: D34.
+* **`src-tauri/src/services/manifest.rs`**: tipi serde + validazione, 22 test. Il
+  manifesto è compilato nel binario (D31).
+* **`scripts/fetch_bundled_tools.mjs`**: scarica, verifica, rinomina, colloca in
+  `src-tauri/binaries/<nome>-<triple>[.exe]`. Risolve il tag via API GitHub
+  perché l'alias `latest` è risultato inaffidabile (D33). `--check` valida il
+  manifesto offline, `--verify-pins` riverifica gli sha256.
+* **`bundle.externalBin`** con `yt-dlp` e `qjs`; a runtime si cercano accanto
+  all'eseguibile (verificato in `tauri-bundler`).
+* **`services/tools.rs`**: le cinque fonti della lookup di spec §5.2 come lista
+  pura e ordinata; ogni candidata è validata **eseguendola** con timeout di 5 s.
+  Copia in app data al primo avvio; `-U` solo sulla copia nostra (D43).
+* **`services/download.rs`**: HTTPS, resume con `Range`, sha256, `chmod +x`,
+  rename atomico, zip/tar/tar.gz/tar.xz con un solo guard di path traversal.
+* **`commands/tools.rs`**: 9 comandi sottili + copia al primo avvio in `setup`.
+* **UI**: pagina Strumenti (tabella, azioni per riga, path e banner), procedura
+  iniziale con i passaggi 1, 2 e 4 di spec §11.1 (il 3 è un segnaposto
+  saltabile per M5), Impostazioni a schede, dizionari IT/EN completi.
+* **CI**: `npm run check:tools` nel job `check` (offline), fetch dei tool + test
+  sui tool **reali** + `ls` nel job `bundle` e in quello universale.
+* **`docs/SPIKES.md`** riscritto: sei prove con il metodo, cosa può andare storto
+  e i campi da riempire.
+
+### Verified by running
+
+Tutti i comandi di `AGENTS.md` §4, più quelli nuovi:
+
+| controllo | esito |
+| :-- | :-- |
+| `cargo fmt --all -- --check` | pulito |
+| `cargo clippy --all-targets -- -D warnings` | pulito |
+| `cargo test` | **179 verdi** (133 lib + 3 bundled_tools + 9 download + 15 process_tree + 6 settings_ipc + 13 tools) |
+| `npm run check` | 0 errori, 0 warning |
+| `npm test` | **72 verdi** in 5 file |
+| `npm run build` | ok, 108,71 kB JS |
+| `npm run check:ci` | 8 blocchi `run: \|` validi |
+| `npm run check:tools` | manifesto valido, 2 tool inclusi |
+| `node scripts/fetch_bundled_tools.mjs` | yt-dlp **2026.08.19**, qjs **0.17.0**, checksum verificati |
+
+**Il criterio di uscita di M0, provato per davvero** (spec §14: "yt-dlp + qjs
+work offline right after install"):
+
+* `cargo test --test bundled_tools` esegue i **binari veri** attraverso la lookup
+  dell'app, senza rete:
+  ```
+  yt-dlp: 2026.08.19 (from …/src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu)
+  qjs: 0.17.0 (from …/src-tauri/binaries/qjs-x86_64-unknown-linux-gnu)
+  ```
+  e per qjs anche uno script vero (`console.log('sdp-qjs-ok')`), perché è qjs
+  che yt-dlp esegue per la sfida EJS: un interprete che risponde solo a
+  `--version` passerebbe ogni altro test e fallirebbe sul primo link.
+* `npx tauri build` completo. Contenuto del `.deb` **verificato**, non supposto:
+  ```
+  /usr/bin/scaricatore-di-porto   5 039 440 byte
+  /usr/bin/yt-dlp               40 446 224 byte
+  /usr/bin/qjs                   2 562 504 byte
+  ```
+* L'app avviata davvero (build di debug, `XDG_*` su una cartella di prova):
+  ```
+  scaricatore-di-porto: yt-dlp installed in the app data dir at
+    …/com.scarikatorediporto.app/tools/yt-dlp/yt-dlp
+  ```
+  e la **copia in app data risponde**: `yt-dlp --version` → `2026.08.19`.
+  Viene creata anche la cartella temporanea privata (spec §4.9).
+* Dimensioni misurate (`report-bundle-sizes.mjs`): binario applicativo **4,81 MiB**
+  (obiettivo spec §1 ≤ 15 MB ✅), `.deb` **41,36 MiB**, `.rpm` **41,36 MiB**,
+  AppImage **147,27 MiB** (escluso dal budget).
+
+### Not verified / stubbed
+
+* **Solo Linux x64.** Tutto il resto — Windows, macOS arm64 e universale, Tier 2 —
+  aspetta la CI. In particolare `lipo` per il `qjs` universale è eseguito solo
+  su runner macOS e qui non è mai girato.
+* **`yt-dlp -U` non è mai stato eseguito contro il vero yt-dlp**: l'aggiornatore
+  è provato solo con il falso tool multi-call. Il `-U` vero riscrive il proprio
+  file mentre è in esecuzione, e questo è esattamente il caso che tocca la copia
+  in app data: va provato a mano.
+* **Nessun download è mai arrivato dalla rete dall'app**, perché nel manifesto
+  non c'è ancora nessuna entry installabile (D34, D41). Il downloader è provato
+  contro un server in loopback che serve corpo, resume, checksum sbagliato, 404 e
+  connessione interrotta.
+* **La pagina Strumenti e la procedura non sono state guardate con gli occhi.**
+  `svelte-check` e `npm run build` passano, l'app parte, ma nessuno ha guardato
+  la tabella con un tool mancante.
+* **`quarantine_repair` su macOS non è eseguibile qui.** È best-effort, solo
+  macOS, solo per i file in app data, e dopo una sonda già fallita.
+* La catena `download → extract → install` non è stata esercitata end-to-end con
+  un archivio reale: i test costruiscono archivi sintetici per non avere una
+  dipendenza di rete in una suite che deve essere offline.
+
+### Spec items marked "verify" that I checked
+
+* **Nomi degli asset GitHub** → presi dalle API GitHub, non dalla memoria
+  (D32). yt-dlp `2026.08.19`: `yt-dlp_linux`, `yt-dlp_linux_aarch64`,
+  `yt-dlp.exe`, `yt-dlp_macos`. QuickJS-NG `v0.17.0`: `qjs-linux-x86_64`,
+  `qjs-linux-aarch64`, `qjs-windows-x86_64.exe`, `qjs-darwin-arm64`,
+  `qjs-darwin-x86_64`. **Il nome è cambiato rispetto alle versioni precedenti
+  della spec**: non esiste più `qjs-darwin` generico.
+* **checksum qjs** → calcolati al primo download e messi nel manifesto, perché
+  QuickJS-NG **non pubblica** checksum.
+* **licenze** → yt-dlp **Unlicense**, QuickJS-NG **MIT**, lette dai file LICENSE.
+* **`externalBin`** → letto in `tauri-utils/src/config.rs` (suffisso
+  `<nome>-<triple>[.exe]`, percorsi relativi a `tauri.conf.json`) e in
+  `tauri-bundler` (`copy_binaries` toglie `-<target>`; destinazione
+  `Contents/MacOS`, `/usr/bin`, `$INSTDIR`, squashfs dell'AppImage).
+* **flag di yt-dlp** → `-U, --update` e `--update-to [CHANNEL]@[TAG]` letti nel
+  `--help` del binario scaricato.
+* **flag di versione** → `ffmpeg -version` (non `--version`), verificato su un
+  `ffmpeg` vero; banner reale `ffmpeg version n9.0.2 …` (D36).
+* **banner reali** → `2026.08.19` (yt-dlp), `0.17.0` (qjs),
+  `ffmpeg version n9.0.2 …` (ffmpeg), tutti riprodotti come stringhe di test.
+* **feature di reqwest** → `rustls-tls` esiste solo sulla linea 0.12, e in 0.13
+  usa **ring**, non aws-lc-rs (D35).
+* **`minVersion` di yt-dlp** → **non** verificato al livello della singola
+  release: si è potuto verificare solo che la release `2025.11.12` annuncia
+  «an external JavaScript runtime is now required». `TODO(verify)` in M1 (D42).
+* **label dei runner** → quelle della M0-B sono state riverificate e non sono
+  cambiate; nessuna nuova etichetta è stata introdotta qui.
+
+### Bugs trovati e corretti dai test (sette)
+
+1. Un aggiornamento **fallito** veniva riportato come riuscito quando il testo non
+   conteneva "up to date" (D44).
+2. Il retry interno del downloader riusava l'offset **di prima del loop**, quindi
+   ripeteva la stessa richiesta invece di riprendere.
+3. `Transport::loopback_http()` accettava `http://127.0.0.1.evil.com` e
+   `http://127.0.0.1@evil.com` (D37).
+4. Il guard di estrazione non rifiutava la barra rovesciata su Linux, dove è un
+   nome innocuo ma sulla stessa app su Windows è un traversal (D38).
+5. In un build di sviluppo la lookup **non trovava** i tool inclusi, perché
+   `tauri dev` non copia nulla e il file conserva il suffisso `-<triple>` (D39).
+6. Il parser delle versioni leggeva "versione sconosciuta" per ogni `ffmpeg` 7 o
+   successivo, per via del prefisso `n` (D36).
+7. **`ETXTBSY`**: Linux rispondeva "yt-dlp non c'è" perché la copia appena
+   scritta era ancora "busy" (D47). È l'unico dei sette che avrebbe colpito
+   l'utente finale con una diagnosi sbagliata.
+
+A questi si aggiunge il caso che la validazione del manifesto ha **rifiutato la
+mia stessa prima stesura** (deno dichiarato "pinned" senza versione), che è il
+miglior argomento a favore di avere la regola scritta prima dei dati.
+
+### Needs a human — AGENTS.md §10.5
+
+1. **`docs/SPIKES.md` S1**: firmare e notarizzare su macOS **con dentro**
+   `yt-dlp_macos` e `qjs`. Se non passa, la spec ha già deciso il fallback
+   (scaricare yt-dlp al primo avvio su macOS): va applicato, non deciso.
+2. **S2**: l'installer firmato su una macchina Windows pulita con Defender
+   acceso. Nessuno ha ancora installato un binario prodotto dalla CI.
+3. **S3**: il costo di avvio di `yt-dlp` one-file contro la variante spacchettata.
+   Il metodo è pronto; il numero no.
+4. **S4**: il budget dell'installer. I numeri ci sono (41,4 MiB), la soglia no.
+5. **S5**: cancellare un download vero e guardare l'elenco dei processi. È la
+   prima occasione in cui l'albero è `yt-dlp → ffmpeg → runtime JavaScript`.
+6. **Guardare la pagina Strumenti** con l'app aperta: una riga "non trovato", una
+   riga "troppo vecchio", il pulsante "Usa il mio percorso", la procedura
+   iniziale.
+7. **Provare `-U` sul vero yt-dlp**, che riscrive il proprio file mentre gira.
+
+### Next step
+
+**M1**, con il precondition che questa fase si chiuda con la CI verde sulle tre
+piattaforme. Il primopezzo di M1 che tocca M0-C è `services/jsruntime.rs`: i
+flag `--no-js-runtimes --js-runtimes quickjs:<path>` vanno verificati con
+`--help` sul binario fissato, e lì si chiude anche il `TODO(verify)` su
+`minVersion` (D42).

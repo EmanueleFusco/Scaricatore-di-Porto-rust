@@ -325,7 +325,7 @@ async fn updating_twice_reports_that_nothing_changed() {
     )
     .await
     .expect("first update");
-    assert!(first.updated);
+    assert!(first.updated, "first update: {first:?}");
 
     let second = tools::update_ytdlp(
         &installed,

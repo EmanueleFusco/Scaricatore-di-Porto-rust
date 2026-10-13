@@ -239,10 +239,23 @@ pub fn bootstrap_first_run(context: &crate::state::ToolContext) -> Option<PathBu
         .join(tools::executable_name(manifest::YTDLP, context.triple()));
     if !bundled.is_file() {
         // Development build without a fetch, or a store build: not an error.
+        // Logged, because "the Tools page says yt-dlp is missing" is otherwise
+        // impossible to explain from the outside.
+        eprintln!(
+            "scaricatore-di-porto: no bundled yt-dlp at {} (target {})",
+            bundled.display(),
+            context.triple()
+        );
         return None;
     }
     match tools::install_app_data_copy(&bundled, context.tools_dir(), context.triple()) {
-        Ok(path) => Some(path),
+        Ok(path) => {
+            eprintln!(
+                "scaricatore-di-porto: yt-dlp installed in the app data dir at {}",
+                path.display()
+            );
+            Some(path)
+        }
         Err(err) => {
             eprintln!(
                 "scaricatore-di-porto: the app-data copy of yt-dlp could not be created \
