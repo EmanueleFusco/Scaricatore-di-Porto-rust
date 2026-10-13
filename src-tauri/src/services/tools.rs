@@ -208,6 +208,19 @@ pub fn candidates(tool: &str, lookup: &Lookup, triple: &str) -> Vec<(ToolSource,
         app_data_dir_for(&lookup.tools_dir, tool).join(&file_name),
     ));
     out.push((ToolSource::Bundled, lookup.bundled_dir.join(&file_name)));
+    // In a real install the bundler has already stripped the target-triple
+    // suffix, so the entry above is the only bundled name there is. In a
+    // development build `tauri dev` copies nothing, and what sits in
+    // `src-tauri/binaries/` is `fetch_bundled_tools.mjs`'s output — still
+    // suffixed. Without this second candidate "npm run app" finds no bundled
+    // tool at all, and the first thing the developer sees is a Tools page
+    // claiming the tools are missing right after fetching them.
+    if cfg!(debug_assertions) {
+        out.push((
+            ToolSource::Bundled,
+            lookup.bundled_dir.join(format!("{file_name}-{triple}")),
+        ));
+    }
     for dir in &lookup.path_dirs {
         out.push((ToolSource::PathEnv, dir.join(&file_name)));
     }
@@ -900,16 +913,71 @@ mod tests {
     #[test]
     fn the_lookup_order_is_exactly_the_one_of_spec_5_2() {
         let found = candidates("qjs", &lookup(), LINUX);
+        // The *first* occurrence of each source, so the extra development-only
+        // bundled candidate (see the other test) does not shift the order.
+        let first_of = |wanted: ToolSource| {
+            found
+                .iter()
+                .find(|(source, _)| *source == wanted)
+                .expect("the source is listed")
+                .1
+                .clone()
+        };
+        assert_eq!(
+            first_of(ToolSource::AppData),
+            PathBuf::from("/data/tools/qjs/qjs")
+        );
+        assert_eq!(first_of(ToolSource::Bundled), PathBuf::from("/app/qjs"));
+        assert_eq!(first_of(ToolSource::PathEnv), PathBuf::from("/usr/bin/qjs"));
+        assert_eq!(
+            first_of(ToolSource::WellKnown),
+            PathBuf::from("/opt/homebrew/bin/qjs")
+        );
+
+        // And the order between them never changes: app data before bundled
+        // before PATH before the well-known locations.
         let sources: Vec<ToolSource> = found.iter().map(|(source, _)| *source).collect();
-        assert_eq!(sources[0], ToolSource::AppData, "#2 app data");
-        assert_eq!(sources[1], ToolSource::Bundled, "#3 bundled");
-        assert_eq!(sources[2], ToolSource::PathEnv, "#4 PATH");
-        assert_eq!(sources[3], ToolSource::PathEnv);
-        assert_eq!(sources[4], ToolSource::WellKnown, "#5 well known");
+        let position = |wanted: ToolSource| {
+            sources
+                .iter()
+                .position(|source| *source == wanted)
+                .expect("listed")
+        };
+        assert!(position(ToolSource::AppData) < position(ToolSource::Bundled));
+        assert!(position(ToolSource::Bundled) < position(ToolSource::PathEnv));
+        assert!(position(ToolSource::PathEnv) < position(ToolSource::WellKnown));
         assert!(
             !sources.contains(&ToolSource::Override),
             "no override configured"
         );
+    }
+
+    #[test]
+    fn a_development_build_also_looks_for_the_triple_suffixed_bundled_file() {
+        // `tauri dev` does not copy sidecars, so what
+        // `fetch_bundled_tools.mjs` leaves in `src-tauri/binaries/` still carries
+        // the suffix. The extra candidate exists only in debug builds.
+        let plain = PathBuf::from("/app").join("yt-dlp");
+        let suffixed = PathBuf::from("/app").join(format!("yt-dlp-{LINUX}"));
+        let found = candidates("yt-dlp", &lookup(), LINUX);
+        if cfg!(debug_assertions) {
+            assert!(found.contains(&(ToolSource::Bundled, plain.clone())));
+            assert!(found.contains(&(ToolSource::Bundled, suffixed.clone())));
+            // The suffixed name comes after the plain one: in a real install
+            // only the plain one exists, and this order never changes that.
+            let plain_at = found
+                .iter()
+                .position(|(_, path)| *path == plain)
+                .expect("plain");
+            let suffixed_at = found
+                .iter()
+                .position(|(_, path)| *path == suffixed)
+                .expect("suffixed");
+            assert!(plain_at < suffixed_at);
+        } else {
+            assert!(found.contains(&(ToolSource::Bundled, plain)));
+            assert!(!found.contains(&(ToolSource::Bundled, suffixed)));
+        }
     }
 
     #[test]
