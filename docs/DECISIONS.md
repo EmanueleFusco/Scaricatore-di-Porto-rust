@@ -673,3 +673,36 @@ quando i test hanno girato davvero su un sistema diverso da quello su cui erano 
 test con presupposti impliciti da Linux e un binario di test che non partiva. Nessuno dei tre era
 visibile in `cargo clippy`, che passava pulito su entrambe le piattaforme. **"Compila su tre sistemi" e
 "funziona su tre sistemi" sono due affermazioni diverse, e il passaggio in mezzo costa una CI.**
+
+---
+
+## 2026-10-13 — D30: "funziona offline dopo l'installazione" che cosa vuol dire (e che cosa non)
+
+La spec §14, criterio di uscita di M0, dice: *«yt-dlp + qjs work **offline right after install**»*. Il
+proprietario ha segnalato che la frase sembra un contrasenso per un'app che scarica da internet. **Ha
+ragione che la frase è scritta male**, e va chiarita una volta per tutte.
+
+**Non significa** che l'app scarichi video senza rete. Significa che **al primo avvio non esiste uno
+step di rete per diventare funzionanti**: i due tool sono già lì, risolvibili ed eseguibili.
+
+Il criterio verificabile è `yt-dlp --version` e `qjs --version` con la rete staccata, ed è esattamente
+come `PHASE_PROMPTS.md` M0-C lo formula: *«with no internet, the bundled yt-dlp and qjs run
+(`--version`)»*.
+
+**Il punto reale a favore del bundling non è la rete.** Se l'app ha bisogno di internet, il vantaggio
+è che **il primo avvio non può fallire**:
+
+* **quarantena macOS** — spec §5.2 riga 161: un binario appena scaricato viene ucciso al primo lancio
+  e va riparato con `xattr -d com.apple.quarantine` + `codesign`. Dentro l'app, firmato e notarizzato
+  insieme a lei, non succede;
+* **antivirus Windows** — un PyInstaller appena scaricato in una cartella utente è il caso classico
+  che attiva SmartScreen/Defender; dentro l'installer no (spec §5.2.1 riga 170);
+* **versione nota** — nell'installer c'è quella con cui l'app è stata costruita e testata;
+* **nessun vicolo cieco** — se il download fallisce (proxy, CDN, disco pieno, antivirus) l'utente ha
+  un'app che sembra rotta e non può fare nulla.
+
+Nessuna di queste cose cambia l'aggiornamento automatico: la copia che si aggiorna sta in app data ed è
+già prevista da spec §5.2.1 riga 165 e §5.5.
+
+Nota di processo: la frase era stata riportata così com'è nelle note precedenti senza chiederne il
+significato. Le note di M0-C useranno "nessun bootstrap di rete al primo avvio", che è non ambiguo.
