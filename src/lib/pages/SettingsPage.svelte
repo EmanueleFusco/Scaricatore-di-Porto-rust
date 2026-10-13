@@ -1,30 +1,21 @@
 <script lang="ts">
   /**
-   * Settings → General (spec §11.8): language, theme, default output folder.
-   * Every control writes through the backend immediately, so there is no
-   * "unsaved form" state to get wrong.
+   * Settings shell (spec §11.8): a tab strip with the pages that exist so far.
+   *
+   * Tabs rather than a growing single page because spec §11.8 lists six of
+   * them and a scroll with five cards in it stops being a settings page. Each
+   * tab is a real `href`, so the keyboard, middle-click and "open in new tab"
+   * keep working (spec §11.9).
    */
-  import { languageName, type LangPreference } from "$lib/i18n";
-  import { settingsStore, activeLang, tt } from "$lib/stores/settings.svelte";
-  import type { ThemePreference } from "$lib/theme";
+  import GeneralSettings from "$lib/pages/settings/GeneralSettings.svelte";
+  import ToolsPage from "$lib/pages/ToolsPage.svelte";
+  import { router } from "$lib/router.svelte";
+  import { tt } from "$lib/stores/settings.svelte";
 
-  const languageOptions: LangPreference[] = ["system", "it", "en"];
-
-  const themeOptions: { value: ThemePreference; key: string }[] = [
-    { value: "system", key: "settings.theme.system" },
-    { value: "dark", key: "settings.theme.dark" },
-    { value: "light", key: "settings.theme.light" },
+  const tabs = [
+    { href: "/settings", key: "settings.tab.general" },
+    { href: "/settings/tools", key: "settings.tab.tools" },
   ];
-
-  const onLanguageChange = (event: Event) => {
-    const value = (event.currentTarget as HTMLSelectElement).value as LangPreference;
-    void settingsStore.update({ language: value });
-  };
-
-  const onThemeChange = (event: Event) => {
-    const value = (event.currentTarget as HTMLSelectElement).value as ThemePreference;
-    void settingsStore.update({ theme: value });
-  };
 </script>
 
 <svelte:head>
@@ -34,56 +25,24 @@
 <section class="settings">
   <h1 class="settings__title">{tt("settings.title")}</h1>
 
-  <section class="card settings__group" aria-labelledby="heading-lang">
-    <h2 class="settings__group-title" id="heading-lang">{tt("settings.section.language")}</h2>
-
-    <div class="field">
-      <label class="field__label" for="setting-language">{tt("settings.language")}</label>
-      <select
-        class="select"
-        id="setting-language"
-        value={settingsStore.settings.language}
-        onchange={onLanguageChange}
+  <nav class="settings__tabs" aria-label={tt("settings.title")}>
+    {#each tabs as tab (tab.href)}
+      <a
+        class="settings__tab"
+        href={tab.href}
+        aria-current={router.isActive(tab.href) ? "page" : undefined}
+        onclick={(event) => router.follow(event, tab.href)}
       >
-        {#each languageOptions as option (option)}
-          <!-- Language names are written in the language itself. -->
-          <option value={option}>
-            {option === "system" ? tt("settings.language.system") : languageName(option)}
-          </option>
-        {/each}
-      </select>
-      <p class="field__hint">
-        {tt("settings.language.resolved", { lang: languageName(activeLang()) })}
-      </p>
-    </div>
+        {tt(tab.key)}
+      </a>
+    {/each}
+  </nav>
 
-    <div class="field">
-      <label class="field__label" for="setting-theme">{tt("settings.theme")}</label>
-      <select
-        class="select"
-        id="setting-theme"
-        value={settingsStore.settings.theme}
-        onchange={onThemeChange}
-      >
-        {#each themeOptions as option (option.value)}
-          <option value={option.value}>{tt(option.key)}</option>
-        {/each}
-      </select>
-    </div>
-  </section>
-
-  <section class="card settings__group" aria-labelledby="heading-downloads">
-    <h2 class="settings__group-title" id="heading-downloads">{tt("settings.section.downloads")}</h2>
-
-    <div class="field">
-      <span class="field__label" id="label-output-dir">{tt("settings.outputDir")}</span>
-      <output class="settings__value" aria-labelledby="label-output-dir">
-        {settingsStore.settings.defaultOutputDir ?? tt("settings.outputDir.system")}
-      </output>
-      <p class="field__hint">{tt("settings.outputDir.hint")}</p>
-      <p class="field__hint">{tt("settings.downloads.comingSoon")}</p>
-    </div>
-  </section>
+  {#if router.isActive("/settings/tools")}
+    <ToolsPage />
+  {:else}
+    <GeneralSettings />
+  {/if}
 </section>
 
 <style>
@@ -99,23 +58,23 @@
     font-size: 20px;
   }
 
-  .settings__group {
+  .settings__tabs {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-4);
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--border);
   }
 
-  .settings__group-title {
-    font-size: 15px;
-  }
-
-  .settings__value {
-    display: block;
+  /* Current tab: bold plus an underline, never colour alone (spec §11.9). */
+  .settings__tab {
     padding: var(--space-2) var(--space-3);
-    border: 1px dashed var(--border-strong);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    word-break: break-all;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+
+  .settings__tab[aria-current="page"] {
+    border-bottom-color: var(--accent);
+    color: var(--text);
+    font-weight: 700;
   }
 </style>

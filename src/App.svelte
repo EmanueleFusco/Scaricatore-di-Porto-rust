@@ -5,13 +5,18 @@
    */
   import { onMount } from "svelte";
   import FooterStatus from "$lib/components/FooterStatus.svelte";
+  import SetupWizard from "$lib/components/SetupWizard.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import QueuePage from "$lib/pages/QueuePage.svelte";
   import SettingsPage from "$lib/pages/SettingsPage.svelte";
   import { router } from "$lib/router.svelte";
-  import { settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { isTauriRuntime, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { toolsStore } from "$lib/stores/tools.svelte";
   import { themeStore } from "$lib/stores/theme.svelte";
+
+  /** Spec §11.1: the wizard shows once. */
+  let wizardOpen = $state(false);
 
   onMount(() => {
     router.start();
@@ -20,6 +25,12 @@
     void (async () => {
       await themeStore.start();
       await settingsStore.load();
+      // Only after the settings are known: the wizard must not appear on top
+      // of the loading state and must not be re-opened by a failed read.
+      if (isTauriRuntime() && !settingsStore.settings.setupWizardCompleted) {
+        wizardOpen = true;
+      }
+      void toolsStore.refresh();
     })();
   });
 </script>
@@ -32,7 +43,7 @@
     <main class="shell__main" id="main" tabindex="-1">
       {#if !settingsStore.loaded}
         <p class="shell__loading">{tt("footer.placeholder")}</p>
-      {:else if router.path === "/settings"}
+      {:else if router.isActive("/settings")}
         <SettingsPage />
       {:else if router.path === "/"}
         <QueuePage />
@@ -43,6 +54,16 @@
     <FooterStatus />
   </div>
 </div>
+
+{#if wizardOpen}
+  <SetupWizard
+    onclose={() => (wizardOpen = false)}
+    onfinish={async () => {
+      wizardOpen = false;
+      await toolsStore.completeSetup();
+    }}
+  />
+{/if}
 
 <style>
   .shell {
