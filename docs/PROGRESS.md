@@ -937,3 +937,77 @@ manifest Common Controls v6 a cambiare la possibilità di caricare l'eseguibile,
 ### Next step
 
 **M0-C.** Le condizioni di uscita di M0-B sono soddisfatte e verificate.
+
+---
+
+## 2026-10-13 — M0-B / audit delle mie stesse note, e un "verify" che avevo saltato
+
+Il proprietario ha chiesto se `docs/PROGRESS.md` fosse stato aggiornato secondo `AGENTS.md`. Controllato
+invece di dare per scontato, e **non era a posto**. Questo blocco registra cosa mancava e cosa è stato
+corretto, invece di riscrivere di nascosto i blocchi precedenti.
+
+### Le due lacune, e perché sono un problema
+
+`AGENTS.md` §9 fissa sei intestazioni obbligatorie per ogni blocco. Confrontando i sette blocchi di
+M0-B:
+
+| intestazione | blocco 1 | blocchi 2-7 |
+| :-- | :-- | :-- |
+| Done · Verified by running · Not verified / stubbed · Decisions · Next step | ✅ | ✅ |
+| **Spec items marked "verify" that I checked** | ✅ | ❌ **assente in 6 blocchi** |
+| **Needs a human** (§10.5) | ✅ | ❌ **assente in 6 blocchi** |
+
+Non è una questione di forma. La prima intestazione serve a distinguere **"non c'era niente da
+verificare"** da **"non ho verificato"**: senza la riga, chi legge non può sapere quale dei due sia
+successo. La seconda serve a non perdere gli impegni che spettano a una persona.
+
+Nei blocchi 3, 4, 5 e 7 (che riguardano `spec §4`) la risposta è onesta ma andava scritta: **`spec §4`
+non contiene alcun item marcato "verify"**. La convenzione della spec (riga 7) definisce "verify" come
+*«the exact flag / asset name / URL / version may have changed upstream»*, cioè nomi di flag, asset,
+URL e versioni: sono tutte cose di `spec §5`/`§8`, non di `§4`. Avevo controllato, ma non l'avevo
+scritto.
+
+### Il "verify" che avevo davvero saltato
+
+`spec §1.1`, riga 42: *«Check which runners are currently available (**verify**: macOS Intel, Windows
+ARM64, Linux arm64 hosted runners)»*.
+
+Quando ho spostato `tier2` in `tier2.yml` ho **copiato le tre label senza riverificarle**. Non era un
+rischio teorico: D15 aveva già cambiato un label (`windows-latest` → `windows-2022`) proprio perché il
+primo si era mosso.
+
+**Ora verificato** contro `actions/runner-images`, README ufficiale:
+
+| label | stato |
+| :-- | :-- |
+| `macos-15-intel` | esiste — macOS 15, x64 |
+| `windows-11-arm` | esiste — Windows 11 Arm64, arm64 |
+| `ubuntu-24.04-arm` | esiste — Ubuntu 24.04 Arm64, arm64 |
+
+Ricontrollate anche le altre label usate nel workflow: `windows-2022` esiste; `windows-latest` è
+Windows Server 2025 con VS 2026 (conferma D15); `macos-latest` è macOS 26 **arm64** (conferma D15);
+`ubuntu-latest` è 24.04 (conferma D14); `ubuntu-22.04` esiste. Nota non usata ma rilevante:
+`macos-14` e `macos-14-arm64` sono **deprecati** e non vanno scelti.
+
+### Cosa invece NON ho scritto, e va bene così
+
+In chat avevo ipotizzato che il calo dell'AppImage da 108 MiB (M0-A) a **76,9 MiB** (misurato nella run
+#12) fosse dovuto a una versione diversa di squashfs/appimagetool. **Quella ipotesi non è stata messa
+nei documenti**, e non lo sarà: è una congettura, non una misura, e i due numeri sono reali ma la
+causa no. Se serve, si indaga con `mksquashfs -version` sui due runner.
+
+### Needs a human — la voce che mancava
+
+Riepilogata qui, perché le condizioni di uscita di M0-B sono soddisfatte ma tre cose restano a chi
+scrive il codice e non a chi lo fa girare:
+
+1. **aprire l'app su Windows** e confermare che non compare nessuna finestra di console: `CREATE_NO_WINDOW`
+   è verificato solo per compilazione, nessun test headless può accorgersene;
+2. **scaricare l'installer Windows** (`bundle (windows-x64)` → artifact `windows-x64` → l'`.exe`) e
+   provarlo: nessuno ha ancora installato un binario prodotto dalla CI;
+3. quando si farà M0-C, **provare la cancellazione contro un `yt-dlp` vero**: è la prima occasione in
+   cui l'albero è `yt-dlp → ffmpeg → runtime JavaScript` e non un finto programma Rust.
+
+### Next step
+
+**M0-C**, senza altri prerequisiti da questa parte.
