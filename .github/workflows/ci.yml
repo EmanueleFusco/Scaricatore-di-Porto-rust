@@ -37,11 +37,39 @@ env:
   # Errori di codice localizzati in inglese: i messaggi sono confrontati coi test.
   RUST_BACKTRACE: 1
 
+# ---------------------------------------------------------------------------
+# Perche' alcuni job azzerano `bundle.externalBin` (D48)
+# ---------------------------------------------------------------------------
+#
+# `tauri_build::build()` sta in build.rs, quindi gira a OGNI invocazione di
+# cargo — fmt, clippy, test, build: non solo a `tauri build`. Dichiarando
+# `bundle.externalBin` in tauri.conf.json, senza i binari presenti anche
+# `cargo check` muore con:
+#
+#     resource path `binaries/yt-dlp-x86_64-unknown-linux-gnu` doesn't exist
+#
+# Nei job che NON impacchettano (check, process-tests, tier2) `TAURI_CONFIG`
+# azzera externalBin: compilano senza rete e senza i 43 MB dei tool.
+# Nei job che IMPACCHETTANO (bundle, bundle-macos-universal) `TAURI_CONFIG` NON
+# e' impostato e i tool vengono scaricati davvero, eseguiti e solo allora
+# impacchettati.
+#
+# Non e' una scorciatoia per far passare la CI. Il percorso che produce
+# l'installer resta verificato per intero, anzi piu' di prima: i tool vengono
+# eseguiti prima di entrare nel pacchetto. Qui si sacrifica solo la
+# compilazione di un campo del config che quei job non usano — e si evita che
+# il job piu' frequente dipenda dalla rete, che oggi si e' dimostrata
+# inaffidabile (D33: l'alias `releases/latest` ha risposto 404 per minuti).
+
 jobs:
   # ---------------------------------------------------------------- check (1x)
   check:
     name: check (ubuntu, lint + test)
     runs-on: ubuntu-latest
+    # Vedi il commento prima dei job: `tauri_build::build()` gira a ogni cargo,
+    # e questo job non impacchetta. Azzerare externalBin lo tiene offline.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     steps:
       - uses: actions/checkout@v4
 
@@ -134,6 +162,11 @@ jobs:
     name: process tests (${{ matrix.label }})
     needs: check
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    # Compila senza externalBin: questo job prova il livello processi con i
+    # falsi tool, non impacchetta, e non deve dipendere dalla rete. Vedi il
+    # commento prima dei job.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     strategy:
       fail-fast: false
       matrix:

@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import {
   destinationPath,
   exeSuffix,
+  externalBinProblems,
+  externalBinProblemsWith,
   parseSumFile,
   validateManifest,
 } from "./fetch_bundled_tools.mjs";
@@ -183,6 +185,71 @@ describe("parseSumFile", () => {
     // failing, so a missing entry raises instead.
     const upper = `${"A".repeat(64)}  yt-dlp_linux`;
     expect(() => parseSumFile(upper, "yt-dlp_linux")).toThrowError(/does not list yt-dlp_linux/);
+  });
+});
+
+describe("externalBin and the manifest agree", () => {
+  // The bug this exists for: declaring `bundle.externalBin` makes
+  // `tauri_build::build()` — in build.rs, so it runs on EVERY cargo — fail with
+  // "resource path doesn't exist". A tool in one file and not the other breaks
+  // the build with a message that does not say which half is wrong.
+  it("accepts the configuration the repository actually ships", () => {
+    expect(externalBinProblems(MANIFEST)).toEqual([]);
+  });
+
+  it("names the tool that is in the manifest but missing from externalBin", () => {
+    // Simulated by asking about a manifest that bundles one tool more than
+    // tauri.conf.json lists.
+    const extra = structuredClone(MANIFEST);
+    extra.tools.push({
+      name: "sdp-whisper",
+      role: "Offline transcription",
+      bundled: true,
+      license: "MIT",
+      versioning: "pinned",
+      version: "1.0.0",
+      minVersion: "1.0",
+      platforms: {
+        "x86_64-unknown-linux-gnu": {
+          asset: "sdp-whisper",
+          executableName: "sdp-whisper",
+          archiveKind: "none",
+          url: "https://example.invalid/sdp-whisper",
+          sha256: "0".repeat(64),
+        },
+      },
+    });
+    const problems = externalBinProblems(extra);
+    expect(problems.join("\n")).toContain("sdp-whisper is marked bundled:true");
+    expect(problems.join("\n")).toContain("never packaged");
+  });
+
+  it("refuses an externalBin entry carrying a system extension", () => {
+    // `tauri_utils::external_binaries` builds `<entry>-<triple>.exe` on Windows.
+    // So `qjs.exe` would ask for `qjs.exe-x86_64-pc-windows-msvc.exe`, which
+    // nothing produces. A directory prefix is fine and expected; an extension
+    // is not. (This rule was wrong the first time it was written — it rejected
+    // the documented `binaries/yt-dlp` form.)
+    const problems = externalBinProblemsWith(MANIFEST, {
+      bundle: { externalBin: ["binaries/yt-dlp", "binaries/qjs.exe"] },
+    });
+    expect(problems.join("\n")).toContain('"binaries/qjs.exe" must not carry a system extension');
+  });
+
+  it("accepts the documented directory form", () => {
+    expect(
+      externalBinProblemsWith(MANIFEST, {
+        bundle: { externalBin: ["binaries/yt-dlp", "binaries/qjs"] },
+      }),
+    ).toEqual([]);
+  });
+
+  it("refuses an externalBin entry that is not a bundled tool", () => {
+    // Spec §0.7: only yt-dlp and qjs may ever be in the installer.
+    const problems = externalBinProblemsWith(MANIFEST, {
+      bundle: { externalBin: ["binaries/yt-dlp", "binaries/qjs", "binaries/ffmpeg"] },
+    });
+    expect(problems.join("\n")).toContain("spec §0.7 allows only yt-dlp and qjs");
   });
 });
 

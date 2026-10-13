@@ -36,7 +36,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,6 +44,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const MANIFEST_PATH = join(REPO_ROOT, "tools.manifest.json");
+const TAURI_CONF_PATH = join(REPO_ROOT, "src-tauri", "tauri.conf.json");
 const DEFAULT_OUTPUT_DIR = join(REPO_ROOT, "src-tauri", "binaries");
 
 const UA = "scaricatore-di-porto-build";
@@ -570,6 +571,7 @@ async function fetchTool(manifest, name, triple, scratch) {
 
 async function modeCheck(manifest, triple) {
   const problems = validateManifest(manifest);
+  problems.push(...externalBinProblems(manifest));
   if (problems.length > 0) {
     for (const problem of problems) process.stderr.write(`  - ${problem}\n`);
     fail(`${problems.length} problem(s) in ${MANIFEST_PATH}`);
@@ -585,6 +587,83 @@ async function modeCheck(manifest, triple) {
       : "NOT AVAILABLE for this target";
     process.stdout.write(`  ${tool.name.padEnd(8)} ${triple.padEnd(28)} ${state}\n`);
   }
+}
+
+/**
+ * `bundle.externalBin` in tauri.conf.json e `bundled: true` nel manifesto
+ * devono dire le stesse cose.
+ *
+ * Il motivo è un bug vero, non una previsione. Dichiarando `externalBin`,
+ * `tauri_build::build()` — che sta in `build.rs` e quindi gira a **ogni**
+ * `cargo`, non solo a `tauri build` — si ferma con
+ * `resource path 'binaries/yt-dlp-<triple>' doesn't exist` se il file non c'è.
+ * Un tool presente nel manifesto ma assente da `externalBin` (o viceversa)
+ * significa: uno dei due è sbagliato, e la CI lo scoprirebbe solo compilando,
+ * con un messaggio che non dice quale dei due sia.
+ *
+ * Costa niente (è un controllo offline su due file JSON) e chiude il ciclo.
+ */
+export function externalBinProblems(manifest) {
+  return externalBinProblemsWith(manifest, readTauriConf());
+}
+
+/** `src-tauri/tauri.conf.json`, parsed. Throws with the path in the message. */
+function readTauriConf() {
+  try {
+    return JSON.parse(readFileSync(TAURI_CONF_PATH, "utf8"));
+  } catch (err) {
+    throw new Fail(`cannot read ${TAURI_CONF_PATH}: ${err.message}`);
+  }
+}
+
+/** Same checks against a caller-supplied config; the tests use it directly. */
+export function externalBinProblemsWith(manifest, conf) {
+  const problems = [];
+  const declared = conf.bundle?.externalBin ?? [];
+  if (!Array.isArray(declared)) {
+    return [`${TAURI_CONF_PATH}: bundle.externalBin must be an array`];
+  }
+
+  const wanted = declared.map((entry) => basename(entry));
+  const bundled = manifest.tools.filter((tool) => tool.bundled).map((tool) => tool.name);
+
+  for (const name of bundled) {
+    if (!wanted.includes(name)) {
+      problems.push(
+        `${name} is marked bundled:true in the manifest but is NOT in ` +
+          `bundle.externalBin — it would be fetched and never packaged.`,
+      );
+    }
+  }
+  for (const name of wanted) {
+    if (!bundled.includes(name)) {
+      problems.push(
+        `bundle.externalBin lists ${name}, which is not a bundled tool in the manifest — ` +
+          `spec §0.7 allows only yt-dlp and qjs in the installer.`,
+      );
+    }
+  }
+  // The entry may carry a directory (`binaries/yt-dlp`) — that is the
+  // documented form and the one the bundler wants. What it must NOT carry is a
+  // system extension, because `tauri_utils::external_binaries` builds
+  // `<entry>-<triple>.exe` on Windows: writing `qjs.exe` here would ask for
+  // `qjs.exe-x86_64-pc-windows-msvc.exe`, which nothing produces.
+  // (Read from tauri-utils/src/resources.rs, `external_binaries`.)
+  for (const entry of declared) {
+    if (/\.(exe|dll|so|dylib|bin)$/i.test(entry)) {
+      problems.push(
+        `bundle.externalBin entry ${JSON.stringify(entry)} must not carry a system ` +
+          `extension: the bundler appends -<triple> and .exe itself`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** Last path segment, on both separators. */
+function basename(entry) {
+  const text = String(entry).replace(/\\/g, "/");
+  return text.slice(text.lastIndexOf("/") + 1);
 }
 
 async function modeVerifyPins(manifest) {

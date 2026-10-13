@@ -44,6 +44,13 @@ env:
 jobs:
   tier2:
     name: tier2 (${{ matrix.label }})
+    # Compila senza `bundle.externalBin` (stessa ragione del job `check` in
+    # ci.yml: `tauri_build::build()` gira a ogni cargo e questo job non
+    # impacchetta). Nota bene: qui i tool NON sono impacchettati ne' eseguiti,
+    # quindi un Tier 2 non dimostra che yt-dlp e qjs ci funzionano. Per quello
+    # serve `tests/bundled_tools.rs`, che gira solo nei job `bundle`.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     strategy:
       fail-fast: false
       matrix:

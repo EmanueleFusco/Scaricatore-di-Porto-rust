@@ -1005,3 +1005,84 @@ avrebbe potuto sembrare sufficiente; senza il ritento il `fsync` da solo
 avrebbe potuto sembrare sufficiente. La lezione è la stessa di D29: «compila» e
 «funziona» sono due affermazioni diverse, e qui anche «passa una volta su tre» e
 «passa» lo erano.
+
+### D48 — La CI era rotta: `tauri_build::build()` gira a **ogni** cargo
+
+La prima run della branch è fallita così:
+
+```
+resource path `binaries/yt-dlp-x86_64-unknown-linux-gnu` doesn't exist
+error: failed to run custom build command for `scaricatore-di-porto v0.1.0`
+```
+
+È un errore mio, non un problema di macchina. Avevo dichiarato
+`bundle.externalBin` in `tauri.conf.json` e avevo messo il fetch dei tool **solo
+nei job `bundle`**. Ma `tauri_build::build()` sta dentro `build.rs`, e `build.rs`
+ gira a **ogni invocazione di cargo**: `check`, `clippy`, `test`, `build`. Non
+solo a `tauri build`.
+
+Riprodotto qui prima di correggere, con `src-tauri/binaries/` spostato via:
+
+| comando | binaries assenti |
+| :-- | :-- |
+| `cargo check` | **fallisce** |
+| `cargo clippy --all-targets` | **fallisce** |
+| `cargo test` | **fallisce** |
+
+Quindi non era solo il job `check`: erano rotti anche `process-tests` (Windows e
+macOS) e `tier2`. Nessuno se n'è accorto perché **in locale la cartella c'era
+sempre**: l'avevo scaricata prima di ogni run. Un errore che si nasconde
+esattamente dove lo hai costruito.
+
+**La correzione**, e la scelta che contiene:
+
+Nei job che **non impacchettano** (`check`, `process-tests`, `tier2`):
+
+```yaml
+env:
+  TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+```
+
+Nei job che **impacchettano** (`bundle`, `bundle-macos-universal`): nessuna
+variabile, i tool vengono scaricati davvero, **eseguiti**, e solo poi
+impacchettati.
+
+Il perché della divisione, e perché non è una scorciatoia:
+
+* il percorso che produce l'installer resta verificato **per intero** — anzi più
+  di prima, perché i tool vengono eseguiti prima di entrare nel pacchetto;
+* il job più frequente non dipende più dalla rete. Oggi è una scelta motivata da
+  un fatto, non da una preferenza: **l'alias `releases/latest` di GitHub ha
+  risposto 404 per minuti** mentre lo stesso file con il tag esplicito
+  rispondeva 200 (D33). Un `check` che diventa rosso perché un CDN ha avuto un
+  colpo di calmo isterizza chi lo guarda;
+* 43 MB di download risparmiati a ogni push, su un repository privato dove i
+  minuti sono contati (D12).
+
+**Il controllo che mancava**, adesso c'è: `npm run check:tools` verifica anche che
+`bundle.externalBin` in `tauri.conf.json` e `bundled: true` nel manifesto
+dicano le stesse cose. Un tool in uno solo dei due file romperebbe la build con
+un messaggio che non dice quale delle due metà sia sbagliata; il controllo costa
+zero e chiude il ciclo.
+
+Una nota su quel controllo, perché è la parte instructive. La prima versione
+diceva che le voci di `externalBin` dovessero essere **nomi nudi** (`qjs`, non
+`binaries/qjs`). Ho scritto il test, l'ho lanciato, e **il test ha detto che il
+repository è sbagliato** — perché avevo scritto male io la regola. La fonte
+(`tauri-utils/src/resources.rs`, `external_binaries`) dice che la voce viene
+usata così com'è e le viene appesi `-<triple>` ed `.exe`:
+
+```rust
+paths.push(format!("{curr_path}-{target_triple}{extension}"));
+```
+
+Quindi `binaries/yt-dlp` è corretto (ed è la forma documentata), e ciò che è
+davvero vietato è portare un'estensione di sistema: `binaries/qjs.exe`
+chiederebbe `binaries/qjs.exe-x86_64-pc-windows-msvc.exe`, che nessuno produce.
+Regola corretta, coperta da test che verificano entrambi i casi.
+
+Vale la pena tenere a mente il verso: **un controllo che aggiungi per impedire un
+errore futuro può essere lui stesso l'errore**, e l'unico modo che lo scopra è
+guardare la fonte e far girare il controllo. Esattamente come per `ETXTBSY`
+(D47) e per il parser delle versioni (D36): nessuno dei tre si vede leggendo il
+codice in piedi.
