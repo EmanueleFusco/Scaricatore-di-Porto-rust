@@ -297,6 +297,14 @@ jobs:
       # bundle universale cerca `qjs-universal-apple-darwin` e non il binario
       # nativo: il job universale imposta SDP_TARGET_TRIPLE.
       - name: Fetch the bundled tools
+        # Il token e' di GitHub e va solo a api.github.com: serve a tirare su
+        # il rate limit (60 richieste/ora per IP senza autenticazione, e i
+        # runner ospitati da GitHub condividono intervalli di IP — il 2026-10-13
+        # `bundle (macos-arm64)` ha preso HTTP 403 per questo). Non viene mai
+        # stampato: `fetch_bundled_tools.mjs` lo mette solo nell'header
+        # `authorization` e non lo scrive in nessun messaggio (AGENTS.md 7).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run fetch:tools
 
       - name: Report which tools are about to be bundled
@@ -380,6 +388,8 @@ jobs:
       - name: Fetch the bundled tools (universal)
         env:
           SDP_TARGET_TRIPLE: universal-apple-darwin
+          # vedi il commento sul token nel fetch del job `bundle`
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run fetch:tools
 
       - name: Report which tools are about to be bundled

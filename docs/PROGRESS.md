@@ -1521,3 +1521,47 @@ Terzo e ultimo rosso. `bundle (windows-x64)` falliva su
      E' la seconda volta che un diagnostico esistente ma spento mi costa un
      round-trip.
   3. Dopo: installare e provare i pacchetti, poi merge e tag.
+
+## 2026-10-13 — M0-C / Il fallback puntava a qualcosa di rotto
+
+Ultimo rosso: `bundle (macos-arm64)`. HTTP 403 dalla API e 404 dall'alias
+`latest`. Dettagli in D54.
+
+- **Done**
+  - Risoluzione del tag in tre passi: API col token, API senza token, **redirect
+    della pagina release** (nessuna quota, nessun rate limit).
+  - L'alias `latest/download/` **eliminato**: rispondeva 404 tre volte su tre.
+  - `releaseUrl` e `checksumUrl` ora hanno il segnaposto `{tag}`: con `latest`
+    scritto dentro non c'era dove mettere il tag che il redirect fornisce.
+  - `GITHUB_TOKEN` nei due passi di fetch della CI (solo GitHub, mai stampato).
+  - `tagFromLocation()` rifiuta `.` e `..`: passavano ogni controllo sui
+    caratteri e finivano nell'URL come `/releases/download/../`.
+- **Verified by running**
+  - **Il fallback eseguito davvero**, con l'API disabilitata nel codice: ottiene
+    `2026.08.19` dal redirect, scarica l'URL col tag esplicito e verifica il
+    checksum `0f192b7ec147ab62…` — **identico** a quello del percorso con l'API.
+  - Percorso normale (con API) verificato per `aarch64-apple-darwin`.
+  - Misurati i due sintomi: alias `latest` 404 su 3 tentativi; URL col tag 206.
+  - Misurato il redirect: `curl -sI` restituisce 302 con
+    `location: …/releases/tag/2026.08.19`.
+  - `npm test` → **104 verdi** (erano 96: +8 sul fallback e sul tag).
+  - Linux: 8 suite Rust verdi, `svelte-check` 0/0, `check:tools` OK,
+    `check:ci` 9 blocchi validi.
+  - Un primo tentativo di verifica (proxy con `HTTPS_PROXY`) **non ha funzionato**
+    e non è stato contato: il `fetch` di Node non onora quella variabile.
+- **Not verified / stubbed**
+  - Il comportamento sotto carico reale della API (403 per IP condiviso) non è
+    riproducibile qui: si è verificato il ramo del fallback, non l'evento.
+  - Restano non eseguiti: fetch universale vero e `tauri build` universale.
+- **Spec items marked "verify" che I checked**
+  - Alias `latest/download/`: 404 tre volte su tre, contro 206 per l'URL col
+    tag esplicito sullo stesso asset.
+  - Header `Location` del redirect di `/releases/latest`: contiene il tag.
+- **Decisions/deviations**
+  - D54: tre strategie di risoluzione del tag in ordine, alias `latest` tolto,
+    `{tag}` esplicito nel manifesto, token in CI.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. **Da fare dopo il verde**: accendere `SDP_DEBUG_PROBE` nei passi che testano
+     i tool, cosi' un fallimento dirà la causa (D53).
+  3. Poi: installare e provare i pacchetti, merge, tag.

@@ -342,37 +342,137 @@ async function downloadText(url) {
  *
  * Returns `{tag, assets}` or `null` when the API could not be reached.
  */
-async function resolveLatestRelease(tool) {
-  if (!tool.releaseApi) return null;
-  let payload;
-  try {
-    const response = await fetch(tool.releaseApi, {
-      redirect: "follow",
-      headers: {
-        "user-agent": UA,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-      },
-    });
-    if (!response.ok) {
-      process.stdout.write(
-        `  the releases API answered HTTP ${response.status}; falling back to the manifest URL\n`,
-      );
-      return null;
-    }
-    payload = await response.json();
-  } catch (err) {
-    process.stdout.write(`  the releases API is unreachable (${err.message}); falling back\n`);
-    return null;
-  }
-  if (payload.draft === true || payload.prerelease === true) {
+/**
+ * The web page for the same repository's latest release, derived from the API
+ * URL. The two differ only in host and path prefix, and deriving it keeps the
+ * manifest to one URL per tool.
+ */
+export function releasesPageUrl(apiUrl) {
+  const page = apiUrl.replace(
+    /^https:\/\/api\.github\.com\/repos\//,
+    "https://github.com/",
+  );
+  if (page === apiUrl) {
     fail(
-      `the releases API returned ${payload.tag_name}, which is marked draft/prerelease.\n` +
-        `  "latest stable" must not mean "whatever is newest".`,
+      `${apiUrl} is not a GitHub releases API URL, so the redirect fallback\n` +
+        `  cannot be derived from it. Fix releaseApi in the manifest.`,
     );
   }
-  const assets = new Map((payload.assets ?? []).map((asset) => [asset.name, asset.browser_download_url]));
-  return { tag: payload.tag_name, assets };
+  return page;
+}
+
+/**
+ * The tag out of a `Location:` header pointing at `/releases/tag/<tag>`.
+ *
+ * Pure, and tested, because it is the one piece of the fallback that runs only
+ * when the API has already failed — the worst possible moment to discover it is
+ * wrong.
+ */
+export function tagFromLocation(location) {
+  const match = /\/releases\/tag\/([^/?#]+)/.exec(location ?? "");
+  if (!match) return null;
+  const tag = decodeURIComponent(match[1]);
+  // A tag is not allowed to contain a slash or a space, and `.` and `..` pass
+  // every character test while still walking the URL back up a directory. Both
+  // would end up in `/releases/download/<tag>/<asset>`, so both are refused.
+  if (tag === "." || tag === "..") return null;
+  return /^[\w.\-+]+$/.test(tag) ? tag : null;
+}
+
+/**
+ * Ask the Releases API for the latest stable release.
+ *
+ * Three ways to get the tag, tried in this order, because on 2026-10-13 the
+ * first one failed on GitHub-hosted runners and the second (the one we had at
+ * the time) was broken outright:
+ *
+ * 1. **the API with `GITHUB_TOKEN`**, when the environment has one. Un-
+ *    authenticated API calls are limited to 60/hour per IP, and GitHub-hosted
+ *    runners share IP ranges, so a shared range gets `HTTP 403` — which is
+ *    exactly what `bundle (macos-arm64)` got;
+ * 2. **the API without a token**, for a developer machine;
+ * 3. **the `Location:` header of `https://github.com/<owner>/<repo>/releases/
+ *    latest`**, which GitHub answers with a 302 to `/releases/tag/<tag>`. No
+ *    API, no quota, no rate limit. Measured on 2026-10-13:
+ *
+ *        $ curl -sI https://github.com/yt-dlp/yt-dlp/releases/latest
+ *        HTTP/2 302
+ *        location: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+ *
+ * The `latest/download/<asset>` alias is **not** used any more. It answered
+ * `404` three times out of three on the same day, while the explicit-tag URL
+ * returned 206 for the same asset, so falling back to it meant: API rate-limited
+ * -> 404 -> six retries over 57 seconds -> failure. A fallback that is known to
+ * be broken is worse than no fallback, because it costs a minute before it gives
+ * up.
+ *
+ * Returns `{tag, assets}` — with `assets: null` when only the tag is known, and
+ * the caller builds the download URLs from the manifest templates.
+ */
+async function resolveLatestRelease(tool) {
+  if (!tool.releaseApi) return null;
+
+  const headers = {
+    "user-agent": UA,
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+  };
+  // First-party GitHub only, and never logged: it just lifts the rate limit.
+  const token = process.env.GITHUB_TOKEN;
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  let payload;
+  try {
+    const response = await fetch(tool.releaseApi, { redirect: "follow", headers });
+    if (response.ok) {
+      payload = await response.json();
+    } else {
+      const limit = response.headers.get("x-ratelimit-remaining");
+      process.stdout.write(
+        `  the releases API answered HTTP ${response.status}` +
+          `${limit === "0" ? " (rate limit exhausted)" : ""}; ` +
+          `asking the releases page for the tag instead\n`,
+      );
+    }
+  } catch (err) {
+    process.stdout.write(
+      `  the releases API is unreachable (${err.message}); asking the releases page for the tag\n`,
+    );
+  }
+
+  if (payload) {
+    if (payload.draft === true || payload.prerelease === true) {
+      fail(
+        `the releases API returned ${payload.tag_name}, which is marked draft/prerelease.\n` +
+          `  "latest stable" must not mean "whatever is newest".`,
+      );
+    }
+    const assets = new Map(
+      (payload.assets ?? []).map((asset) => [asset.name, asset.browser_download_url]),
+    );
+    return { tag: payload.tag_name, assets };
+  }
+
+  const tag = await tagFromLatestRedirect(releasesPageUrl(tool.releaseApi));
+  if (tag) {
+    process.stdout.write(`  the releases page points at ${tag}\n`);
+    return { tag, assets: null };
+  }
+  return null;
+}
+
+/** The tag in the `Location:` header of the repository's "latest release" page. */
+async function tagFromLatestRedirect(pageUrl) {
+  try {
+    const response = await fetch(pageUrl, {
+      redirect: "manual",
+      headers: { "user-agent": UA },
+    });
+    const location = response.headers.get("location");
+    return location ? tagFromLocation(location) : null;
+  } catch {
+    return null;
+  }
 }
 
 function sha256(bytes) {
@@ -692,15 +792,20 @@ async function fetchTool(manifest, name, triple, scratch) {
     if (release) process.stdout.write(`${name}: latest release is ${release.tag}\n`);
   }
 
-  const fromRelease = release?.assets.get(entry.asset) ?? null;
-  if (release && !fromRelease) {
+  const fromRelease = release?.assets?.get(entry.asset) ?? null;
+  if (release?.assets && !fromRelease) {
     fail(
       `${name}: release ${release.tag} has no asset called ${entry.asset}.\n` +
         `  This is the "names changed between tags" case from spec §5.2.1:\n` +
         `  fix tools.manifest.json.`,
     );
   }
-  const url = entry.url ?? fromRelease ?? tool.releaseUrl.replace("{asset}", entry.asset);
+  // The tag is substituted once it is known, and `latest` only while it is not.
+  // Building the URL from the template rather than from the asset list is what
+  // lets the redirect fallback work at all: it gives us the tag but no list.
+  const tag = release?.tag ?? "latest";
+  const url =
+    entry.url ?? fromRelease ?? tool.releaseUrl.replace("{tag}", tag).replace("{asset}", entry.asset);
   if (!/^https:\/\//.test(url)) fail(`${name}/${triple}: refusing to fetch a non-https URL: ${url}`);
 
   process.stdout.write(`${name}: downloading ${url}\n`);
@@ -710,7 +815,8 @@ async function fetchTool(manifest, name, triple, scratch) {
   if (tool.versioning === "latest") {
     // Spec §5.1: yt-dlp's checksum comes from the release's own SHA2-256SUMS,
     // not from us, because the version is always the newest one.
-    const sumUrl = release?.assets.get("SHA2-256SUMS") ?? tool.checksumUrl;
+    const sumUrl =
+      release?.assets?.get("SHA2-256SUMS") ?? tool.checksumUrl.replace("{tag}", tag);
     if (entry.sha256) {
       if (entry.sha256 !== actual) {
         fail(`checksum mismatch for ${entry.asset}\n  expected ${entry.sha256}\n  actual   ${actual}`);

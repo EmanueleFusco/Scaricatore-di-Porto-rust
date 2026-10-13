@@ -1523,3 +1523,86 @@ scritto al posto dei contenuti, `well_known_dirs_for`, e questo. Tutti nati da
 codice mai eseguito sull'ambiente per cui era scritto. Quello che cambia,
 rispetto alla prima volta, è che **due di questi li ha trovati un controllo
 locale in meno di due minuti** invece di una run da 95 minuti.
+
+### D54 — Il fallback puntava a qualcosa di rotto: tag via redirect, e `GITHUB_TOKEN`
+
+Ultimo rosso, e l'unico che non era un difetto di logica: era **GitHub che
+rispondeva in due modi sfavorevoli nella stessa run**.
+
+```
+the releases API answered HTTP 403; falling back to the manifest URL
+yt-dlp: downloading …/releases/download/latest/yt-dlp_macos
+  retrying in 1s (attempt 2) … 30s (attempt 6)
+  HTTP 404 Not Found
+```
+
+**Le due cause, misurate.**
+
+1. **`HTTP 403` dalla API.** Le chiamate senza autenticazione sono limitate a
+   60/ora per IP, e i runner ospitati da GitHub condividono intervalli di IP.
+   Quindi un intervallo condiviso esaurisce la quota e un build perfettamente
+   legittimo si presenta come «rate limit exceeded».
+2. **L'alias `latest/download/` rispondeva `404`.** Non «a tratti»: **tre volte
+   su tre**, mentre l'URL con il tag esplicito rispondeva `206` per lo stesso
+   asset. Verificato lo stesso giorno, con `curl` e con Node.
+
+Il secondo è la parte che brucia. Il fallback che D33 aveva messo — «se la API
+non c'è, usa l'alias `latest`» — puntava, nel momento in cui serviva, a
+qualcosa di rotto. Quindi: API satura → 404 → sei tentativi in 57 secondi →
+fallimento. **Un fallback che si sa rotto costa un minuto prima di arrendersi,
+ed è peggio di nessun fallback**, perché il costo è certo e il beneficio è
+zero.
+
+**La via che funziona, misurata prima di scriverla:**
+
+```
+$ curl -sI https://github.com/yt-dlp/yt-dlp/releases/latest
+HTTP/2 302
+location: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+```
+
+Nessuna API, nessuna quota, nessun rate limit: il tag è nell'header `Location`
+del redirect. Il template del manifesto è diventato
+`…/releases/download/{tag}/{asset}`, così il tag c'è dove metterlo, e
+`{tag}` viene sostituito non appena è noto. Con l'alias `latest` non si poteva
+fare: era letteralmente scritto nel pezzo da sostituire.
+
+Quindi l'ordine è: **API col token** (solo GitHub, mai stampato), **API senza
+token** (macchina di sviluppo), **redirect della pagina release** (nessuna
+quota), e basta.
+
+**Il fallback è stato eseguito, non solo scritto.** Il primo tentativo di
+provarlo è stato una proxy locale con `HTTPS_PROXY`, e **non ha funzionato**:
+il `fetch` di Node non onora quella variabile, quindi l'API è andata a buon
+fine e non avevo simulato niente. Non l'ho contato come verifica. Rifatto
+disabilitando la chiamata all'API nel codice ed eseguendo il fetch vero:
+
+```
+the releases API is unreachable (…); asking the releases page for the tag
+the releases page points at 2026.08.19
+yt-dlp: downloading …/releases/download/2026.08.19/yt-dlp_macos
+yt-dlp: checksum verified against SHA2-256SUMS (0f192b7ec147ab62…)
+yt-dlp: installed -> … (37146048 bytes)
+```
+
+Il digest `0f192b7ec147ab62…` è **identico** a quello del percorso con l'API:
+non è «ha scaricato qualcosa», è lo stesso identico file verificato.
+
+**Il tag viene trattato come dati, non come testo.** `tagFromLocation()` non è
+una regex abbastanza rigorosa, e il test lo ha dimostrato: accettava `..`, che
+passa ogni controllo sui caratteri e poi finirebbe nell'URL come
+`/releases/download/../{asset}` — un risalimento di directory. `.` e `..` sono
+ora rifiutati esplicitamente, insieme a slash e spazi. Questo è l'unico punto in
+cui il mio codice cercava di essere furbo e ci riusciva nel modo sbagliato.
+
+**E un test che ho scritto io era sbagliato**, non il codice: mi aspettavo
+`null` per `…/tag/2026.08.19/../../etc`, ma la funzione estrae `2026.08.19` e
+scarta il resto, che è il comportamento giusto — la proprietà che conta è che
+ciò che torna non contiene mai uno slash. Ottavo caso in due giorni di «un
+controllo che aggiungi per impedire un errore futuro può essere lui stesso
+l'errore» (D48): la correzione è stata nel test.
+
+**Il token è di prima parte e non viene stampato.** `GITHUB_TOKEN` finisce solo
+nell'header `authorization` delle chiamate a `api.github.com`; nessun messaggio
+lo contiene, e `grep` sul sorgente lo conferma (due occorrenze in lettura, zero
+in scrittura). AGENTS.md §7.

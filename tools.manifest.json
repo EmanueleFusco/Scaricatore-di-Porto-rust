@@ -29,8 +29,8 @@
       "homepage": "https://github.com/yt-dlp/yt-dlp",
       "versioning": "latest",
       "releaseApi": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-      "releaseUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/latest/{asset}",
-      "checksumUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/latest/SHA2-256SUMS",
+      "releaseUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{asset}",
+      "checksumUrl": "https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/SHA2-256SUMS",
       "minVersion": "2025.11.12",
       "platforms": {
         "x86_64-unknown-linux-gnu": {

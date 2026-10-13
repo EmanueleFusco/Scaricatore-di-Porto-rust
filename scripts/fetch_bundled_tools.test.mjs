@@ -23,6 +23,8 @@ import {
   isUniversalTriple,
   lipoArchName,
   parseSumFile,
+  releasesPageUrl,
+  tagFromLocation,
   validateManifest,
 } from "./fetch_bundled_tools.mjs";
 
@@ -383,6 +385,90 @@ describe("the universal macOS target needs three names per tool", () => {
     const qjs = native.tools.find((t) => t.name === "qjs");
     expect(validateManifest(native)).toEqual([]);
     expect(qjs.platforms["aarch64-apple-darwin"].builtFrom ?? []).toEqual([]);
+  });
+});
+
+describe("finding the latest tag without the API", () => {
+  // On 2026-10-13 `bundle (macos-arm64)` got HTTP 403 from the releases API
+  // (60/hour per IP, and GitHub-hosted runners share ranges), fell back to the
+  // `latest/download/` alias, and that alias answered 404 — three times out of
+  // three, while the explicit-tag URL returned 206 for the same asset. So the
+  // fallback was not merely unlucky, it was pointing at something broken.
+  //
+  // The way out that is still measurable: the releases *page* answers a 302 whose
+  // `Location:` carries the tag, and that needs no API and no quota.
+
+  const API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+
+  it("derives the releases page from the API URL", () => {
+    expect(releasesPageUrl(API)).toBe("https://github.com/yt-dlp/yt-dlp/releases/latest");
+  });
+
+  it("refuses an API URL it cannot derive a page from", () => {
+    expect(() => releasesPageUrl("https://example.invalid/releases/latest")).toThrow(
+      /not a GitHub releases API URL/,
+    );
+  });
+
+  it("reads the tag out of the redirect Location", () => {
+    // Verbatim `curl -sI` on 2026-10-13.
+    expect(
+      tagFromLocation("https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19"),
+    ).toBe("2026.08.19");
+  });
+
+  it("ignores a Location that is not a release tag", () => {
+    for (const bad of [
+      null,
+      "",
+      "https://github.com/yt-dlp/yt-dlp",
+      "https://github.com/login?return_to=%2Fyt-dlp%2Fyt-dlp",
+      // `.` and `..` pass every character test while still walking the URL back
+      // up a directory. Found by this test, not by reading the code.
+      "https://github.com/yt-dlp/yt-dlp/releases/tag/../../etc",
+      "https://github.com/yt-dlp/yt-dlp/releases/tag/..",
+      "https://github.com/yt-dlp/yt-dlp/releases/tag/.",
+    ]) {
+      expect(tagFromLocation(bad)).toBeNull();
+    }
+  });
+
+  it("takes the tag segment and drops whatever follows it", () => {
+    // Not `null`, and that is the right answer: the capture stops at the first
+    // `/`, so the tag comes back clean and the trailing junk is discarded
+    // rather than pasted into the download URL. The first version of this test
+    // asserted `null` here and was wrong — the property that matters is that
+    // what comes back never contains a slash.
+    const tag = tagFromLocation(
+      "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19/../../etc",
+    );
+    expect(tag).toBe("2026.08.19");
+    expect(tag).not.toContain("/");
+  });
+
+  it("decodes a percent-encoded tag rather than pasting it into the URL", () => {
+    expect(tagFromLocation("https://github.com/o/r/releases/tag/v1.0%2Bbuild")).toBe("v1.0+build");
+    // …and refuses one that decodes into something that is not a tag.
+    expect(tagFromLocation("https://github.com/o/r/releases/tag/2026.08.19%2F..%2Fevil")).toBeNull();
+  });
+
+  it("the manifest carries the tag as a placeholder, not as a literal 'latest'", () => {
+    // The whole fallback depends on this: if the template said `latest` there
+    // would be nowhere to put the tag the redirect gave us.
+    for (const tool of MANIFEST.tools.filter((t) => t.versioning === "latest")) {
+      expect(tool.releaseUrl).toContain("{tag}");
+      expect(tool.checksumUrl).toContain("{tag}");
+      expect(tool.releaseUrl).not.toContain("/download/latest/");
+      expect(tool.checksumUrl).not.toContain("/download/latest/");
+    }
+  });
+
+  it("substituting the tag yields a URL that is https and has no placeholder left", () => {
+    const tool = MANIFEST.tools.find((t) => t.versioning === "latest");
+    const url = tool.releaseUrl.replace("{tag}", "2026.08.19").replace("{asset}", "yt-dlp_macos");
+    expect(url).toBe("https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos");
+    expect(url).not.toMatch(/\{[a-z]+\}/);
+    expect(url.startsWith("https://")).toBe(true);
   });
 });
 
