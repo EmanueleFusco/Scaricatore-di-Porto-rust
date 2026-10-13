@@ -1858,3 +1858,49 @@ Risolti i due warning della CI, e reso difficile ricascarci. D55.
      precedente.
   3. Poi l'ultima cosa rimasta da ieri: installare e provare i pacchetti, che
      sblocca il tag `v0.1.0`.
+
+### 2026-10-13, run successiva — verde sulle immagini nuove
+
+`workflow_dispatch` su `m0-tools` dopo `fc5ddc5` (immagini esplicite, azioni su
+Node 24, guardia): **verde tutto, e senza warning**.
+
+* `check (ubuntu, lint + test)` — 2 m 8 s
+* `Matrix: process-tests` — 2 su 2
+* `Matrix: bundle` — 3 su 3
+* `bundle (macos universal)` — 3 m 9 s
+* `draft release` — non partito, correttamente: è legato ai tag `v*` e questa era
+  una dispatch.
+* Test frontend: **127 su 127** su 7 file. Confermata la run anche sui runner
+  Windows e macOS, che ieri erano rossi.
+
+- **Ciò che questa run chiude.** D55 lasciava scritto «non verificato: nessuna
+  build eseguita su Ubuntu 24.04». Ora c'è stata: `bundle (linux-x64)` ha
+  costruito su 24.04 ed è verde. Il punto Non era se compilasse — era se
+  producesse lo stesso binario, e su quello **il verde della build non dice
+  niente**: una compilazione riuscita può benissimo linkednare una glibc più
+  recente.
+- **Ciò che resta aperto, ed è una misura, non un'opinione.** `bundle` è passato
+  da 22.04 a 24.04, quindi il **glibc minimo richiesto dal `.deb` è salito**. Le
+  misure di ieri erano su 22.04 e **non valgono più**:
+
+  | componente | misurato su 22.04 | su 24.04 |
+  | :-- | --: | --: |
+  | binario applicativo | 4,81 MiB | da rimisurare |
+  | `.deb` | 41,36 MiB | da rimisurare |
+  | `.rpm` | 41,36 MiB | da rimisurare |
+  | AppImage | 147,27 MiB | escluso dal budget |
+
+  Il rapporto è nel log del job `bundle` (`report-bundle-sizes.mjs`) e negli
+  artifact. Finché qualcuno non lo confronta, le righe nella tabella qui sopra
+  restano «da rimisurare»: **una misura vecchia presentata come attuale è uno
+  dei modi in cui questa documentazione potrebbe mentire**, ed è il motivo per
+  cui la scrivo invece di toglierla.
+- **Nota di metodo, che vale più del singolo numero.** Le ultime tre run hanno
+  chiuso tre difetti trovati da CI, e due trovati da un controllo locale in meno
+  di due minuti (`well_known_dirs_for` tramite `cargo-xwin`, e il passo di
+  `lipo`). La run di oggi non ha trovato niente, e non è un caso: è il primo
+  giro in cui le correzioni erano già state verificate su un sostituto locale
+  prima di arrivare in CI. Non perché CI sia inutile — è l'unica che dice se il
+  *pacchetto* funziona — ma perché **un controllo che gira prima di spendere 95
+  minuti di quota cambia il costo dell'errore**, e con esso la voglia di
+  verificare.
