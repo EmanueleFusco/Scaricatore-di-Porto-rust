@@ -16,6 +16,7 @@
     "tauri": "tauri",
     "app:binary": "node scripts/run.mjs binary",
     "check:ci": "node scripts/check-ci-syntax.mjs",
+    "check:runners": "node scripts/check-ci-runners.mjs",
     "check:tools": "node scripts/fetch_bundled_tools.mjs --check",
     "fetch:tools": "node scripts/fetch_bundled_tools.mjs",
     "check:release": "node scripts/check-release-version.mjs"

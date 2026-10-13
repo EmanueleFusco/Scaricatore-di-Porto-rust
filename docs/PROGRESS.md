@@ -1805,3 +1805,56 @@ Con le date dalla parte, l'ordine non è ovvio ma è determinato:
 Nessuna di queste è applicata. Le righe da cambiare sono poche e il rischio è
 basso, ma è una decisione tua: cambia l'immagine di build degli installer, e
 quella è una cosa che si misura, non si presume.
+
+## 2026-10-13 — M0-C / Allowlist invece di commenti (spec §13, §14)
+
+Risolti i due warning della CI, e reso difficile ricascarci. D55.
+
+- **Done**
+  - Immagini esplicite: `ubuntu-latest` → `ubuntu-24.04` (`check`, `release`),
+    `ubuntu-22.04` → `ubuntu-24.04` (gamba Linux di `bundle`),
+    `macos-latest` → `macos-26` (stessa immagine, etichetta che non migra).
+  - Azioni su Node 24: `checkout@v7`, `setup-node@v7`, `upload-artifact@v7`,
+    **`download-artifact@v8`**, `rust-cache@v2.9.2`.
+  - `dtolnay/rust-toolchain@stable` registrata come esenzione: è composite,
+    nessun runtime JS, tag mobile voluto.
+  - `scripts/check-ci-runners.mjs`: allowlist di immagini e azioni, con le
+    scadenze nei messaggi. Agganciata al job `check` come `npm run check:runners`.
+  - Commento in testa a `ci.yml` con il perché delle versioni; 3 commenti che
+    nominavano immagini vecchie riscritti (erano diventati falsi).
+- **Verified by running**
+  - `npm run check:runners` sui workflow verdi: «nessuna immagine fluttuante,
+    nessuna deprecata, tutte le azioni su Node 24».
+  - **Revert-check**: una riga indietro (`ubuntu-24.04` → `ubuntu-22.04`) fa
+    scattare la guardia con la scadenza del 17 aprile 2027 e i brownout.
+  - **Revert-check sul confine**: `download-artifact` da v7 a v6 fa cadere due
+    test. I test della guardia non sono vacui.
+  - `npm test` → **127 verdi** (erano 104: +32 sulla guardia e −5? no: +23 qui);
+    `check:ci` 9 blocchi validi; `check:tools` OK; 8 suite Rust; fmt; clippy 0.
+  - Confini Node 24 verificati tag per tag: checkout/setup-node da v5,
+    upload-artifact da v6, download-artifact da v7. Non simmetria, misure.
+- **Not verified / stubbed**
+  - **Nessuna build eseguita su Ubuntu 24.04.** Verificato che i pacchetti ci
+    sono e che l'etichetta è valida; non che `tauri build` produca lo stesso
+    binario.
+  - `bundle` da 22.04 a 24.04 **alza il glibc minimo del `.deb`**: le soglie e le
+    dimensioni misurate finora non valgono più. Da rimisurare.
+  - I 4 warning di Node 20 del job `release` su tag: verificati per lettura, non
+    su una run con tag.
+- **Spec items marked "verify" che I checked**
+  - Confini Node 24 per azione (tabella in D55), letti da `action.yml` a ogni tag.
+  - `ubuntu-24.04`, `macos-26`, `macos-15-intel`, `windows-2022`,
+    `windows-11-arm` sono etichette esistenti nella tabella dei runner.
+  - `dtolnay/rust-toolchain` è composite; `rust-cache` v2.9.2 è node24.
+- **Decisions/deviations**
+  - D55: allowlist e non denylist, controllo a ogni push, confini Node 24 non
+    simmetrici ma misurati, due esenzioni dichiarate (dtolnay, rust-cache).
+- **Next step**
+  1. Rilanciare la CI. La run deve essere verde e confermare che le immagini
+     nuove reggono: in particolare `bundle (linux-x64)`, il primo a costruire
+     davvero su 24.04.
+  2. **Rimisurare** `.deb`, `.rpm` e AppImage: dimensione e glibc minimo. Il
+     rapporto di `scripts/report-bundle-sizes.mjs` va confrontato con quello
+     precedente.
+  3. Poi l'ultima cosa rimasta da ieri: installare e provare i pacchetti, che
+     sblocca il tag `v0.1.0`.

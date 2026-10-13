@@ -1606,3 +1606,93 @@ l'errore» (D48): la correzione è stata nel test.
 nell'header `authorization` delle chiamate a `api.github.com`; nessun messaggio
 lo contiene, e `grep` sul sorgente lo conferma (due occorrenze in lettura, zero
 in scrittura). AGENTS.md §7.
+
+### D55 — Allowlist invece di commenti: la prossima migrazione la decidiamo noi
+
+Richiesta: sistemare i due warning per non avere più il problema su GitHub.
+Fatto, ma non con le due righe che ci si aspetta: con un **controllo che gira a
+ogni push**, perché le due righe da sole risolvono il 2026 e non il 2028.
+
+**Le due correzioni.**
+
+* `runs-on: ubuntu-latest` → `ubuntu-24.04` (job `check` e `release`), e
+  `- os: ubuntu-22.04` → `ubuntu-24.04` (gamba Linux di `bundle`).
+* Le azioni alla prima versione che gira su Node 24: `checkout@v7`,
+  `setup-node@v7`, `upload-artifact@v7`, **`download-artifact@v8`**,
+  `rust-cache@v2.9.2`.
+
+16 righe in tutto, più i 3 commenti che nominavano le immagini vecchie e
+sarebbero diventati falsi. Il commento in testa a `ci.yml` spiega perché le
+versioni sono quelle, e non è decorazione: senza, la prossima persona che vede
+`@v7` e `@v8` nella stessa lista pensa a un refuso e la "sistema".
+
+**Perché una riga non basta, e un commento non basta per niente.** I due warning
+non erano difetti: erano **preannunci**. Il problema non è che non si sapesse, è
+che nel file non c'era nulla che rendesse visibile il momento in cui la previsione
+si avvera. `ubuntu-latest` è il caso peggiore: è un'etichetta che **migra da
+sola**, in una finestra (19 ottobre – 19 novembre 2026) in cui la stessa run
+poteva capitare su 24.04 o su 26.04. Non si può rimediare a posteriori: o lo
+prevedi, o lo scopri da un build rosso.
+
+**Quindi `scripts/check-ci-runners.mjs`, un allowlist.** Ogni immagine e ogni
+azione deve essere scritta là dentro; quello che non c'è fa fallire il job
+`check`, a ogni push, in meno di un secondo. Tre regole:
+
+1. **nessuna etichetta fluttuante** (`ubuntu-latest`, `macos-latest`,
+   `windows-latest`): migrano da sole;
+2. **nessuna immagine in deprecazione**, con la scadenza nel messaggio, perché
+   la data è l'informazione che serve per decidere;
+3. **nessuna azione sotto la prima versione Node 24**, e un'azione non
+   registrata blocca: deve essere qualcuno a verificarla, non a indovinarla.
+
+Vantaggio dell'allowlist sulla denylist: se GitHub pubblica Ubuntu 28.04, la CI
+non ci migra. `ubuntu-28.04` nell'allowlist lo decidiamo noi, misurando.
+
+**I confini Node 24 non sono uno solo, e non si indovinano.** Verificato leggendo
+`action.yml` a ogni tag il 2026-10-13:
+
+| azione | v4 | v5 | v6 | v7 | v8 |
+| :-- | :-: | :-: | :-: | :-: | :-: |
+| `actions/checkout` | 20 | **24** | **24** | **24** | — |
+| `actions/setup-node` | 20 | **24** | **24** | **24** | — |
+| `actions/upload-artifact` | 20 | 20 | **24** | **24** | — |
+| `actions/download-artifact` | 20 | 20 | 20 | **24** | **24** |
+
+Cioè `@v5` va bene per due azioni ed è su Node 20 per le altre due, e
+`download-artifact` è a **v8** mentre le altre stanno a v7. «Alzo tutto a v7»
+sbaglia due volte. Un test verifica proprio questa asimmetria, perché è la
+trappola della migrazione.
+
+**Due azioni su cui la guardia stessa mi ha corretto.**
+
+* `dtolnay/rust-toolchain@stable` l'ha bloccata, e aveva ragione da un punto di
+  vista e torto da un altro: è un'azione **composite** (`runs.using: composite`),
+  quindi gira negli shell e **non ha un runtime JS**: la rimozione di Node 20 non
+  la tocca. Il suo tag mobile è voluto — `stable`, `nightly`, o una versione
+  precisa sono la sua interfaccia. Registrata come unica esenzione dichiarata,
+  con il motivo scritto accanto.
+* `Swatinem/rust-cache@v2`: gira su Node 24 **da 2.9.2 in poi**. Il warning della
+  CI non la citava, e ora si sa perché. L'ho pinnata a `v2.9.2`: `@v2` è un tag
+  mobile che oggi punta lì, ma il controllo non può saperlo, e un numero
+  verificabile è meglio di uno presunto.
+
+**Verifiche.** La guardia è stata provata in tre modi, non uno:
+
+* sui workflow veri: verde, «nessuna immagine fluttuante, nessuna deprecata,
+  tutte le azioni su Node 24»;
+* **invertendo una riga** (`ubuntu-24.04` → `ubuntu-22.04` nella matrice di
+  `bundle`): rossa, con la scadenza del 17 aprile 2027 e i brownout nel
+  messaggio. Senza questo passaggio, un controllo che passa non prova niente;
+* **rompendo il confine Node 24** (`download-artifact` da v7 a v6): due test
+  cadono. I test della guardia non sono vacui.
+
+32 test nuovi in `scripts/check-ci-runners.test.mjs` (127 frontend in totale,
+erano 104).
+
+**Il limite, che è grosso.** Passare `bundle` da 22.04 a 24.04 **cambia il
+glibc minimo richiesto dal `.deb`**, quindi le soglie di compatibilità e le
+dimensioni misurate fino a ieri non valgono più. È scritto nel commento della
+matrice, ed è la ragione per cui va rimisurato e non dato per buono. Non ho
+eseguito nessuna build su 24.04: ho verificato che i pacchetti ci sono e che
+`ubuntu-24.04` è un'etichetta valida, non che `tauri build` produca lo stesso
+binario. Questo lo dice la prossima run.
