@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  fileName,
+  footerStateKey,
   labelKey,
   normaliseDone,
   normaliseProgress,
@@ -96,5 +98,25 @@ describe("labels (spec §8.3, §11.9)", () => {
     const merging = progress({ label: "merging", subIndex: null, subTotal: null });
     expect(progressLabel("en", merging)).toBe("Merging…");
     expect(progressLabel("it", merging)).toBe("Unione in corso…");
+  });
+});
+
+describe("the status footer helpers (spec §11.2)", () => {
+  it("names the stage while running and the outcome afterwards", () => {
+    expect(footerStateKey("running", "downloading")).toBe("job.stage.downloading");
+    expect(footerStateKey("running", "postProcessing")).toBe("job.stage.postProcessing");
+    expect(footerStateKey("running", null)).toBe("job.stage.preparing");
+    expect(footerStateKey("done", null)).toBe("job.stage.done");
+    expect(footerStateKey("failed", null)).toBe("job.stage.failed");
+    expect(footerStateKey("cancelled", null)).toBe("job.stage.cancelled");
+    expect(footerStateKey("idle", null)).toBe("footer.idle");
+  });
+
+  it("takes the last segment of a path on either separator", () => {
+    expect(fileName("/out/Title [id].mkv")).toBe("Title [id].mkv");
+    expect(fileName("C:\\Users\\u\\Videos\\Title [id].mkv")).toBe("Title [id].mkv");
+    expect(fileName("  /out/Title.mkv  ")).toBe("Title.mkv");
+    expect(fileName("Title.mkv")).toBe("Title.mkv");
+    expect(fileName("")).toBe("");
   });
 });

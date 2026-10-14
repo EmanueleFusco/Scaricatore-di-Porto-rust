@@ -74,7 +74,9 @@
 
   "footer.idle": "In attesa",
   "footer.placeholder": "Nessun processo in esecuzione",
-  "footer.toolsPending": "Strumenti non verificati",
+  "footer.toolsPending": "Strumenti da controllare",
+  "footer.speed": "{value} Mbit/s",
+  "footer.percent": "{value}%",
 
   "settings.title": "Impostazioni",
   "settings.general": "Generali",

@@ -14,11 +14,12 @@ import {
   type DownloadStarted,
   type JobDoneEvent,
   type JobProgressEvent,
+  type JobStatus,
   type QualityRequest,
 } from "$lib/job";
 import type { BackendErrorInfo } from "$lib/settings";
 
-export type JobStatus = "idle" | "running" | "done" | "failed" | "cancelled";
+export type { JobStatus } from "$lib/job";
 
 class JobStore {
   status = $state<JobStatus>("idle");

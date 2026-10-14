@@ -1942,6 +1942,11 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
   - `.github/workflows/selftest.yml`: il self-test vero sui tre sistemi, **solo
     a avvio manuale** (D70). `npm run check:ci` e `check:runners` verdi su di
     esso.
+  - **Footer di stato collegato al job** (segnalato dall'utente: diceva "Nessun
+    processo in esecuzione" durante un download). Ora mostra stadio, flusso,
+    percentuale, velocità e tempo rimasto; a fine job il nome del file, in
+    errore il messaggio localizzato, e il pallino rosso degli strumenti porta
+    a Strumenti. I contatori "N in coda" di spec §7.5 restano per M2.
 - **Verified by running**
   - `cargo test`: **268** test verdi in totale (199 lib, 3 bundled_tools,
     9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,

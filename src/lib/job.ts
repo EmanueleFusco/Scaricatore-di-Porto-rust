@@ -23,6 +23,9 @@ export type JobStage =
   | "failed"
   | "cancelled";
 
+/** The state of the temporary single-job flow (M1). */
+export type JobStatus = "idle" | "running" | "done" | "failed" | "cancelled";
+
 /** Mirror of `commands::download::JobProgressEvent`. */
 export interface JobProgressEvent {
   jobId: string;
@@ -172,4 +175,37 @@ export function offersDenoInstall(
   dismissed: boolean,
 ): boolean {
   return !dismissed && done?.status === "failed" && done.error?.code === "DENO_MISSING";
+}
+
+/**
+ * i18n key for the state word of the status footer (spec §11.2).
+ *
+ * While a job runs the footer names the *stage* ("Download", "Elaborazione");
+ * afterwards it names the outcome. `idle` keeps the M0 wording.
+ */
+export function footerStateKey(status: JobStatus, stage: JobStage | null): string {
+  switch (status) {
+    case "running":
+      return stage ? stageKey(stage) : "job.stage.preparing";
+    case "done":
+      return "job.stage.done";
+    case "failed":
+      return "job.stage.failed";
+    case "cancelled":
+      return "job.stage.cancelled";
+    default:
+      return "footer.idle";
+  }
+}
+
+/**
+ * The last segment of a path, for a compact footer line.
+ *
+ * Both separators, on every OS: a Windows path shown on Linux (a log line, a
+ * pasted path) must not come out whole.
+ */
+export function fileName(path: string): string {
+  const trimmed = path.trim();
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
 }

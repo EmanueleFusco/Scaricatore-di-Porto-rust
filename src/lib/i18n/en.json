@@ -74,7 +74,9 @@
 
   "footer.idle": "Idle",
   "footer.placeholder": "No process running",
-  "footer.toolsPending": "Tools not checked yet",
+  "footer.toolsPending": "Tools need attention",
+  "footer.speed": "{value} Mbit/s",
+  "footer.percent": "{value}%",
 
   "settings.title": "Settings",
   "settings.general": "General",
