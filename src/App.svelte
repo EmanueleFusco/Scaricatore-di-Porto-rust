@@ -12,6 +12,7 @@
   import SettingsPage from "$lib/pages/SettingsPage.svelte";
   import { router } from "$lib/router.svelte";
   import { isTauriRuntime, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { jobStore } from "$lib/stores/job.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { themeStore } from "$lib/stores/theme.svelte";
 
@@ -32,6 +33,13 @@
       }
       void toolsStore.refresh();
     })();
+    // `job:progress` / `job:done` (spec §3) are app-wide, not QueuePage-local:
+    // the footer will read them in M2, and a component that unmounts must not
+    // be able to lose a completion event.
+    void jobStore.start();
+    return () => {
+      void jobStore.stop();
+    };
   });
 </script>
 

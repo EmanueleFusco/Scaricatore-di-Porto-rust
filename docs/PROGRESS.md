@@ -1858,3 +1858,197 @@ Risolti i due warning della CI, e reso difficile ricascarci. D55.
      precedente.
   3. Poi l'ultima cosa rimasta da ieri: installare e provare i pacchetti, che
      sblocca il tag `v0.1.0`.
+
+### 2026-10-13, run successiva — verde sulle immagini nuove
+
+`workflow_dispatch` su `m0-tools` dopo `fc5ddc5` (immagini esplicite, azioni su
+Node 24, guardia): **verde tutto, e senza warning**.
+
+* `check (ubuntu, lint + test)` — 2 m 8 s
+* `Matrix: process-tests` — 2 su 2
+* `Matrix: bundle` — 3 su 3
+* `bundle (macos universal)` — 3 m 9 s
+* `draft release` — non partito, correttamente: è legato ai tag `v*` e questa era
+  una dispatch.
+* Test frontend: **127 su 127** su 7 file. Confermata la run anche sui runner
+  Windows e macOS, che ieri erano rossi.
+
+- **Ciò che questa run chiude.** D55 lasciava scritto «non verificato: nessuna
+  build eseguita su Ubuntu 24.04». Ora c'è stata: `bundle (linux-x64)` ha
+  costruito su 24.04 ed è verde. Il punto Non era se compilasse — era se
+  producesse lo stesso binario, e su quello **il verde della build non dice
+  niente**: una compilazione riuscita può benissimo linkednare una glibc più
+  recente.
+- **Ciò che resta aperto, ed è una misura, non un'opinione.** `bundle` è passato
+  da 22.04 a 24.04, quindi il **glibc minimo richiesto dal `.deb` è salito**. Le
+  misure di ieri erano su 22.04 e **non valgono più**:
+
+  | componente | misurato su 22.04 | su 24.04 |
+  | :-- | --: | --: |
+  | binario applicativo | 4,81 MiB | da rimisurare |
+  | `.deb` | 41,36 MiB | da rimisurare |
+  | `.rpm` | 41,36 MiB | da rimisurare |
+  | AppImage | 147,27 MiB | escluso dal budget |
+
+  Il rapporto è nel log del job `bundle` (`report-bundle-sizes.mjs`) e negli
+  artifact. Finché qualcuno non lo confronta, le righe nella tabella qui sopra
+  restano «da rimisurare»: **una misura vecchia presentata come attuale è uno
+  dei modi in cui questa documentazione potrebbe mentire**, ed è il motivo per
+  cui la scrivo invece di toglierla.
+- **Nota di metodo, che vale più del singolo numero.** Le ultime tre run hanno
+  chiuso tre difetti trovati da CI, e due trovati da un controllo locale in meno
+  di due minuti (`well_known_dirs_for` tramite `cargo-xwin`, e il passo di
+  `lipo`). La run di oggi non ha trovato niente, e non è un caso: è il primo
+  giro in cui le correzioni erano già state verificate su un sostituto locale
+  prima di arrivare in CI. Non perché CI sia inutile — è l'unica che dice se il
+  *pacchetto* funziona — ma perché **un controllo che gira prima di spendere 95
+  minuti di quota cambia il costo dell'errore**, e con esso la voglia di
+  verificare.
+
+## 2026-10-14 — M1 / Video singolo: ispezione, download, runtime JS, cancellazione
+
+Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`).
+
+- **Done**
+  - `services/jsruntime.rs`: modalità Auto/QuickJS/Deno, flag nel verso giusto
+    (`--no-js-runtimes` **prima** di `--js-runtimes`), riconoscimento host
+    YouTube, costante `YOUTUBE_PLAYER_CLIENTS`, memoria `(yt-dlp, qjs)` con TTL
+    24 h su `runtime-memory.json` (best effort, atomica).
+  - `services/process.rs`: secondo sink per lo **stderr** (il progress
+    postprocess di yt-dlp esce lì — misurato), ring buffer invariato.
+  - `services/ytdlp.rs`: selettori esatto/max/best/audio/id esplicito, merge
+    `mp4/mkv`, `--windows-filenames`, template progress/print di §8.3, parser
+    (`SDP_DL`/`SDP_PP`/`SDP_FILE`, "NA" compreso), tracker "Video 1/2"/"Audio
+    2/2"/"Merging…", throttle a 10/s, classificatore §8.5 (tutte le righe della
+    tabella + `DENO_MISSING`), cookie §8.6 per OS.
+  - `services/inspect.rs`: `-J --flat-playlist`, modello `Inspected`
+    (Video/Playlist stub/Error), scala risoluzioni con fallback dell'originale e
+    filtro storyboard, timeout 60/120 s, self-test §5.3.6.
+  - `services/job.rs`: pipeline a video singolo con fallback QuickJS→Deno (una
+    volta: errore `YT_CHALLENGE`, zero formati con altezza, stallo 90 s nel
+    canale di download), retry **senza `-f`** su `FORMAT`, cancel che uccide
+    l'albero e pulisce `.sdp-tmp-<job>`, storage dell'esito per la prossima
+    volta, pulizia dei `.sdp-tmp-*` orfani all'avvio.
+  - IPC: `inspect_url`/`inspect_cancel` (request id, cancellazione della
+    precedente), `download_start`/`download_cancel`/`download_dismiss_deno_offer`,
+    eventi `job:progress`/`job:done`; `tools_install` installa **Deno** dal
+    manifest con `tool:progress`; `tools_self_test`.
+  - Manifest: voce `deno` pinnata 2.9.7 (sei piattaforme, zip, sha256), non
+    inclusa nell'installer.
+  - Frontend: schermata temporanea (URL con debounce 500 ms e cache, selettore
+    risoluzione, switch audio, cartella, progresso con velocità/ETA, errore con
+    "Copia i dettagli", banner Deno), tab "Rete e account" (runtime JS, cookie),
+    "Prova l'estrazione da YouTube" su Strumenti, i18n IT/EN completa.
+  - `.github/workflows/selftest.yml`: il self-test vero sui tre sistemi, **solo
+    a avvio manuale** (D70). `npm run check:ci` e `check:runners` verdi su di
+    esso.
+  - **Footer di stato collegato al job** (segnalato dall'utente: diceva "Nessun
+    processo in esecuzione" durante un download). Ora mostra stadio, flusso e
+    percentuale; a fine job il nome del file, in errore il messaggio
+    localizzato, e la voce degli strumenti con problemi porta a Strumenti. I
+    contatori di spec §7.5 restano per M2. **Senza** velocità ed ETA: erano gli
+    stessi numeri già sotto il nome del video (seconda segnalazione dell'utente).
+  - **Risoluzione degradata riconosciuta** (segnalato: "1440p scelto, 360p
+    scaricato, una volta"). Nuova stampa `before_dl:SDP_FORMAT…` (misurata sul
+    binario vero) che dice il formato davvero scelto; se è un muxed più basso del
+    richiesto il file viene rimosso e si ritenta una volta con Deno, altrimenti
+    il risultato porta `requestedHeight`/`actualHeight` e la UI lo dichiara.
+    Dettagli e limiti in D71.
+  - **Ispezione ridotta riconosciuta e ritentata** (seconda segnalazione: "a
+    volte incollando il link ci sono solo 360p, riprovando ci sono tutte").
+    L'ispezione non passa più `--no-warnings` (deviazione deliberata da §6.2,
+    motivata in D73) perché yt-dlp annuncia lì la challenge fallita; un secondo
+    tentativo — Deno se disponibile, altrimenti lo stesso runtime — recupera la
+    lista completa, si tiene il risultato migliore, e se resta ridotta il
+    risultato lo dichiara (`degraded`) e la UI offre **Riprova**. Le risposte
+    degradate **non** entrano nella cache.
+  - **Il bug ereditato dall'originale: via la lista di client forzata** (terza
+    segnalazione, con richiesta esplicita di cercare lì). `player_client=
+    web_embedded,web,tv` è codice dell'app Python; in questa versione di yt-dlp i
+    client predefiniti sono `visionos,web`, e solo `visionos` non richiede un PO
+    token. Forzare la vecchia lista eliminava proprio quel client, e quando il
+    token non si riusciva a coniare restavano solo i muxed — il 360p, a
+    intermittenza. Ora **di default non si passa nessun extractor arg**; la
+    costante resta in un campo esperto (Impostazioni → Rete e account), vuoto =
+    automatico. Misure: 31→**49** formati sul video 4K, self-test 7,4 s/15
+    formati → **1,95 s/24 formati**. Dettagli e sorgente citato in D74.
+  - **Il download non finalizza mai un muxed più basso del richiesto**: alla
+    riga `SDP_FORMAT` (prima dei byte) il job annulla il tentativo, elimina i
+    parziali, ritenta una volta (Deno o stesso runtime) e, se resta degradato,
+    **fallisce** con un messaggio chiaro invece di salvare il file sbagliato. Un
+    *merge* più basso resta un esito legittimo, con i due numeri nel payload.
+  - **Risoluzione dei tool in cache per la sessione** (D75): risparmia il probe
+    da 0,46 s di yt-dlp a ogni incolla; invalidata da override, aggiornamento,
+    installazione e dalla verifica esplicita della pagina Strumenti. Provata da
+    un test che cancella i binari dal disco dopo la prima risoluzione.
+  - **Debounce**: 500 ms restano per la digitazione, salta per l'incolla (D76).
+- **Verified by running**
+  - `cargo test`: **285** test verdi in totale (208 lib, 3 bundled_tools,
+    9 download, 8 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
+    22 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **162**
+    test (`npm test`), `npm run check` a 0 errori.
+  - **IPC completo con il tool finto**: `inspect_url` e `download_start`
+    attraverso i comandi veri, con `ToolContext` che punta al fake — il job
+    scrive il file e lo stato torna a fermo. È in `m1_ipc.rs`.
+  - `npm run check` 0 errori, `npm test` **152** verdi, `npm run build` ok.
+  - **Reale, con i binari inclusi** (`cargo test --test real_selftest --
+    --ignored --nocapture --test-threads=1`): self-test ok con **quickjs** in
+    7,4 s; ispezione "Me at the zoo" → altezze `[240, 144]`; download a 144p
+    unito in `.mkv` (il merge sceglie MKV per VP9+Opus, come previsto); audio
+    only → `.opus`; le temp dir spariscono, gli output restano.
+  - **Installazione Deno reale** (stesso file, `the_deno_install_...`): 41,6 MB
+    scaricati, checksum del manifest verificato, zip estratto, il binario
+    risponde `deno 2.9.7`. E il flag di tentativo B è stato provato live:
+    `--no-js-runtimes --js-runtimes deno:/tmp/.../deno` estrae "Me at the zoo".
+  - L'argomento del merge e i template sono stati verificati **eseguendo** il
+    binario fissato su un video vero (non solo `--help`): `SDP_DL`/`SDP_FILE`
+    su stdout, `SDP_PP` su stderr, `NA` per i campi ignoti.
+  - **Flag verificati su `--help` del binario incluso (2026.08.19)**, oltre che
+    in esecuzione dove indicato: `--js-runtimes`, `--no-js-runtimes`,
+    `--remote-components`, `--flat-playlist`, `--no-playlist`, `--playlist-items`
+    (`-I`), `--progress-template` (prefissi `download:`/`postprocess:`),
+    `--print` con `WHEN:after_move`, `--paths` (`home:`/`temp:`),
+    `--windows-filenames`, `--merge-output-format`, `--concurrent-fragments`,
+    `--retries`, `--fragment-retries`, `--socket-timeout`,
+    `--cookies-from-browser`, `--cookies`, `--extractor-args`,
+    `--ffmpeg-location`, `--impersonate`, `--simulate`, `--newline`, `--color`,
+    `--ignore-config`, `--extract-audio` (`-x`), `--audio-format`,
+    `--limit-rate`. **Assente**: `--playlist-end` (D60).
+  - `-U` reale su una copia in `/tmp`: aggiornamento a nightly e no-op di
+    `--update-to stable` da nightly (D66).
+  - L'app parte: `npm run app` (vedi "run" qui sotto).
+- **Not verified / stubbed**
+  - **Playlist**: solo lo stub (tipo e conteggio). Elenco, selezione, archivio
+    sono M3.
+  - **Firma/notarizzazione macOS e antivirus Windows**: invariati da M0-C
+    (SPIKES.md).
+  - Il **cancel con un download vero**: coperto con il falso yt-dlp dalla suite;
+    la prova manuale con l'elenco dei processi resta S5 per l'umano.
+  - **Cookie da un browser vero**: gli argomenti sono provati con il falso tool
+    e il filtro per OS con i test; leggere il database di un browser reale no
+    (servono la macchina e una sessione dell'utente).
+  - **Pulizia all'avvio** dei `.sdp-tmp-*` orfani: copre solo la cartella
+    predefinita (impostazione o Download di sistema), non una cartella scelta al
+    volo nel selettore. Con M2 `queue.json` saprà quali cartelle appartengono a
+    elementi interrotti.
+  - L'interfaccia grafica non è stata cliccata da qui (nessun modo di pilotare la
+    finestra): avvio e assenza di errori all'avvio verificati, i percorsi di
+    click no. Elencato per onestà.
+  - `--limit-rate`, proxy e impersonificazione: M3.
+- **Spec items marked "verify" che ho chiuso**
+  - `--js-runtimes`/`--no-js-runtimes` esistono nel binario fissato e sono nati
+    esattamente in **2025.11.12** (sorgente `options.py` ai tag): `minVersion`
+    confermato (D56).
+  - `--playlist-end` **non esiste più** in 2026.08.19; M3 userà `-I :1000` (D60).
+  - Asset e checksum Deno: nomi verificati nella release v2.9.7; sha256 linux
+    x64 verificato byte per byte (D59).
+  - `--print after_move:` scarica davvero (non simula) e stampa il percorso
+    finale dopo il merge (misurato).
+  - Il video di prova `BaW_jenozKc` non è più disponibile; usato
+    `jNQXAC9IVRw` (D63).
+- **Decisions/deviations (anche in DECISIONS.md)**: D56–D69.
+- **Next step**
+  1. Prova manuale dell'interfaccia sulla macchina di sviluppo (URL, altezza,
+     audio, cartella, annulla) — è l'unica cosa che qui non si può fare.
+  2. Merge del branch dopo la revisione; poi M2 (coda).

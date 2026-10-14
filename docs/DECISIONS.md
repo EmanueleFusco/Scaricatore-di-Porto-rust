@@ -1696,3 +1696,375 @@ matrice, ed è la ragione per cui va rimisurato e non dato per buono. Non ho
 eseguito nessuna build su 24.04: ho verificato che i pacchetti ci sono e che
 `ubuntu-24.04` è un'etichetta valida, non che `tauri build` produca lo stesso
 binario. Questo lo dice la prossima run.
+
+## 2026-10-14 — M1 (video singolo: ispezione, download, runtime JS, cancellazione)
+
+### D56 — `minVersion` di yt-dlp: **confermato** `2025.11.12` (chiude il TODO di D42)
+
+D42 lasciava un `TODO(verify)`: "verificare con `--help` del binario fissato quale
+sia la release minima reale". Il `--help` non lo dice — dice che il flag esiste
+*oggi* — quindi la verifica è stata fatta sulla sorgente delle opzioni ai tag:
+
+```
+2025.10.14  yt_dlp/options.py → nessuna occorrenza di --js-runtimes
+2025.10.22  yt_dlp/options.py → nessuna occorrenza
+2025.11.12  yt_dlp/options.py → righe 460-478: --js-runtimes, --no-js-runtimes
+```
+
+Quindi `2025.11.12` è **esattamente** la prima release con i flag, non un
+pavimento conservativo. Il valore nel manifest resta e il TODO si chiude. Nota
+utile trovata nella stessa lettura: la help di quella opzione dice
+`--no-js-runtimes needs to be passed before enabling other runtimes`, cioè
+l'ordine di spec §5.3.1 è documentato da monte, non dedotto da noi.
+
+### D57 — ffmpeg è un pre-flight, non una scoperta a download finito
+
+`run_job` rifiuta di partire se ffmpeg non è risolto, con codice
+`FFMPEG_MISSING`. Non è una preferenza: è il risultato di una misura. Con
+`--ffmpeg-location /nonexistent`, yt-dlp **esce 0** e lascia due file separati
+(`x.f278.webm` + `x.f251.webm`): "due file splittati" non è un risultato, e
+distinguerlo a posteriori richiederebbe di capire dallo stderr un esito che il
+codice di uscita dichiara riuscito.
+
+Il costo: su un sito il cui selettore sceglierebbe un singolo stream muxed, il
+job viene comunque rifiutato. È accettato per M1 (YouTube-centric) e va rivisto
+in M3, quando i siti generici arrivano davvero — con la stessa nota nel codice.
+
+### D58 — Anche lo stderr ha una callback (misurato, non simmetrico per gusto)
+
+Misurato sul binario fissato: i template `download:` finiscono su **stdout**,
+quelli `postprocess:` su **stderr**. "Merging…" e la conversione audio si
+possono seguire solo leggendo stderr, quindi `process.rs` ha ora `LineSinks`
+con due callback e il ring buffer che continua a riempirsi in ogni caso (il
+classificatore di §8.5 legge quello). Un test d'integrazione lo pinna.
+
+### D59 — Deno nel manifest: pinnato 2.9.7, checksum verificati
+
+D34 diceva "deno non è nel manifest, per ora: M1 è dove si pinna". Ora c'è, con
+`bundled: false` (spec §0.7: solo yt-dlp e qjs nell'installer), `versioning:
+pinned`, sei asset. I checksum vengono dai file `<asset>.sha256sum` pubblicati
+dalla release; quello per `x86_64-unknown-linux-gnu` è stato **verificato byte
+per byte** scaricando lo zip (41,6 MB) il 2026-10-14 e confrontando lo sha256.
+Gli altri cinque non sono stati scaricati: sono i valori pubblicati, e questo è
+scritto nella `note` del manifest, non solo qui.
+
+Deno **non** entra in `wizardToolNames` come problema: `toolState` lo tratta
+come opzionale, altrimenti il pallino rosso del footer si accende su ogni
+installazione nuova per uno strumento che serve solo come ripiego.
+
+### D60 — `--playlist-end` non esiste più: fuori dall'M1, nota per M3
+
+Spec §6.2 e §6.4 nominano `--playlist-end 1000`. Sul binario fissato
+(2026.08.19) il flag **non c'è più**: l'equivalente è `-I :1000`
+(`--playlist-items`, con `[START]:[STOP][:STEP]`). M1 non enumera playlist,
+quindi nessun codice lo usa; M3 deve usare `-I`. Verificato con `--help` e con
+la tabella delle opzioni, non con la memoria.
+
+### D61 — La memoria QuickJS→Deno vive in `runtime-memory.json`, ed è best effort
+
+`<app data>/runtime-memory.json`, scritto atomico, letto con tolleranza: un file
+corrotto vale come "nessuna memoria" (costa un tentativo lento, non un errore).
+La chiave è `(yt-dlp version, qjs version)` con TTL 24 h; un orologio che torna
+indietro non rende eterna una decisione vecchia (`now >= decided_at` è parte del
+test). Un aggiornamento di yt-dlp la invalida da solo, che è la ragione per cui
+la chiave esiste.
+
+### D62 — Eventi temporanei `job:progress` / `job:done`
+
+Spec §3 elenca `queue:update`; la coda è M2. Fino a lì il job singolo emette
+`job:progress` (payload di spec §3 più `jobId`) e `job:done` (esito terminale,
+una volta sola). M2 li sostituirà: il payload è già quello giusto perché lo
+spostamento sia una rinomina, non una riscrittura.
+
+### D63 — Il video di prova del self-test: `jNQXAC9IVRw`
+
+"Me at the zoo" (2005, il primo video di YouTube). Il candidato ovvio — 
+`BaW_jenozKc`, il video di prova storico di youtube-dl — **oggi risponde "This
+video is unavailable"**: verificato il 2026-10-14 con il binario fissato. Un id
+verificato non resta verificato per sempre, quindi il self-test riporta runtime,
+secondi e numero di formati invece di fidarsi di un nome.
+
+### D64 — Timeout di ispezione: 60 s, 120 s se l'URL sembra una playlist
+
+Euristica pura su `list=`, `/playlist`, `/videos`, `/shorts`, `/@`, …: serve a
+scegliere il timeout *prima* dell'ispezione che lo direbbe. Il costo di una
+risposta sbagliata è solo "quale dei due timeout si applica".
+
+### D65 — `playlistKind`, non `kind`: una chiave doppia trovata dal compilatore
+
+`Inspected` è un enum con tag `kind`; `PlaylistStub` aveva un campo `kind`
+proprio. Serde lo avrebbe serializzato **due volte** con la stessa chiave — JSON
+che il nostro scrittore accetta e ogni lettore risolve diversamente. Non l'ha
+trovato un test Rust: l'ha trovato TypeScript dall'altra parte del confine
+(`"error" | "playlist" | "video"` non assegnabile). Il campo ora è
+`playlistKind`, e un test Rust verifica che la chiave `"kind"` compaia una volta
+sola nel JSON serializzato.
+
+### D66 — `-U` sul vero yt-dlp: provato, e il cambio di canale non è simmetrico
+
+Il follow-up di M0-C chiedeva di provare l'aggiornatore sul binario vero, che
+riscrive il proprio file mentre è in esecuzione. Fatto su una copia in `/tmp`
+(come D43 vuole: mai su un tool non nostro):
+
+* `--update-to nightly` da 2026.08.19: **aggiornato** a
+  `nightly@2026.10.10.233141`, il file cambia dimensione, il binario riparte.
+* `--update-to stable` da nightly: **no-op con uscita 0**, "yt-dlp is up to
+  date (nightly@…)": yt-dlp non considera un downgrade di data un aggiornamento.
+
+Il secondo caso è esattamente ciò per cui `classify_update` di D44 confronta le
+versioni prima del testo: uscita 0 e nessun cambiamento → `updated: false`,
+messaggio dell'updater. Non serve altro codice.
+
+### D67 — Gli extractor args di YouTube riducono i formati; restano perché la spec li vuole
+
+Misurato il 2026-10-14 sul binario fissato, video 4K: senza `--extractor-args`
+49 formati, con `youtube:player_client=web_embedded,web,tv` (il valore
+dell'originale, spec §5.3.7) **31**. La scala delle risoluzioni è identica
+(2160…144). La spec chiede di tenerli, "user-overridable in an expert field":
+restano, in una sola costante (`YOUTUBE_PLAYER_CLIENTS`), con la misura scritta
+accanto, così la prossima decisione è una riga. Il campo esperto arriva con
+§11.8.
+
+### D68 — Il test vero è `#[ignore]`, e si lancia a mano
+
+`tests/real_selftest.rs` usa il vero yt-dlp e il vero qjs, con rete: ispezione,
+download a 144p con merge, audio-only in `.opus`, self-test. È ignorato di
+default perché AGENTS.md §6 vieta test che dipendono da YouTube vivo nella suite
+normale; il comando per eseguirlo sta in testa al file. La suite normale lo
+conta come "ignored" — due test — e non come "passed", che è il punto.
+
+### D69 — `browserNamesForTriple`: Safari solo dove esiste
+
+Il dropdown dei cookie si costruisce dal **triple del backend**, non dallo user
+agent (stessa fonte della normalizzazione Rust, che scarta un browser che su
+questo OS non esiste). Un triplo vuoto — `npm run dev` nel browser — offre tutto
+tranne Safari: indovinare "mac" da una UA è la classe di rilevamento inaffidabile
+che questa separazione evita.
+
+### D70 — Il self-test in CI esiste, ma non gira da solo
+
+Spec §5.3.6 dice di usarlo in CI sulle tre piattaforme, §13.5 lo mette in un
+"nightly job". `selftest.yml` lo fa, ma **solo su `workflow_dispatch`**: un run
+tocca YouTube e ffmpeg di sistema, sui tre sistemi costa ~45 minuti di quota
+(il repository è privato e i minuti sono limitati), e può fallire per cause che
+non sono nostre. La differenza fra "un pulsante che risponde la verità quando lo
+premi" e "una notifica notturna che si impara a ignorare" è tutta qui. Renderlo
+notturno è una decisione del proprietario: il file è pronto, la pianificazione
+no.
+
+I test veri sono anche `#[ignore]` in locale (D68): la suite normale non tocca
+mai la rete, e la CI a ogni push non paga niente per questo workflow.
+
+### D71 — "1440p scelto, 360p scaricato": rilevato con `SDP_FORMAT`, e non più silenzioso
+
+Segnalato dal proprietario: su un video aveva scelto 1440p e il file era 360p;
+riprovando due volte è venuto 1440p come previsto. Non era casuale, ed è la
+conseguenza di due cose che si sommano:
+
+1. il selettore di spec §8.2 finisce con un ripiego muxed:
+   `bv[height=N]+ba/bv[height<=N]+ba/b[height<=N]/b`. Se in *quella* esecuzione
+   l'estrazione è ridotta (flussi separati assenti — il sintomo di
+   §5.3.2), `bv…` non trova nulla e vince `b[height<=N]`, che su YouTube è il
+   muxed **360p**;
+2. yt-dlp in quel caso **esce 0**: nessun errore, nessuna riga da classificare,
+   quindi né il fallback né l'avviso si attivavano. Il risultato era "riuscito"
+   e sbagliato.
+
+La correzione usa una stampa in più, misurata sul binario fissato:
+
+```
+--print "before_dl:SDP_FORMAT|%(format_id)s|%(height)s|%(vcodec)s|%(acodec)s"
+SDP_FORMAT|278+251|144|vp9|opus     ← un video con merge
+SDP_FORMAT|251|NA|none|opus         ← audio only
+```
+
+Una riga per job con il formato **davvero scelto**, e da lì due decisioni:
+
+* **annullamento anticipato** (aggiunto in D74): alla riga `SDP_FORMAT` il job
+  sa cosa sta per scaricare. Se è un muxed più basso del richiesto, l'errore è
+  già commesso e il download viene **ucciso lì**, prima che il file sbagliato
+  venga finalizzato: si eliminano i parziali e si ritenta una volta (Deno se
+  c'è, altrimenti lo stesso runtime, perché la challenge fallita è transitoria).
+  Se anche il secondo tentativo è degradato, il job **fallisce** con
+  `YT_CHALLENGE` e un messaggio chiaro: meglio nessun file che un 360p al posto
+  di un 1440p.
+* **merge più basso = esito legittimo**: `137+140` a 720p quando ne erano
+  chiesti 1080p significa che i flussi separati c'erano e il video non ha di
+  più. Nessun ritentativo; il risultato porta `requestedHeight`/`actualHeight` e
+  la UI avvisa.
+
+**Non basta "più bassa del richiesto".** Un'altezza inferiore può essere
+legittima: il video non ha quella risoluzione, e ritentare scaricherebbe di
+nuovo la stessa cosa. Il discriminante è il formato scelto:
+
+* `137+140` (con `+`) = un **merge**: i flussi separati c'erano, quindi
+  l'altezza più bassa è una proprietà del video. Nessun ritentativo; nel
+  payload restano i due numeri e la UI avvisa.
+* `18` (senza `+`) = un **muxed**, cioè il ripiego `b[height<=N]`: è il sintomo
+  dell'estrazione ridotta. Rimosso il file sbagliato, un ritentativo con Deno.
+
+Senza riga `SDP_FORMAT` si sceglie la strada cauta (ritentare). La regola non
+guarda l'audio only (`height = NA`) né `Best` (nessuna altezza richiesta).
+
+### D72 — Il footer di stato dice la verità, e non ripete la pagina
+
+`FooterStatus.svelte` era il segnaposto di M0: stringhe fisse, mai collegate.
+Andava bene finché non c'era niente da contare, ma durante un download
+affermava "Nessun processo in esecuzione" mentre la pagina mostrava "Video 1/2 ·
+73 Mbit/s": non un segnaposto, una bugia. Segnalato dal proprietario.
+
+Ora legge il job: stadio, flusso, percentuale; a fine job il nome del file, in
+errore il messaggio, e la voce degli strumenti con problemi porta a Strumenti
+(anche `footer.toolsPending` era definito e mai usato). I contatori
+`N in esecuzione · M in coda` di §7.5 restano a M2.
+
+**Velocità ed ETA non sono più nel footer** (seconda segnalazione): erano gli
+stessi due numeri già sotto il nome del video, e ripeterli non aggiungeva
+niente. Il footer è un riassunto a colpo d'occhio, il dettaglio sta dove c'è la
+barra.
+
+### D73 — L'ispezione ridotta si riconosce dal warning di yt-dlp, e si ritenta
+
+Seconda segnalazione del proprietario, e più precisa della prima: **a volte,
+incollando il link, la lista delle risoluzioni contiene solo 360p**; pulendo e
+reincollando compaiono tutte. Il download non c'entra — è l'ispezione.
+
+**La causa, e la prova che era già scritta.** Quando la challenge JS non viene
+risolta, yt-dlp continua con quello che il player response ancora offre: i
+formati muxed, e su YouTube l'unico muxed è il **360p**. Non lo nasconde: lo
+dice, e il testo è nel suo sorgente al tag fissato
+(`yt_dlp/extractor/youtube/_video.py`):
+
+```
+WARNING: [youtube] n challenge solving failed: Some formats may be missing. …
+WARNING: [youtube] Signature solving failed: Some formats may be missing. …
+```
+
+Sono su **stderr**; il JSON è su **stdout**. Peccato che il comando di
+ispezione passasse `--no-warnings`, cioè **cancellava l'unica prova**. Da qui la
+deviazione, deliberata, da spec §6.2: l'ispezione **non** passa più
+`--no-warnings`. Il download continua a passarlo (lì il segnale è `SDP_FORMAT`,
+D71), e il parsing non cambia perché i warning non toccano stdout.
+
+**Cosa fa l'app adesso**, in quest'ordine:
+1. un tentativo con il runtime scelto;
+2. se il risultato è *degradato* — il warning qui sopra, o un video senza
+   nessuna altezza utile (la condizione che spec §5.3.2 già nomina), **un solo**
+   tentativo in più: con Deno se il ripiego è disponibile (e allora si ricorda
+   per 24 h), altrimenti **con lo stesso runtime**, perché una challenge fallita
+   è transitoria — è esattamente ciò che l'utente ha risolto ricopiando il link;
+3. si restituisce il **migliore** dei risultati visti (più altezze, poi la più
+   alta: `choose_next`, funzione pura con test); se è ancora degradato, il
+   risultato lo dice (`video.degraded = true`).
+
+**La lista parziale non si mette in cache.** Il frontend non memorizza un
+risultato degradato, quindi reincollare lo stesso link richiede davvero di
+nuovo, e accanto alla lista compare un avviso con **Riprova** (che salta il
+debounce e la cache). Prima, "Pulisci + reincolla" funzionava per caso: la cache
+veniva svuotata dal pulsante.
+
+*Nessuna delle prove è contro un caso reale, ed è giusto dirlo:* sulla macchina
+di sviluppo la degradazione **non** è riproducibile (6 run con e 6 senza la
+lista di client forzata: sempre 8 altezze, zero warning). Per questo la regola
+non tenta di *prevenire* la challenge — non ho prove su come farlo — ma di
+**accorgersene e riprovare**, che è ciò che mancava. Il segnale è quello che
+yt-dlp stampa; non un'euristica sulle altezze.
+
+**Il limite.** Se anche il secondo tentativo è degradato, l'app mostra la lista
+corta **con l'avviso** e il pulsante Riprova: non può inventare risoluzioni che
+in quella run non esistono. Un video che davvero ha solo il muxed 360p non
+produce il warning, quindi non viene ritentato inutilmente.
+
+### D74 — Il bug ereditato dall'originale: la lista di client YouTube forzata
+
+Terza segnalazione del proprietario, che chiedeva di cercare il bug nel codice
+ripreso dall'app Python. Era lì, ed è un bug di **obsolescenza**.
+
+**Il sintomo.** A intermittenza l'estrazione restituisce solo il muxed 360p:
+prima in ispezione (lista corta), poi anche in download (file a 360p chiesto
+1440p). Due run su quattro, sulla stessa macchina, sullo stesso video.
+
+**La causa, in tre passi, tutti verificabili nel sorgente di yt-dlp al tag
+fissato (2026.08.19).**
+
+1. Noi passavamo `--extractor-args youtube:player_client=web_embedded,web,tv`,
+   il valore dell'app originale (spec §5.3.7). Ma i client **predefiniti** di
+   questa versione per chi non è loggato e ha un runtime JS sono
+   `_DEFAULT_CLIENTS = ('visionos', 'web')` (`_video.py`).
+2. `_base.py` dichiara, per `web` (e `web_safari`, `mweb`):
+   ```python
+   'GVS_PO_TOKEN_POLICY': {
+       StreamingProtocol.HTTPS: GvsPoTokenPolicy(required=True, recommended=True, …),
+   ```
+   mentre `visionos` non ha nessuna policy PO token e ha
+   `REQUIRE_JS_PLAYER: False`.
+3. Quindi forzare `web_embedded,web,tv` **butta via l'unico client che non
+   richiede un PO token**, e si affida a client che lo richiedono: quando
+   yt-dlp non riesce a coniarlo (o la challenge JS fallisce per quel client),
+   restano solo i formati muxed — su YouTube, il 360p. L'intermittenza è cioè la
+   *varianza dell'enforcement* di YouTube, non un caso. `web_embedded`, per
+   giunta, yt-dlp lo aggiunge **da sé** quando il video è age-gated
+   (`_video.py`, riga ~3153): forzarlo era ridondante.
+
+**La correzione.** Di default non si passa più nessun extractor arg: yt-dlp usa
+la sua lista, quella che i manutentori tengono aggiornata. La costante resta e
+alimenta un campo esperto in Impostazioni → Rete e account ("Client player di
+YouTube"), vuoto = automatico, validato su entrambi i lati (solo nomi, varianti
+con punto, virgole, esclusioni con `-`: il valore finisce in un elemento argv).
+
+**Le misure che sostengono la decisione**, non solo il ragionamento:
+
+| | lista forzata | default |
+| :-- | --: | --: |
+| formati (video 4K) | 31 | **49** |
+| self-test "Me at the zoo" | 7,4 s, 15 formati | **1,95 s, 24 formati** |
+| warning di challenge in 6 run | 0 | 0 |
+
+Nelle mie prove la degradazione non si era mai riprodotta (per questo non l'avevo
+toccata in D73); il caso del proprietario sì, e la spiegazione dei PO token è la
+sola che rende conto della *stanza* del sintomo (solo muxed) e della sua
+intermittenza. Il cambiamento è una deviazione da spec §5.3.7, che chiedeva di
+passare la lista dell'originale: la spec invita a verificare ciò che invecchia,
+e questa lista era invecchiata.
+
+
+### D75 — La risoluzione dei tool si ricorda per la sessione
+
+**Il problema, misurato.** Ogni ispezione e ogni download chiamavano
+`resolve_job_tools`, che *esegue* `--version` su yt-dlp, qjs, Deno e ffmpeg per
+verificare che i candidati rispondano (spec §5.2). Il binario yt-dlp ufficiale è
+un pacchetto PyInstaller one-file che **si spacchetta a ogni avvio**: misurato
+qui, `yt-dlp --version` costa **0,46 s** (qjs ~0 s, ffmpeg 0,036 s). Erano
+~0,5 s di attesa aggiunti a **ogni** incolla di link, e di più su Windows, dove
+all'unpacking si somma l'antivirus.
+
+**La soluzione.** `AppState` tiene una mappa `(tool, percorso di override) →
+ResolvedTool` per la sessione. Si memorizzano **solo i successi**: un tool
+mancante è economico da ricontrollare (esistenza dei file, non esecuzione) e
+mettere in cache la sua assenza sopravviverebbe all'installazione che la risolve.
+La chiave contiene l'override, quindi "Usa il mio percorso" è una mancata
+corrispondenza automatica; i comandi che possono cambiare un binario
+(`tools_set_path`, `tools_update_ytdlp`, `tools_install`) azzerano la cache, e
+`tools_status`/`tools_test` la azzerano perché **sono** la superficie di
+verifica: quello che mostrano è la verità del momento, non deve invecchiare per
+colpa di una scorciatoia.
+
+**Verificato da un test, non da un cronometro.** `m1_ipc.rs` risolve i tool
+finti, poi **cancella i binari dal disco**: la seconda risoluzione deve
+comunque rispondere (solo la cache può), e dopo `clear_tool_cache()` deve
+fallire. Un test di velocità sarebbe stato instabile; questo dimostra la
+proprietà che conta.
+
+### D76 — Il debounce resta 500 ms per la digitazione, sparisce per l'incolla
+
+Valutato, non cambiato di default: **500 ms mentre si digita** restano. Servono
+esattamente a non lanciare un processo yt-dlp (0,46 s) e una richiesta di rete a
+ogni tasto, sono quello che fa l'originale e quello che spec §6.2 e §2.9
+prescrivono. Toglierli sarebbe un peggioramento mascherato da reattività.
+
+**Un incolla però è un evento unico**, non digitazione: dopo il `paste` non
+arriva altro, e i 500 ms sono latenza pura. Ora l'input ascolta `paste` e in quel
+caso parte subito (`inspectDelay(true) === 0`). È una deviazione piccola e
+deliberata dalla parità con l'originale, che debounceva anche l'incolla perché
+aveva un solo percorso di input; qui l'incolla è l'interazione dominante
+(spec §2.3), e con la cache di D75 il tempo che resta è tutto estrazione.

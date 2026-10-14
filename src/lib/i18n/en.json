@@ -8,11 +8,77 @@
   "queue.title": "Queue",
   "queue.empty.title": "Paste a link to start",
   "queue.empty.hint": "The queue is empty. Downloads and transcriptions will show up here.",
-  "queue.comingSoon": "The queue arrives in a later phase (M2).",
+  "queue.comingSoon": "Temporary screen: single download. The queue arrives with M2.",
+  "queue.url.label": "Video link",
+  "queue.url.placeholder": "https://www.youtube.com/watch?v=…",
+  "queue.inspecting": "Checking the link…",
+  "queue.clear": "Clear",
+  "queue.result.duration": "Duration",
+  "queue.badge.live": "Live",
+  "queue.resolution.label": "Resolution",
+  "queue.resolution.best": "Best available",
+  "queue.audioOnly": "Audio only (.opus)",
+  "queue.folder.label": "Save in",
+  "queue.folder.browse": "Choose folder",
+  "queue.folder.system": "The system Downloads folder",
+  "queue.download": "Download",
+  "queue.cancel": "Cancel",
+  "queue.speed": "Speed: {value} Mbit/s",
+  "queue.eta": "ETA {value}",
+  "queue.cancelled": "Download cancelled. Nothing was left behind.",
+  "queue.done.title": "Downloaded",
+  "queue.done.runtime": "Runtime: {runtime}",
+  "queue.done.reveal": "Show in folder",
+  "queue.done.again": "Download another",
+  "queue.playlist.title": "Playlist",
+  "queue.playlist.stub": "This URL is a playlist with {count} entries. Playlist downloads arrive with M3; for now, open a single video link.",
+  "queue.playlist.countUnknown": "This URL is a playlist. Playlist downloads arrive with M3; for now, open a single video link.",
+  "queue.copyDetails": "Copy details",
+  "queue.copied": "Details copied",
+  "queue.warning.heightLower": "yt-dlp saved {actual}p although {requested}p was requested: the extraction was degraded in that run (some streams were missing), so its own fallback chose a muxed format. Try again, or install Deno in Settings → Tools.",
+  "queue.degraded.hint": "This list may be missing resolutions: the extraction was degraded in this run (the JavaScript challenge failed). Try again — or install Deno in Settings → Tools.",
+  "queue.retry": "Try again",
+
+  "job.stage.preparing": "Preparing",
+
+  "job.stage.downloading": "Downloading",
+
+  "job.stage.postProcessing": "Processing",
+
+  "job.stage.done": "Done",
+
+  "job.stage.failed": "Failed",
+
+  "job.stage.cancelled": "Cancelled",
+
+  "job.label.preparing": "Preparing…",
+
+  "job.label.video": "Video {index}/{total}",
+
+  "job.label.audio": "Audio {index}/{total}",
+
+  "job.label.merging": "Merging…",
+
+  "job.label.moving": "Finishing…",
+
+  "job.label.extractingAudio": "Converting to audio…",
+
+  "job.label.embedding": "Embedding…",
+
+  "job.label.postProcessing": "Processing…",
+
+  "job.deno.title": "Deno is required for YouTube extraction",
+
+  "job.deno.body": "QuickJS could not solve the YouTube challenge. Deno is the automatic fallback (spec §5.3): install it once and downloads keep working.",
+
+  "job.deno.install": "Install Deno",
+
+  "job.deno.dismiss": "Not now",
 
   "footer.idle": "Idle",
   "footer.placeholder": "No process running",
-  "footer.toolsPending": "Tools not checked yet",
+  "footer.toolsPending": "Tools need attention",
+  "footer.percent": "{value}%",
 
   "settings.title": "Settings",
   "settings.general": "General",
@@ -33,9 +99,27 @@
   "settings.section.downloads": "Downloads",
   "settings.section.tools": "Tools",
   "settings.language.resolved": "In use: {lang}",
-  "settings.downloads.comingSoon": "Download settings arrive with phase M1/M2.",
+  "settings.downloads.comingSoon": "Download settings arrive with the queue (M2).",
   "settings.tab.general": "General",
   "settings.tab.tools": "Tools",
+  "settings.tab.network": "Network & Accounts",
+  "settings.section.network": "Network and accounts",
+  "settings.jsRuntime": "JavaScript runtime (YouTube)",
+  "settings.jsRuntime.auto": "Automatic (QuickJS, then Deno)",
+  "settings.jsRuntime.quickjs": "QuickJS only",
+  "settings.jsRuntime.deno": "Deno only",
+  "settings.jsRuntime.hint": "QuickJS ships with the app. Deno is downloaded only if QuickJS fails and you allow it; the choice is remembered for 24 hours or until yt-dlp changes.",
+  "settings.youtubeClients": "YouTube player clients (expert)",
+  "settings.youtubeClients.placeholder": "Automatic",
+  "settings.youtubeClients.hint": "Leave empty: yt-dlp uses its own client list, kept current by its maintainers. The original app forced \"web_embedded,web,tv\"; that list is now an option here, not the default.",
+  "settings.cookies.browser": "Cookies from a browser",
+  "settings.cookies.none": "None",
+  "settings.cookies.hint": "Some videos need your session (age, private, members-only). Reading the browser database can fail while the browser runs: then close it, or use a cookies file.",
+  "settings.cookies.file": "Cookies file (Netscape format)",
+  "settings.cookies.file.choose": "Choose file…",
+  "settings.cookies.file.clear": "Clear",
+  "settings.cookies.file.none": "No file chosen",
+  "settings.accounts.comingSoon": "Proxy, custom headers and impersonation arrive with M3.",
 
   "tools.title": "External tools",
   "tools.refresh": "Re-check",
@@ -47,28 +131,44 @@
   "tools.column.actions": "Actions",
   "tools.badge.bundled": "Bundled",
   "tools.version.unknown": "unknown",
+
   "tools.action.update": "Update",
+
   "tools.action.test": "Test",
+
   "tools.action.ownPath": "Use my own path",
+
   "tools.action.clearPath": "Go back to automatic",
+
   "tools.action.unavailable": "Not available on this system",
   "tools.choosePath.title": "Choose the path to {tool}",
 
   "tools.state.ok": "Ready",
+
   "tools.state.notInstalled": "Not found",
+
   "tools.state.belowMinVersion": "Too old",
+
   "tools.state.notAvailable": "Not available on this system",
 
   "tools.source.override": "Your own path",
+
   "tools.source.appData": "In the app data folder",
+
   "tools.source.bundled": "Bundled in the installer",
+
   "tools.source.path": "On the system PATH",
+
   "tools.source.wellKnown": "Installed on the system",
 
   "tools.channel.title": "yt-dlp updates",
+
   "tools.channel.label": "Channel",
+
   "tools.channel.stable": "Stable",
+
   "tools.channel.nightly": "Nightly",
+
   "tools.channel.hint": "An update only ever replaces the copy in the app data folder, never the one inside the installer.",
   "tools.paths.title": "Folders",
   "tools.paths.target": "Platform",
@@ -77,13 +177,33 @@
   "tools.paths.temp": "Private temp folder",
   "tools.paths.temp.unavailable": "Not available",
   "tools.paths.hint": "No secret is ever written here. It is here for diagnostics.",
+
   "tools.wizard.title": "Setup",
+
   "tools.wizard.hint": "Reopen the first-run steps: every one of them is optional.",
+
   "tools.wizard.open": "Reopen the setup",
 
+  "tools.action.install": "Install",
+
+  "tools.action.installing": "Installing… {percent}%",
+
+  "tools.action.installingUnknown": "Installing…",
+  "tools.action.cancel": "Cancel",
+  "tools.selfTest.title": "YouTube extraction",
+  "tools.selfTest.hint": "Runs one known public video through the inspection path and reports which JavaScript runtime answered and how long it took (spec §5.3.6).",
+  "tools.selfTest.button": "Test YouTube extraction",
+  "tools.selfTest.running": "Running…",
+  "tools.selfTest.ok": "Working with {runtime}: {seconds} s, {formats} formats.",
+  "tools.selfTest.failed": "Failed: {message}",
+  "tools.selfTest.never": "Not run yet.",
+
   "tools.update.done": "yt-dlp was updated to version {version}.",
+
   "tools.update.upToDate": "yt-dlp is already at version {version}.",
+
   "tools.update.notChanged": "yt-dlp did not change.",
+
   "tools.update.broken": "yt-dlp was updated but no longer answers; restore the copy from the installer.",
 
   "wizard.title": "Setup",
@@ -98,14 +218,18 @@
   "wizard.tools.deno": "Deno is not installed now: it is only needed if the JavaScript interpreter is not enough.",
   "wizard.transcription.body": "Offline transcription arrives later, with Whisper. This step can be skipped.",
   "wizard.output.body": "Downloads go to the system Downloads folder when it exists.",
-  "wizard.output.comingSoon": "Choosing a folder per download arrives with the queue.",
+  "wizard.output.comingSoon": "The queue arrives with M2; this temporary screen already has a folder picker.",
 
   "plural.running": "{count} running",
+
   "plural.running.one": "{count} running",
+
   "plural.queued": "{count} queued",
+
   "plural.queued.one": "{count} queued",
 
   "toast.settingsRecovered": "The settings file was unreadable: it was moved to {path} and the defaults are being used.",
+
   "toast.dismiss": "Dismiss",
 
   "error.io": "I/O error",
@@ -114,10 +238,42 @@
   "error.settingsCorrupt": "Damaged settings",
   "error.unsupported": "Unsupported operation",
   "error.process": "External program error",
+  "error.cancelled": "Cancelled",
+
+  "error.ytdlp.ffmpegMissing": "ffmpeg is missing: merging video and audio, and the opus conversion, both need it",
+
+  "error.ytdlp.ytChallenge": "YouTube refused the extraction (challenge). Try again, update yt-dlp, or use cookies",
+
+  "error.ytdlp.auth": "This video needs your session: set cookies from the browser or a cookies file",
+
+  "error.ytdlp.unavailable": "The video is not available (removed, private or blocked)",
+
+  "error.ytdlp.geo": "Not available in your country: a proxy may help",
+
+  "error.ytdlp.format": "That format is not available: choose another quality",
+
+  "error.ytdlp.unsupported": "This link has no downloadable media. Updating yt-dlp may help",
+
+  "error.ytdlp.drm": "DRM-protected content is not supported",
+
+  "error.ytdlp.antibot": "The site blocked the request (anti-bot). Retrying with browser impersonation may help (M3)",
+
+  "error.ytdlp.cookies": "The browser cookies could not be read: close the browser, or use a cookies file",
+
+  "error.ytdlp.diskFull": "No space left on the disk",
+
+  "error.ytdlp.network": "Network problem: check the connection and retry",
+
+  "error.ytdlp.extract": "yt-dlp could not read this page: updating it usually fixes this",
+
+  "error.ytdlp.denoMissing": "Deno, the JavaScript fallback, is not installed",
+
+  "error.ytdlp.unknown": "Download failed",
 
   "a11y.skipToContent": "Skip to content",
   "a11y.sidebar": "Main navigation",
   "a11y.statusBar": "Application status",
+
   "common.back": "Back",
   "common.close": "Close"
 }

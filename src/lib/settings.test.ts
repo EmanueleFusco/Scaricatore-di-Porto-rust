@@ -4,6 +4,7 @@ import {
   isLangPreference,
   isThemePreference,
   normaliseSettings,
+  sanitizePlayerClients,
   type Settings,
 } from "$lib/settings";
 
@@ -59,6 +60,28 @@ describe("normaliseSettings()", () => {
 
   it("treats an empty output folder as unset", () => {
     expect(normaliseSettings({ defaultOutputDir: "" }).defaultOutputDir).toBeNull();
+  });
+
+  it("treats an empty expert client override as unset (D74)", () => {
+    // Empty is the default and the recommended state: yt-dlp's own client list.
+    expect(normaliseSettings({ youtubePlayerClients: "" }).youtubePlayerClients).toBeNull();
+    expect(
+      normaliseSettings({ youtubePlayerClients: "web_embedded,web,tv" }).youtubePlayerClients,
+    ).toBe("web_embedded,web,tv");
+  });
+});
+
+describe("sanitizePlayerClients() (spec §5.3.7, D74)", () => {
+  it("normalises a real client list", () => {
+    expect(sanitizePlayerClients("  WEB_EMBEDDED,web,Tv ")).toBe("web_embedded,web,tv");
+    expect(sanitizePlayerClients("-tv,web")).toBe("-tv,web");
+  });
+
+  it("refuses anything yt-dlp would not accept; empty means default", () => {
+    expect(sanitizePlayerClients("")).toBeNull();
+    expect(sanitizePlayerClients("   ")).toBeNull();
+    expect(sanitizePlayerClients("web --exec")).toBeNull();
+    expect(sanitizePlayerClients("web;rm")).toBeNull();
   });
 });
 

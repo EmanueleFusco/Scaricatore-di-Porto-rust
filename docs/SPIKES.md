@@ -129,15 +129,28 @@ dello stesso tag) che si decomprime in una cartella e si esegue da li'.
 "installer size ... measure it in M0 and fix the budget then". Il numero va
 deciso qui, non lasciato a un "vediamo".
 
-**Stato: i numeri ci sono, la decisione no.** Misurati il 2026-10-13 su
-`ubuntu-22.04`, build completa **con** i tool inclusi (spec §5.2.1):
+**Stato: i numeri ci sono, la decisione no.** Misurati il 2026-10-13, build
+completa **con** i tool inclusi (spec §5.2.1).
+
+**Rimisurati dopo D55**, che ha spostato `bundle` da `ubuntu-22.04` a
+`ubuntu-24.04`: i numeri della prima misura erano su 22.04 e **non valgono piu'**.
+Il confronto dice quale dei due il runner cambia, e quanto:
+
+| artefatto | 22.04 (prima) | 24.04 (adesso) | delta |
+| :-- | --: | --: | --: |
+| binario applicativo | 4,81 MiB | **4,70 MiB** | -2,3% |
+| `.deb` | 41,36 MiB | **41,3 MiB** | -0,1% |
+| `.rpm` | 41,36 MiB | **41,3 MiB** | -0,1% |
+| AppImage | 147,27 MiB | **116,4 MiB** | **-21%** |
+
+Con la build su 24.04, che e' quella della CI:
 
 | artefatto | dimensione | dentro il budget? |
 | :-- | --: | :-- |
-| binario applicativo `scaricatore-di-porto` | **4,81 MiB** | ✅ spec §1 fissa ≤ 15 MB |
-| `.deb` | **41,36 MiB** | da decidere |
-| `.rpm` | **41,36 MiB** | da decidere |
-| AppImage | **147,27 MiB** | escluso dal budget (spec §1: incorpora WebKitGTK) |
+| binario applicativo `scaricatore-di-porto` | **4,70 MiB** | ✅ spec §1 fissa ≤ 15 MB |
+| `.deb` | **41,3 MiB** | da decidere |
+| `.rpm` | **41,3 MiB** | da decidere |
+| AppImage | **116,4 MiB** | escluso dal budget (spec §1: incorpora WebKitGTK) |
 | installer `.exe` (NSIS) | | mancante |
 | `.dmg` macOS arm64 | | mancante |
 | `.app.zip` macOS arm64 | | mancante |
@@ -149,7 +162,7 @@ Da cui, la composizione dell'installer:
 | :-- | --: | --: |
 | `yt-dlp` (standalone, incluso) | 40 446 224 | 38,6 |
 | `qjs` (QuickJS-NG 0.17.0, incluso) | 2 562 504 | 2,4 |
-| binario applicativo | 5 039 440 | 4,8 |
+| binario applicativo | 5 039 440 -> ~4,7 | 4,8 -> 4,7 |
 | `.deb` effettivo (compresso) | | **41,4** |
 
 Il termine dominante e' **yt-dlp**, che da solo e' il 93 % dell'installer. E' il
@@ -213,3 +226,20 @@ CI**. Il pulsante `tier2` esiste gia' in `.github/workflows/tier2.yml`.
 
 Per gli strumenti che **non** esistono come asset su un target, spec §1.1 vuole
 "not available on this platform" nella UI e **non** un fallimento silenzioso.
+**Cosa dice il confronto 22.04 -> 24.04 sul *perché* dei numeri, e vale piu' dei
+numeri.** `.deb` e `.rpm` non si sono mossi (−0,1%), l'AppImage è scesa del 21%.
+Non è rumore: è la differenza fra un pacchetto che **linka dinamicamente** e uno
+che **incorpora**. `.deb` e `.rpm` prendono WebKitGTK dal sistema, quindi
+cambiano solo se cambia il binario; l'AppImage se lo porta dentro, quindi cambia
+se cambia la WebKitGTK del runner su cui è costruita. È la stessa distinzione che
+spec §1 usa per escludere l'AppImage dal budget, resa visiva.
+
+Leversioni di `libwebkit2gtk-4.1-dev` dei due runner, prese dalle pagine dei
+pacchetti Ubuntu: **jammy (22.04) 2.50.4** e **noble (24.04) 2.52.6**. Quindi il
+−21% è *coerente* con un salto di WebKitGTK, ma **non è misurato**: per saperlo
+bisognerebbe aprire l'AppImage e pesare il pezzo. Scritto come inferenza, non
+come fatto.
+
+Il termine dominante non cambia e non può cambiare da qui: `yt-dlp` è un asset
+**scaricato**, non compilato. Il suo contributo all'installer dipende da GitHub,
+non dal runner.

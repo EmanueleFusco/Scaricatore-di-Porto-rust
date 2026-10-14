@@ -9,6 +9,7 @@
    * say so in words rather than showing a button that does nothing.
    */
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
+  import PlayIcon from "lucide-svelte/icons/play";
   import RefreshCwIcon from "lucide-svelte/icons/refresh-cw";
   import WrenchIcon from "lucide-svelte/icons/wrench";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -124,6 +125,31 @@
                   {tt("tools.action.update")}
                 </button>
               {/if}
+              {#if tool.installable && !tool.path}
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={toolsStore.busy}
+                  onclick={() => void toolsStore.install(tool.name)}
+                >
+                  {#if toolsStore.installingTool === tool.name}
+                    {toolsStore.installPercent !== null
+                      ? tt("tools.action.installing", { percent: toolsStore.installPercent })
+                      : tt("tools.action.installingUnknown")}
+                  {:else}
+                    {tt("tools.action.install")}
+                  {/if}
+                </button>
+                {#if toolsStore.installingTool === tool.name}
+                  <button
+                    type="button"
+                    class="btn"
+                    onclick={() => void toolsStore.cancelInstall()}
+                  >
+                    {tt("tools.action.cancel")}
+                  </button>
+                {/if}
+              {/if}
               <button
                 type="button"
                 class="btn"
@@ -202,6 +228,39 @@
       <dd>{toolsStore.view.tempDir ?? tt("tools.paths.temp.unavailable")}</dd>
     </dl>
     <p class="field__hint">{tt("tools.paths.hint")}</p>
+  </section>
+
+  <section class="card tools__group" aria-labelledby="heading-selftest">
+    <h3 class="tools__group-title" id="heading-selftest">{tt("tools.selfTest.title")}</h3>
+    <p class="field__hint">{tt("tools.selfTest.hint")}</p>
+    <button
+      type="button"
+      class="btn"
+      disabled={toolsStore.selfTestRunning}
+      onclick={() => void toolsStore.runSelfTest()}
+    >
+      <PlayIcon size={16} aria-hidden="true" focusable="false" />
+      {toolsStore.selfTestRunning
+        ? tt("tools.selfTest.running")
+        : tt("tools.selfTest.button")}
+    </button>
+    <p class="tools__note" role="status">
+      {#if toolsStore.selfTest === null}
+        {tt("tools.selfTest.never")}
+      {:else if toolsStore.selfTest.ok}
+        {tt("tools.selfTest.ok", {
+          runtime: toolsStore.selfTest.runtime ?? "—",
+          seconds: (toolsStore.selfTest.elapsedMs / 1000).toFixed(1),
+          formats: toolsStore.selfTest.formats,
+        })}
+      {:else}
+        {tt("tools.selfTest.failed", {
+          message: toolsStore.selfTest.error
+            ? errorText(toolsStore.selfTest.error.messageKey, toolsStore.selfTest.error.detail)
+            : tt("error.ytdlp.unknown"),
+        })}
+      {/if}
+    </p>
   </section>
 
   <section class="card tools__group" aria-labelledby="heading-wizard">

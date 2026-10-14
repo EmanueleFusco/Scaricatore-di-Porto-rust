@@ -6,6 +6,8 @@
  * tested (AGENTS.md §6). The store in `stores/tools.svelte.ts` owns the IPC.
  */
 
+import type { BackendErrorInfo } from "$lib/settings";
+
 /** Mirror of the Rust `services::tools::ToolSource` (spec §5.2 order). */
 export type ToolSource = "override" | "appData" | "bundled" | "path" | "wellKnown";
 
@@ -58,6 +60,48 @@ export interface UpdateOutcome {
   message: string;
 }
 
+/** Mirror of `commands::tools::ToolProgressEvent` (spec §3). */
+export interface ToolProgressEvent {
+  tool: string;
+  received: number;
+  total: number | null;
+}
+
+/** Mirror of `services::inspect::SelfTestReport` (spec §5.3.6). */
+export interface SelfTestReport {
+  ok: boolean;
+  /** `quickjs` | `deno`, when a run happened at all. */
+  runtime: string | null;
+  elapsedMs: number;
+  formats: number;
+  heights: number[];
+  error: BackendErrorInfo | null;
+}
+
+/** Coerce anything the backend sends into a complete self-test report. */
+export function normaliseSelfTest(raw: unknown): SelfTestReport {
+  const value = (raw ?? {}) as Record<string, unknown>;
+  const error = value.error as Partial<BackendErrorInfo> | null | undefined;
+  return {
+    ok: value.ok === true,
+    runtime: typeof value.runtime === "string" && value.runtime !== "" ? value.runtime : null,
+    elapsedMs: typeof value.elapsedMs === "number" ? value.elapsedMs : 0,
+    formats: typeof value.formats === "number" ? value.formats : 0,
+    heights: Array.isArray(value.heights)
+      ? value.heights.filter((h): h is number => typeof h === "number")
+      : [],
+    error:
+      error && typeof error === "object"
+        ? {
+            code: typeof error.code === "string" ? error.code : "UNKNOWN",
+            messageKey:
+              typeof error.messageKey === "string" ? error.messageKey : "error.ytdlp.unknown",
+            detail: typeof error.detail === "string" ? error.detail : null,
+          }
+        : null,
+  };
+}
+
 /** Release channel for the yt-dlp updater (spec §5.5, §11.8). */
 export type YtdlpChannel = "stable" | "nightly";
 
@@ -87,6 +131,14 @@ export interface ToolStateInfo {
 }
 
 /**
+ * Tools that are **optional by design**: not being installed is a normal state,
+ * not a problem. Deno is the automatic fallback runtime (spec §5.3): it is
+ * never bundled and only downloaded on demand, so a red "needs attention" dot
+ * for its absence would light up the footer on every fresh install.
+ */
+export const OPTIONAL_TOOLS: readonly string[] = ["deno"];
+
+/**
  * Classify a tool for the status cell.
  *
  * Order matters and is deliberate:
@@ -101,7 +153,11 @@ export function toolState(tool: ToolStatus): ToolStateInfo {
     return { state: "notAvailable", key: "tools.state.notAvailable", problem: false };
   }
   if (!tool.path) {
-    return { state: "notInstalled", key: "tools.state.notInstalled", problem: true };
+    return {
+      state: "notInstalled",
+      key: "tools.state.notInstalled",
+      problem: !OPTIONAL_TOOLS.includes(tool.name),
+    };
   }
   if (!tool.meetsMinVersion) {
     return { state: "belowMinVersion", key: "tools.state.belowMinVersion", problem: true };

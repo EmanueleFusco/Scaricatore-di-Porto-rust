@@ -1,0 +1,326 @@
+//! Fake yt-dlp for the M1 integration tests (spec §15: "fake yt-dlp … scripts
+//! that emit canned output, to test events, cancellation, stderr draining").
+//!
+//! Same reasoning as `fake_tool`: a Rust program, not a script, so the same
+//! tests run on Windows, macOS and Linux. It answers `--version`, prints canned
+//! `-J` JSON for inspections and canned `SDP_DL`/`SDP_PP`/`SDP_FILE` lines for
+//! downloads, and fails on purpose for the URLs whose names say so.
+//!
+//! Behaviour is selected by the **URL** (the last argument, after `--`) and by
+//! the runtime named in `--js-runtimes`, so a test can make QuickJS "fail" while
+//! Deno "works" without two different binaries.
+//!
+//! Every invocation appends one line to `fake-ytdlp.log` next to this binary,
+//! and writes its pid to `fake-ytdlp.pid`: the tests copy the binary into a temp
+//! dir, so each test gets its own log and process id.
+
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
+
+const VERSION: &str = "2026.08.19";
+
+fn main() {
+    let raw: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = raw.iter().skip(1).cloned().collect();
+
+    write_pid();
+
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("{VERSION}");
+        return;
+    }
+
+    let url = url_of(&args).unwrap_or_default();
+    let runtime = runtime_of(&args);
+    let inspect = args.iter().any(|arg| arg == "-J");
+    log(&format!(
+        "invoke {} runtime={} format={} url={}",
+        if inspect { "inspect" } else { "download" },
+        runtime,
+        if args.iter().any(|arg| arg == "-f") {
+            "yes"
+        } else {
+            "no"
+        },
+        url
+    ));
+
+    let code = if inspect {
+        inspect_url(&url, &runtime)
+    } else {
+        download_url(&args, &url, &runtime)
+    };
+    std::process::exit(code);
+}
+
+/// The URL is always the last argument, after `--` (spec §4.6).
+fn url_of(args: &[String]) -> Option<String> {
+    args.iter()
+        .rposition(|arg| arg == "--")
+        .and_then(|index| args.get(index + 1))
+        .cloned()
+}
+
+/// `quickjs`, `deno` or `none`, from the `--js-runtimes` value.
+fn runtime_of(args: &[String]) -> String {
+    args.windows(2)
+        .find(|pair| pair[0] == "--js-runtimes")
+        .map(|pair| {
+            if pair[1].starts_with("quickjs:") {
+                "quickjs".to_owned()
+            } else if pair[1].starts_with("deno:") {
+                "deno".to_owned()
+            } else {
+                "other".to_owned()
+            }
+        })
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn own_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn log(line: &str) {
+    let path = own_dir().join("fake-ytdlp.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn write_pid() {
+    let path = own_dir().join("fake-ytdlp.pid");
+    let _ = std::fs::write(path, std::process::id().to_string());
+}
+
+/// How many inspect/download invocations this copy has seen (the `--version`
+/// probe does not count). Used by the degraded-extraction scenarios, where the
+/// first call is intentionally worse than the second.
+fn invocation_count() -> u32 {
+    let path = own_dir().join("fake-ytdlp.calls");
+    let previous = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let next = previous + 1;
+    let _ = std::fs::write(path, next.to_string());
+    next
+}
+
+/// yt-dlp's own wording for a failed JS challenge, verbatim from its source at
+/// the pinned version. The app must recognise exactly this.
+fn challenge_warning() {
+    eprintln!(
+        "WARNING: [youtube] n challenge solving failed: Some formats may be missing. \
+         Ensure you have a supported JavaScript runtime installed"
+    );
+}
+
+fn inspect_url(url: &str, runtime: &str) -> i32 {
+    if url.contains("auth-fail") {
+        eprintln!(
+            "ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication."
+        );
+        return 1;
+    }
+    if url.contains("challenge") && runtime == "quickjs" {
+        // A challenge failure of the family the classifier maps to YT_CHALLENGE.
+        eprintln!("ERROR: [youtube] x: Unable to solve the JS challenge (nsig)");
+        return 1;
+    }
+    // The degraded extraction of the real report: the JS challenge fails, yt-dlp
+    // warns, and the only format left is the muxed 360p. "degraded-once" is
+    // fixed by the next call (any runtime); "degraded-always" never recovers.
+    if url.contains("degraded-once") {
+        if invocation_count() == 1 {
+            challenge_warning();
+            println!(
+                r#"{{"_type":"video","id":"deg","title":"degraded","extractor_key":"Youtube","formats":[{{"format_id":"18","ext":"mp4","height":360,"vcodec":"avc1","acodec":"mp4a"}},{{"format_id":"sb0","ext":"mhtml","vcodec":"none","acodec":"none","protocol":"mhtml"}}]}}"#
+            );
+            return 0;
+        }
+        print!("{VIDEO_JSON}");
+        return 0;
+    }
+    if url.contains("degraded-always") {
+        challenge_warning();
+        println!(
+            r#"{{"_type":"video","id":"deg","title":"degraded","extractor_key":"Youtube","formats":[{{"format_id":"18","ext":"mp4","height":360,"vcodec":"avc1","acodec":"mp4a"}}]}}"#
+        );
+        return 0;
+    }
+    if url.contains("noheights") || (url.contains("degraded") && runtime == "quickjs") {
+        // Video formats exist but none has a height: the fallback condition of
+        // spec §5.3.2. With Deno the same URL comes back complete.
+        if url.contains("degraded") && runtime == "deno" {
+            print!("{VIDEO_JSON}");
+            return 0;
+        }
+        println!(
+            r#"{{"_type":"video","id":"nh","title":"no heights","extractor_key":"Youtube","formats":[{{"format_id":"v","ext":"mp4","vcodec":"h264","acodec":"none"}},{{"format_id":"a","ext":"m4a","vcodec":"none","acodec":"mp4a"}}]}}"#
+        );
+        return 0;
+    }
+    if url.contains("playlist") {
+        println!(
+            r#"{{"_type":"playlist","id":"PL1","title":"A playlist","extractor_key":"Youtube","webpage_url":"https://www.youtube.com/playlist?list=PL1","playlist_count":3,"entries":[{{"id":"a"}},{{"id":"b"}},{{"id":"c"}}]}}"#
+        );
+        return 0;
+    }
+    if url.contains("slow-inspect") {
+        sleep_forever();
+    }
+    if url.contains("garbage") {
+        println!("not json at all");
+        return 0;
+    }
+    print!("{VIDEO_JSON}");
+    0
+}
+
+fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
+    if url.contains("error-auth") {
+        eprintln!(
+            "ERROR: [youtube] x: Private video. Sign in if you've been granted access to this video"
+        );
+        return 1;
+    }
+    if url.contains("format-fail") && args.iter().any(|arg| arg == "-f") {
+        eprintln!(
+            "ERROR: [youtube] x: Requested format is not available. Use --list-formats for a list of available formats"
+        );
+        return 1;
+    }
+    if url.contains("challenge") && runtime == "quickjs" {
+        eprintln!("ERROR: [youtube] x: Unable to solve the JS challenge (nsig)");
+        return 1;
+    }
+    if url.contains("stall") && runtime == "quickjs" {
+        // Nothing on either stream: the watchdog of spec §5.3.2 is the only
+        // thing that can end this.
+        sleep_forever();
+    }
+    if url.contains("cancel") {
+        emit_download_line("downloading", 512, 1024, "vp9");
+        emit_download_line("downloading", 1024, 1024, "vp9");
+        sleep_forever();
+    }
+
+    // A degraded extraction: the separate streams are missing, so yt-dlp's own
+    // fallback chain lands on the **muxed** 360p format (no `+` in the id).
+    // The first invocation then "downloads" slowly — the app must cancel it at
+    // the SDP_FORMAT line instead of saving the wrong file. The next
+    // invocation (Deno, or the same runtime when Deno is absent) is healthy.
+    if url.contains("degraded-download") {
+        if invocation_count() == 1 {
+            println!("SDP_FORMAT|18|360|avc1|mp4a.40.2");
+            emit_download_line("downloading", 2048, 40960, "avc1");
+            sleep_forever();
+        }
+        println!("SDP_FORMAT|137+140|1080|vp9|mp4a.40.2");
+        emit_download_line("downloading", 2048, 4096, "vp9");
+        emit_download_line("finished", 4096, 4096, "vp9");
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join("Fake title [fakeid].mkv");
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
+
+    // A degraded extraction that never recovers: every attempt picks the muxed
+    // 360p. The app must give up with an error, not save it.
+    if url.contains("degraded-always") {
+        println!("SDP_FORMAT|18|360|avc1|mp4a.40.2");
+        emit_download_line("downloading", 2048, 40960, "avc1");
+        sleep_forever();
+    }
+
+    // A **merge** at a lower height than requested: the separate streams were
+    // found, so the video simply has no higher resolution. Not a degraded
+    // extraction, and no retry is worth making.
+    if url.contains("merged-lower") {
+        println!("SDP_FORMAT|137+140|720|avc1|mp4a.40.2");
+        emit_download_line("downloading", 2048, 4096, "avc1");
+        emit_download_line("finished", 4096, 4096, "avc1");
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join("Fake title [fakeid].mkv");
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
+
+    // A normal two-stream download with a merge.
+    println!("SDP_FORMAT|137+140|1080|avc1|mp4a.40.2");
+    emit_download_line("downloading", 2048, 4096, "vp9");
+    emit_download_line("finished", 4096, 4096, "vp9");
+    emit_download_line("downloading", 1024, 2048, "none");
+    emit_download_line("finished", 2048, 2048, "none");
+    eprintln!("SDP_PP|started|Merger");
+    eprintln!("SDP_PP|finished|Merger");
+    eprintln!("SDP_PP|started|MoveFiles");
+
+    // Write the output where `--paths home:` says, with a name that is never
+    // guessed by the app (it must read SDP_FILE).
+    let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&home);
+    let opus = args.iter().any(|arg| arg == "-x");
+    if opus {
+        println!("SDP_FORMAT|251|NA|none|opus");
+    }
+    let name = if opus {
+        "Fake song [fakeid].opus"
+    } else {
+        "Fake title [fakeid].mkv"
+    };
+    let file = home.join(name);
+    let _ = std::fs::write(&file, b"fake media bytes");
+    println!("SDP_FILE|{}", file.display());
+    0
+}
+
+fn emit_download_line(status: &str, downloaded: u64, total: u64, vcodec: &str) {
+    println!("SDP_DL|{status}|{downloaded}|{total}|NA|1048576.0|3|{vcodec}");
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+}
+
+fn paths_value(args: &[String], prefix: &str) -> Option<PathBuf> {
+    args.windows(2)
+        .filter(|pair| pair[0] == "--paths")
+        .map(|pair| pair[1].clone())
+        .find_map(|value| value.strip_prefix(prefix).map(PathBuf::from))
+}
+
+fn sleep_forever() -> ! {
+    loop {
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// A small but complete video document: storyboard, audio-only format, two
+/// video heights.
+const VIDEO_JSON: &str = r#"{
+  "_type": "video",
+  "id": "fakeid",
+  "title": "Fake title",
+  "duration": 10.0,
+  "extractor_key": "Youtube",
+  "webpage_url": "https://www.youtube.com/watch?v=fakeid",
+  "is_live": false,
+  "formats": [
+    {"format_id": "sb0", "ext": "mhtml", "protocol": "mhtml", "vcodec": "none", "acodec": "none"},
+    {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "protocol": "https"},
+    {"format_id": "137", "ext": "mp4", "height": 1080, "width": 1920, "vcodec": "avc1", "acodec": "none", "protocol": "https"},
+    {"format_id": "136", "ext": "mp4", "height": 720, "width": 1280, "vcodec": "avc1", "acodec": "none", "protocol": "https"},
+    {"format_id": "18", "ext": "mp4", "height": 360, "width": 640, "vcodec": "avc1", "acodec": "mp4a", "protocol": "https"}
+  ]
+}
+"#;

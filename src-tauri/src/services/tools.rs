@@ -552,6 +552,9 @@ pub struct ToolStatus {
     pub searched: Vec<String>,
 }
 
+/// The ffmpeg executable name, as `extra_tools` and the commands look it up.
+pub const FFMPEG: &str = "ffmpeg";
+
 /// Tools the Tools page lists even though the manifest does not manage them.
 ///
 /// ffmpeg is here and not in `tools.manifest.json` on purpose: spec §5 says to
@@ -559,7 +562,7 @@ pub struct ToolStatus {
 /// decision with real licence and size consequences. It is still detected, so
 /// "do you have ffmpeg?" is answered today.
 pub fn extra_tools() -> &'static [&'static str] {
-    &["ffmpeg", "ffprobe"]
+    &[FFMPEG, "ffprobe"]
 }
 
 /// Status of one tool.
@@ -897,6 +900,95 @@ pub async fn update_ytdlp(
         before.as_deref(),
         after.as_deref(),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// On-demand installation (spec §5.2.1, §5.3.2)
+// ---------------------------------------------------------------------------
+
+/// Download and install Deno from the manifest and return the executable path.
+///
+/// Deno is never bundled (spec §0.7); this is the lazy install of spec §5.3.2,
+/// called only after the user consented. The zip is verified against the
+/// manifest's sha256 before it is unpacked, extraction refuses path traversal
+/// (both inherited from `download.rs`), and the executable lands in the
+/// app-data lookup directory so the next [`resolve`] finds it.
+pub async fn install_deno(
+    manifest: &ToolsManifest,
+    triple: &str,
+    tools_dir: &Path,
+    token: &CancellationToken,
+    on_progress: impl FnMut(crate::services::download::DownloadProgress),
+) -> Result<PathBuf, AppError> {
+    let tool = manifest.tool(manifest::DENO).ok_or_else(|| {
+        AppError::Unsupported("deno is not declared in the tools manifest".to_owned())
+    })?;
+    let entry = tool.platforms.get(triple).ok_or_else(|| {
+        AppError::Unsupported(format!(
+            "deno has no build for this platform ({triple}): not available on this platform"
+        ))
+    })?;
+    if !entry.is_installable() {
+        return Err(AppError::Unsupported(format!(
+            "deno is not pinned for {triple} yet (spec §5.1)"
+        )));
+    }
+    let executable = entry.executable().ok_or_else(|| {
+        AppError::Unsupported(format!(
+            "the deno entry for {triple} has no executable name"
+        ))
+    })?;
+    let url = entry
+        .url
+        .clone()
+        .ok_or_else(|| AppError::Unsupported("the deno entry has no url".to_owned()))?;
+    let sha256 = entry
+        .sha256
+        .clone()
+        .ok_or_else(|| AppError::Unsupported("the deno entry has no sha256".to_owned()))?;
+
+    let dir = app_data_dir_for(tools_dir, manifest::DENO);
+    paths::ensure_dir(&dir)?;
+    let target = dir.join(executable);
+    if target.is_file() {
+        // Idempotent: the button can be pressed again without re-downloading.
+        return Ok(target);
+    }
+
+    let version = tool.version.as_deref().unwrap_or("unknown");
+    let staging = dir.join(format!("unpack-{version}"));
+    // A previous interrupted attempt may have left files behind; a fresh tree is
+    // the cheapest way to be sure the executable found afterwards is the new
+    // one.
+    let _ = fs::remove_dir_all(&staging);
+
+    let request = crate::services::download::DownloadRequest::new(url, staging.clone())
+        .with_checksum(sha256)
+        .with_archive(crate::services::manifest::ArchiveKind::Zip);
+    let outcome = crate::services::download::download(&request, token, on_progress).await?;
+
+    let staged =
+        crate::services::download::find_executable(&outcome.path, executable).ok_or_else(|| {
+            AppError::Process(format!(
+                "the deno archive does not contain {executable} (looked in {})",
+                outcome.path.display()
+            ))
+        })?;
+    make_executable(&staged)?;
+    if staged != target {
+        // Same directory tree, so the rename is atomic on every OS we ship.
+        fs::rename(&staged, &target).map_err(|err| {
+            AppError::Io(io::Error::new(
+                err.kind(),
+                format!("installing deno at {}: {err}", target.display()),
+            ))
+        })?;
+    }
+    let _ = fs::remove_dir_all(&staging);
+    // A downloaded binary is quarantined on macOS until this runs; harmless
+    // everywhere else.
+    quarantine_repair(&target).await;
+    Ok(target)
 }
 
 /// Run a command and return `(exited zero, stdout + stderr)`.

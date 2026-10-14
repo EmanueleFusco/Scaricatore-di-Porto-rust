@@ -667,13 +667,42 @@ mod tests {
     }
 
     #[test]
-    fn only_yt_dlp_and_qjs_are_in_the_manifest_so_far() {
-        // Deno is deliberately absent: spec §5.3 makes it a lazy download and
-        // M1 is where its version gets pinned. A half-declared entry the backend
-        // has to special-case is worse than no entry at all.
+    fn the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback() {
+        // M0-C left Deno out on purpose ("M1 is where its version gets
+        // pinned"); M1 is here. The distinction the spec cares about is
+        // `bundled`: only yt-dlp and qjs ship in the installer (spec §0.7).
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec![YTDLP, QJS]);
+        assert_eq!(names, vec![YTDLP, DENO, QJS]);
+
+        let deno = manifest.tool(DENO).expect("deno is in the manifest");
+        assert!(!deno.bundled, "Deno is downloaded on demand, never bundled");
+        assert_eq!(deno.versioning, Versioning::Pinned);
+        assert_eq!(deno.version.as_deref(), Some("2.9.7"));
+
+        let entry = manifest
+            .entry(DENO, "x86_64-unknown-linux-gnu")
+            .expect("a linux x64 deno asset");
+        assert_eq!(entry.archive_kind, ArchiveKind::Zip);
+        assert!(
+            entry.is_installable(),
+            "deno must carry url + sha256 so the lazy install works"
+        );
+    }
+
+    #[test]
+    fn every_deno_asset_is_marked_as_a_zip_with_a_checksum_where_pinned() {
+        let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
+        let deno = manifest.tool(DENO).expect("deno");
+        assert!(!deno.platforms.is_empty());
+        for (triple, entry) in &deno.platforms {
+            assert_eq!(entry.archive_kind, ArchiveKind::Zip, "{triple}");
+            assert!(entry.url.is_some() && entry.sha256.is_some(), "{triple}");
+            assert!(
+                entry.is_installable(),
+                "{triple} must be installable, not a half-declared entry"
+            );
+        }
     }
 
     #[test]

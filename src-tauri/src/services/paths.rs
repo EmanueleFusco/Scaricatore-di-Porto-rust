@@ -14,7 +14,7 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const BACKUP_SUFFIX: &str = ".bak";
 
 /// `…/<AppConfig>/settings.json`
-pub fn settings_file(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn settings_file<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     let dir = app
         .path()
         .app_config_dir()
@@ -22,13 +22,17 @@ pub fn settings_file(app: &AppHandle) -> io::Result<PathBuf> {
     Ok(dir.join(SETTINGS_FILE))
 }
 
-/// Directory for downloaded/installed tools (spec §5.2 lookup order #2).
-pub fn tools_dir(app: &AppHandle) -> io::Result<PathBuf> {
-    let dir = app
-        .path()
+/// The app's writable data directory. Everything the app installs or remembers
+/// at runtime lives below it (tools, runtime memory, downloaded models).
+pub fn app_data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
+    app.path()
         .app_data_dir()
-        .map_err(|e| io::Error::other(format!("cannot resolve the app data dir: {e}")))?;
-    Ok(dir.join("tools"))
+        .map_err(|e| io::Error::other(format!("cannot resolve the app data dir: {e}")))
+}
+
+/// Directory for downloaded/installed tools (spec §5.2 lookup order #2).
+pub fn tools_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
+    Ok(app_data_dir(app)?.join("tools"))
 }
 
 /// The user's home directory, when the OS exposes one.
@@ -52,7 +56,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Per-app private temp dir handed to child processes as `TMPDIR`/`TEMP`/`TMP`
 /// (spec §4.9). Created with mode `0700` on Unix because QuickJS writes EJS
 /// scripts there.
-pub fn private_temp_dir(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn private_temp_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     let dir = app
         .path()
         .app_cache_dir()
@@ -92,11 +96,28 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
 
 /// Default output folder: the OS "Downloads" folder when the platform exposes
 /// one, otherwise `None` (the user then picks a folder in Settings, spec §11.8).
-pub fn default_output_dir(app: &AppHandle) -> Option<PathBuf> {
+pub fn default_output_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path()
         .download_dir()
         .ok()
         .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Which output folder a job uses (spec §11.8).
+///
+/// Priority: what the current request asked for → the configured default → the
+/// OS Downloads folder. Pure so the ordering is testable; an empty path counts
+/// as "not set" at every level, because `""` is what an empty entry field
+/// produces and "write into the process working directory" is never the intent.
+pub fn output_dir_for(
+    requested: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    os_default: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let usable = |path: Option<PathBuf>| path.filter(|p| !p.as_os_str().is_empty());
+    usable(requested)
+        .or_else(|| usable(configured))
+        .or_else(|| usable(os_default))
 }
 
 /// `mkdir -p` that is a no-op when the directory already exists.
@@ -319,5 +340,40 @@ mod tests {
         create_private_dir(&target).expect("create");
         let mode = fs::metadata(&target).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "got {:o}", mode & 0o777);
+    }
+
+    #[test]
+    fn the_output_folder_prefers_the_request_then_the_setting_then_the_os() {
+        let request = PathBuf::from("/request");
+        let setting = PathBuf::from("/setting");
+        let os = PathBuf::from("/downloads");
+
+        assert_eq!(
+            output_dir_for(
+                Some(request.clone()),
+                Some(setting.clone()),
+                Some(os.clone())
+            ),
+            Some(request)
+        );
+        assert_eq!(
+            output_dir_for(None, Some(setting.clone()), Some(os.clone())),
+            Some(setting)
+        );
+        assert_eq!(output_dir_for(None, None, Some(os.clone())), Some(os));
+        assert_eq!(output_dir_for(None, None, None), None);
+
+        // An empty path is "not set" at every level: it is what an empty entry
+        // field produces, and writing to the process working directory is never
+        // the intent.
+        assert_eq!(
+            output_dir_for(
+                Some(PathBuf::new()),
+                None,
+                Some(PathBuf::from("/downloads"))
+            ),
+            Some(PathBuf::from("/downloads"))
+        );
+        assert_eq!(output_dir_for(None, Some(PathBuf::new()), None), None);
     }
 }
