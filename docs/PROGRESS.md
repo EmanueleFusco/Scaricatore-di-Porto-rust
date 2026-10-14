@@ -1941,7 +1941,7 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     "Prova l'estrazione da YouTube" su Strumenti, i18n IT/EN completa.
 - **Verified by running**
   - `cargo test`: **199** lib + 3 bundled_tools + 9 download + 6 m1_ipc +
-    16 process_tree + 6 settings_ipc + 13 tools + 15 ytdlp_job (2 `#[ignore]`,
+    16 process_tree + 6 settings_ipc + 13 tools + 15 ytdlp_job (3 `#[ignore]`,
     vedi sotto); `cargo clippy -D warnings` e `cargo fmt --check` puliti.
   - `npm run check` 0 errori, `npm test` **152** verdi, `npm run build` ok.
   - **Reale, con i binari inclusi** (`cargo test --test real_selftest --
@@ -1949,9 +1949,24 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     7,4 s; ispezione "Me at the zoo" → altezze `[240, 144]`; download a 144p
     unito in `.mkv` (il merge sceglie MKV per VP9+Opus, come previsto); audio
     only → `.opus`; le temp dir spariscono, gli output restano.
+  - **Installazione Deno reale** (stesso file, `the_deno_install_...`): 41,6 MB
+    scaricati, checksum del manifest verificato, zip estratto, il binario
+    risponde `deno 2.9.7`. E il flag di tentativo B è stato provato live:
+    `--no-js-runtimes --js-runtimes deno:/tmp/.../deno` estrae "Me at the zoo".
   - L'argomento del merge e i template sono stati verificati **eseguendo** il
     binario fissato su un video vero (non solo `--help`): `SDP_DL`/`SDP_FILE`
     su stdout, `SDP_PP` su stderr, `NA` per i campi ignoti.
+  - **Flag verificati su `--help` del binario incluso (2026.08.19)**, oltre che
+    in esecuzione dove indicato: `--js-runtimes`, `--no-js-runtimes`,
+    `--remote-components`, `--flat-playlist`, `--no-playlist`, `--playlist-items`
+    (`-I`), `--progress-template` (prefissi `download:`/`postprocess:`),
+    `--print` con `WHEN:after_move`, `--paths` (`home:`/`temp:`),
+    `--windows-filenames`, `--merge-output-format`, `--concurrent-fragments`,
+    `--retries`, `--fragment-retries`, `--socket-timeout`,
+    `--cookies-from-browser`, `--cookies`, `--extractor-args`,
+    `--ffmpeg-location`, `--impersonate`, `--simulate`, `--newline`, `--color`,
+    `--ignore-config`, `--extract-audio` (`-x`), `--audio-format`,
+    `--limit-rate`. **Assente**: `--playlist-end` (D60).
   - `-U` reale su una copia in `/tmp`: aggiornamento a nightly e no-op di
     `--update-to stable` da nightly (D66).
   - L'app parte: `npm run app` (vedi "run" qui sotto).
@@ -1962,6 +1977,9 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     (SPIKES.md).
   - Il **cancel con un download vero**: coperto con il falso yt-dlp dalla suite;
     la prova manuale con l'elenco dei processi resta S5 per l'umano.
+  - **Cookie da un browser vero**: gli argomenti sono provati con il falso tool
+    e il filtro per OS con i test; leggere il database di un browser reale no
+    (servono la macchina e una sessione dell'utente).
   - L'interfaccia grafica non è stata cliccata da qui (nessun modo di pilotare la
     finestra): avvio e assenza di errori all'avvio verificati, i percorsi di
     click no. Elencato per onestà.

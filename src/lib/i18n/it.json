@@ -13,7 +13,6 @@
   "queue.url.placeholder": "https://www.youtube.com/watch?v=…",
   "queue.inspecting": "Controllo del link…",
   "queue.clear": "Pulisci",
-  "queue.result.site": "Sito",
   "queue.result.duration": "Durata",
   "queue.badge.live": "Diretta",
   "queue.resolution.label": "Risoluzione",
@@ -34,7 +33,6 @@
   "queue.playlist.title": "Playlist",
   "queue.playlist.stub": "Questo link è una playlist con {count} elementi. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
   "queue.playlist.countUnknown": "Questo link è una playlist. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
-  "queue.inspectFailed": "Non è stato possibile controllare il link.",
   "queue.copyDetails": "Copia i dettagli",
   "queue.copied": "Dettagli copiati",
 

@@ -116,6 +116,45 @@ fn which_ffmpeg() -> Option<std::path::PathBuf> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "downloads ~42 MB from GitHub; run it by hand"]
+async fn the_deno_install_downloads_verifies_and_runs() {
+    let dir = TempDir::new().expect("temp dir");
+    let triple = manifest::current_target_triple().expect("triple");
+    let manifest =
+        scaricatore_di_porto_lib::services::manifest::ToolsManifest::embedded().expect("manifest");
+    let tools_dir = dir.path().join("tools");
+
+    let token = CancellationToken::new();
+    let path = tools::install_deno(&manifest, &triple, &tools_dir, &token, |progress| {
+        eprintln!(
+            "deno: {}/{} bytes",
+            progress.received,
+            progress
+                .total
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "?".to_owned())
+        );
+    })
+    .await
+    .expect("the deno install must succeed");
+    eprintln!("installed deno at {}", path.display());
+    assert!(path.is_file());
+
+    // The installed binary really runs and reports the pinned version.
+    let output = std::process::Command::new(&path)
+        .arg("--version")
+        .output()
+        .expect("deno --version");
+    let text = String::from_utf8_lossy(&output.stdout);
+    eprintln!("{text}");
+    assert!(output.status.success());
+    assert!(
+        text.contains("2.9.7"),
+        "expected the pinned 2.9.7, got: {text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the network and live YouTube; run it by hand"]
 async fn the_self_test_passes_with_the_bundled_tools() {
     let dir = TempDir::new().expect("temp dir");
