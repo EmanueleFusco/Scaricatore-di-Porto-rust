@@ -91,6 +91,7 @@ fn environment(
         runtimes: runtimes.clone(),
         memory: Arc::clone(&memory),
         private_temp: Some(dir.path().join("tmp")),
+        youtube_clients: None,
     };
     let job_env = JobEnvironment {
         ytdlp,
@@ -98,6 +99,7 @@ fn environment(
         runtimes,
         memory,
         private_temp: Some(dir.path().join("tmp")),
+        youtube_clients: None,
     };
     (inspect_env, job_env)
 }

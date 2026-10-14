@@ -39,14 +39,19 @@ pub const RUNTIME_MEMORY_FILE: &str = "runtime-memory.json";
 /// "start with B for 24 h or until yt-dlp/qjs changes").
 pub const RUNTIME_MEMORY_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// The YouTube client list from the original app, in one place (spec §5.3.7).
+/// The YouTube client list from the original app.
 ///
-/// Passed **only for YouTube hosts**. Measured on 2026-10-14 with the pinned
-/// yt-dlp: forcing this list takes the 4K sample from 49 to 31 formats — both
-/// runs keep the full 2160…144 ladder, so the resolution list is unaffected, but
-/// the reduction is real and the constant is isolated so it can be dropped or
-/// overridden without touching the arg builders (the expert override field
-/// belongs to the Settings work, spec §11.8).
+/// **No longer passed by default** (see D74): at the pinned yt-dlp the
+/// anonymous default is `('visionos', 'web')`, and `visionos` is the client
+/// that needs **no PO token** (`REQUIRE_JS_PLAYER: False`, no
+/// `GVS_PO_TOKEN_POLICY`), while `web`/`web_safari`/`mweb` declare
+/// `required=True` for their HTTPS/DASH formats. Forcing the original's
+/// `web_embedded,web,tv` removed the only token-free client and made YouTube
+/// intermittently return just the muxed 360p — the exact symptom the app now
+/// detects and retries around.
+///
+/// The constant stays: it is what the expert field may set, and what the tests
+/// use as an example of an override.
 pub const YOUTUBE_PLAYER_CLIENTS: &str = "youtube:player_client=web_embedded,web,tv";
 
 // ---------------------------------------------------------------------------
@@ -195,9 +200,41 @@ pub fn is_youtube_url(url: &str) -> bool {
     url_host(url).is_some_and(|host| is_youtube_host(&host))
 }
 
-/// The extractor args for a URL, when it is a YouTube one (spec §5.3.7).
-pub fn youtube_extractor_args(url: &str) -> Option<&'static str> {
-    is_youtube_url(url).then_some(YOUTUBE_PLAYER_CLIENTS)
+/// The extractor args for a URL: only for YouTube hosts, and only when the user
+/// set an override (spec §5.3.7's "expert field").
+///
+/// The return type is owned because the value is now built from a setting
+/// rather than being one constant.
+pub fn youtube_extractor_args(url: &str, override_clients: Option<&str>) -> Option<String> {
+    let clients = override_clients?.trim();
+    if clients.is_empty() || !is_youtube_url(url) {
+        return None;
+    }
+    Some(format!("youtube:player_client={clients}"))
+}
+
+/// Accept only what yt-dlp's own flag accepts: client names, variants with a
+/// dot, commas, and `-` exclusions. Each token must be a real name after an
+/// optional leading `-`, so `--exec` (which would be parsed as an exclusion of
+/// "-exec") is refused rather than passed along.
+pub fn sanitize_player_clients(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut tokens = Vec::new();
+    for token in trimmed.split(',') {
+        let name = token.strip_prefix('-').unwrap_or(token);
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'));
+        if !valid {
+            return None;
+        }
+        tokens.push(token.trim().to_ascii_lowercase());
+    }
+    Some(tokens.join(","))
 }
 
 // ---------------------------------------------------------------------------
@@ -486,12 +523,47 @@ mod tests {
     }
 
     #[test]
-    fn extractor_args_are_only_for_youtube_hosts() {
+    fn extractor_args_are_only_for_youtube_hosts_and_only_with_an_override() {
+        // No override: nothing is passed, yt-dlp keeps its own client list.
         assert_eq!(
-            youtube_extractor_args("https://www.youtube.com/watch?v=x"),
-            Some(YOUTUBE_PLAYER_CLIENTS)
+            youtube_extractor_args("https://www.youtube.com/watch?v=x", None),
+            None
         );
-        assert_eq!(youtube_extractor_args("https://vimeo.com/1"), None);
+        // An override is used, and only on YouTube.
+        assert_eq!(
+            youtube_extractor_args(
+                "https://www.youtube.com/watch?v=x",
+                Some("web_embedded,web,tv")
+            ),
+            Some("youtube:player_client=web_embedded,web,tv".to_owned())
+        );
+        assert_eq!(
+            youtube_extractor_args("https://vimeo.com/1", Some("web")),
+            None
+        );
+        // Blank is the same as absent.
+        assert_eq!(
+            youtube_extractor_args("https://youtu.be/x", Some("  ")),
+            None
+        );
+    }
+
+    #[test]
+    fn only_client_list_characters_survive_sanitising() {
+        assert_eq!(
+            sanitize_player_clients("  WEB_EMBEDDED,web,Tv "),
+            Some("web_embedded,web,tv".to_owned())
+        );
+        assert_eq!(
+            sanitize_player_clients("-tv,web"),
+            Some("-tv,web".to_owned())
+        );
+        assert_eq!(sanitize_player_clients("   "), None);
+        // A shell metacharacter, a space or an option-like value is refused:
+        // this string lands in an argv element.
+        assert_eq!(sanitize_player_clients("web; rm -rf /"), None);
+        assert_eq!(sanitize_player_clients("--exec"), None);
+        assert_eq!(sanitize_player_clients("web tv"), None);
     }
 
     #[test]

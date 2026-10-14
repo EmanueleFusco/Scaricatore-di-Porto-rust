@@ -214,24 +214,32 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
 
     // A degraded extraction: the separate streams are missing, so yt-dlp's own
     // fallback chain lands on the **muxed** 360p format (no `+` in the id).
-    // QuickJS "has" it, Deno does not — which is exactly the symptom the runner
-    // must notice.
+    // The first invocation then "downloads" slowly — the app must cancel it at
+    // the SDP_FORMAT line instead of saving the wrong file. The next
+    // invocation (Deno, or the same runtime when Deno is absent) is healthy.
     if url.contains("degraded-download") {
-        if runtime == "deno" {
-            println!("SDP_FORMAT|137+140|1080|vp9|mp4a.40.2");
-            emit_download_line("downloading", 2048, 4096, "vp9");
-            emit_download_line("finished", 4096, 4096, "vp9");
-        } else {
+        if invocation_count() == 1 {
             println!("SDP_FORMAT|18|360|avc1|mp4a.40.2");
-            emit_download_line("downloading", 2048, 4096, "avc1");
-            emit_download_line("finished", 4096, 4096, "avc1");
+            emit_download_line("downloading", 2048, 40960, "avc1");
+            sleep_forever();
         }
+        println!("SDP_FORMAT|137+140|1080|vp9|mp4a.40.2");
+        emit_download_line("downloading", 2048, 4096, "vp9");
+        emit_download_line("finished", 4096, 4096, "vp9");
         let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");
         let _ = std::fs::write(&file, b"fake media bytes");
         println!("SDP_FILE|{}", file.display());
         return 0;
+    }
+
+    // A degraded extraction that never recovers: every attempt picks the muxed
+    // 360p. The app must give up with an error, not save it.
+    if url.contains("degraded-always") {
+        println!("SDP_FORMAT|18|360|avc1|mp4a.40.2");
+        emit_download_line("downloading", 2048, 40960, "avc1");
+        sleep_forever();
     }
 
     // A **merge** at a lower height than requested: the separate streams were

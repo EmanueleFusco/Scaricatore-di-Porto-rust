@@ -121,6 +121,7 @@ impl Fixture {
             runtimes: self.runtimes(mode, with_deno),
             memory: Arc::clone(memory),
             private_temp: None,
+            youtube_clients: None,
         }
     }
 
@@ -323,8 +324,8 @@ async fn a_degraded_download_retries_with_deno_instead_of_silently_keeping_360p(
     let env = fixture.env(JsRuntimeMode::Auto, true, &memory);
     let (sink, _labels) = collecting_sink();
 
-    // The fake mimics a degraded extraction: QuickJS "selects" 360p, Deno the
-    // 1080p the user asked for.
+    // The fake "downloads" the muxed 360p slowly on the first call; the app
+    // must cancel it at the SDP_FORMAT line and retry with Deno.
     let outcome = job::run_job(
         &env,
         &fixture.request("https://youtu.be/degraded-download"),
@@ -360,11 +361,11 @@ async fn a_degraded_download_retries_with_deno_instead_of_silently_keeping_360p(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_degraded_download_without_deno_reports_what_it_got() {
+async fn a_degraded_download_without_deno_retries_the_same_runtime() {
     let fixture = fixture();
     let memory = fixture.memory();
-    // No Deno: the fallback cannot run, so the job must still finish — and say
-    // which height it really produced, instead of pretending it was 1080p.
+    // No Deno: the owner's setup. The transient challenge is retried with
+    // QuickJS, which is what a manual re-paste used to fix.
     let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
     let (sink, _labels) = collecting_sink();
 
@@ -377,17 +378,48 @@ async fn a_degraded_download_without_deno_reports_what_it_got() {
     .await;
 
     let JobOutcome::Done {
-        requested_height,
+        runtime,
         actual_height,
         ..
     } = outcome
     else {
         panic!("expected success, got {outcome:?}");
     };
-    assert_eq!(requested_height, Some(1080));
-    assert_eq!(actual_height, Some(360));
-    assert_eq!(fixture.log_lines().len(), 1);
+    assert_eq!(runtime, RuntimeKind::QuickJs);
+    assert_eq!(actual_height, Some(1080));
+    let log = fixture.log_lines();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(log[0].contains("runtime=quickjs"));
+    assert!(log[1].contains("runtime=quickjs"));
     assert!(memory.get().is_none(), "nothing to remember");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_download_that_never_recovers_fails_without_saving_anything() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let outcome = job::run_job(
+        &env,
+        &fixture.request("https://youtu.be/degraded-always"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+
+    let JobOutcome::Failed(error) = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
+    assert_eq!(error.code.as_str(), "YT_CHALLENGE");
+    assert_eq!(fixture.log_lines().len(), 2, "one retry, then give up");
+    let leftovers: Vec<String> = std::fs::read_dir(&fixture.home)
+        .expect("out dir")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -627,6 +659,7 @@ fn inspect_env(
         runtimes: fixture.runtimes(mode, with_deno),
         memory: Arc::clone(memory),
         private_temp: None,
+        youtube_clients: None,
     }
 }
 

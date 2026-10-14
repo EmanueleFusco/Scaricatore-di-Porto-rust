@@ -282,6 +282,9 @@ pub struct DownloadEnvironment {
     pub runtime: Option<(RuntimeKind, PathBuf)>,
     /// Extra environment (private temp dir, spec §4.9).
     pub tmp_env: Option<PathBuf>,
+    /// The expert override for YouTube's `player_client`; `None` lets yt-dlp
+    /// use its own defaults, which is the recommended state (D74).
+    pub youtube_clients: Option<String>,
 }
 
 /// The complete argv array, URL included after `--`.
@@ -329,9 +332,12 @@ pub fn download_args(
         args.extend(jsruntime::runtime_args(*kind, path));
     }
 
-    // YouTube-only extractor args (spec §5.3.7); harmless for other hosts but
-    // deliberately not passed there.
-    if let Some(extractor_args) = jsruntime::youtube_extractor_args(url) {
+    // YouTube-only extractor args (spec §5.3.7): only when the user set an
+    // override. By default yt-dlp's own client list is used, because it is the
+    // one its maintainers keep working — see D74.
+    if let Some(extractor_args) =
+        jsruntime::youtube_extractor_args(url, env.youtube_clients.as_deref())
+    {
         args.push("--extractor-args".into());
         args.push(extractor_args.into());
     }
@@ -1003,6 +1009,7 @@ mod tests {
             ffmpeg: Some(PathBuf::from("/usr/bin/ffmpeg")),
             runtime: Some((RuntimeKind::QuickJs, PathBuf::from("/opt/qjs"))),
             tmp_env: None,
+            youtube_clients: None,
         }
     }
 
@@ -1082,7 +1089,6 @@ mod tests {
             "--fragment-retries",
             "--socket-timeout",
             "--ffmpeg-location",
-            "--extractor-args",
             "--paths",
             "--windows-filenames",
             "--merge-output-format",
@@ -1100,6 +1106,11 @@ mod tests {
         assert_eq!(
             &rendered[rendered.len() - 2..],
             &["--", "https://youtu.be/x"]
+        );
+        // No extractor args by default: yt-dlp's own client list (D74).
+        assert!(
+            !rendered.contains(&"--extractor-args".to_owned()),
+            "the forced client list must not come back: {rendered:?}"
         );
     }
 
@@ -1150,24 +1161,42 @@ mod tests {
     }
 
     #[test]
-    fn the_extractor_args_are_passed_only_for_youtube_links() {
-        let with_youtube = args_as_strings(&download_args(
+    fn the_extractor_args_are_passed_only_when_overridden_and_only_for_youtube() {
+        // Default: nothing, whatever the host (D74).
+        let args = args_as_strings(&download_args(
             "https://www.youtube.com/watch?v=x",
             &spec(FormatChoice::Best),
             &dirs(),
             &plain_env(),
             false,
         ));
-        assert!(with_youtube.contains(&jsruntime::YOUTUBE_PLAYER_CLIENTS.to_owned()));
+        assert!(!args.contains(&"--extractor-args".to_owned()));
 
-        let other = args_as_strings(&download_args(
+        // With the expert override, the value reaches argv on YouTube…
+        let mut env = plain_env();
+        env.youtube_clients = Some("web_embedded,web,tv".to_owned());
+        let args = args_as_strings(&download_args(
+            "https://www.youtube.com/watch?v=x",
+            &spec(FormatChoice::Best),
+            &dirs(),
+            &env,
+            false,
+        ));
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "--extractor-args",
+                "youtube:player_client=web_embedded,web,tv"
+            ]));
+
+        // …and not on another host.
+        let args = args_as_strings(&download_args(
             "https://vimeo.com/1",
             &spec(FormatChoice::Best),
             &dirs(),
-            &plain_env(),
+            &env,
             false,
         ));
-        assert!(!other.contains(&jsruntime::YOUTUBE_PLAYER_CLIENTS.to_owned()));
+        assert!(!args.contains(&"--extractor-args".to_owned()));
     }
 
     #[test]

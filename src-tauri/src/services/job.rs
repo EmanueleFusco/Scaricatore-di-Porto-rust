@@ -50,6 +50,9 @@ pub struct JobEnvironment {
     pub memory: Arc<jsruntime::RuntimeMemoryStore>,
     /// Spec §4.9: private TMP dir for the child processes.
     pub private_temp: Option<PathBuf>,
+    /// Expert override for YouTube's client list; `None` = yt-dlp's defaults
+    /// (the recommended state, D74).
+    pub youtube_clients: Option<String>,
 }
 
 /// One job. `job_id` names the temp directory; the caller owns it.
@@ -113,6 +116,7 @@ pub async fn run_job(
     let mut fell_back = false;
     let mut omit_format = false;
     let mut format_retried = false;
+    let mut degraded_retry_done = false;
 
     emitter.emit(JobProgress::label(JobStage::Preparing, "preparing"));
 
@@ -198,6 +202,34 @@ pub async fn run_job(
                 }
                 return JobOutcome::Failed(error);
             }
+            AttemptOutcome::Degraded { files } => {
+                // The file that was about to be (or was) written is not what
+                // the user picked: remove it and the partials, so the next
+                // attempt cannot resume from the wrong bytes.
+                for file in files {
+                    let _ = std::fs::remove_file(file);
+                }
+                cleanup_job_dir(&request.dirs.temp);
+
+                if !degraded_retry_done {
+                    degraded_retry_done = true;
+                    if env.runtimes.may_fallback_to_deno(runtime, fell_back) {
+                        runtime = jsruntime::RuntimeKind::Deno;
+                        fell_back = true;
+                    }
+                    // Without Deno the same runtime gets the second try: a
+                    // failed challenge solve is transient, and that is exactly
+                    // what a manual retry fixes.
+                    continue;
+                }
+                return JobOutcome::Failed(YtdlpError::new(
+                    YtdlpErrorCode::YtChallenge,
+                    "yt-dlp selected a muxed format at a lower resolution than the one \
+                     asked for (the YouTube JavaScript challenge failed in that run), so \
+                     the download was stopped instead of saving the wrong file. Try \
+                     again, or install Deno from Settings → Tools.",
+                ));
+            }
             AttemptOutcome::Stalled => match env.runtimes.fallback_decision(runtime, fell_back) {
                 FallbackDecision::Switch => {
                     runtime = jsruntime::RuntimeKind::Deno;
@@ -234,6 +266,12 @@ enum AttemptOutcome {
         /// The selected format id (`278+251` merged, `18` muxed).
         format_id: Option<String>,
     },
+    /// yt-dlp selected a **muxed** format lower than the one asked for: the
+    /// degraded-extraction signature. The attempt is cancelled the moment
+    /// `SDP_FORMAT` says so, so the wrong file is not downloaded to the end.
+    Degraded {
+        files: Vec<PathBuf>,
+    },
     Failed(YtdlpError),
     /// The challenge watchdog fired: the runtime gets replaced, not the user
     /// bothered.
@@ -257,6 +295,7 @@ async fn run_attempt(
         ffmpeg: env.ffmpeg.clone(),
         runtime: Some((runtime, runtime_path.to_path_buf())),
         tmp_env: env.private_temp.clone(),
+        youtube_clients: env.youtube_clients.clone(),
     };
     let args = ytdlp::download_args(
         &request.url,
@@ -272,15 +311,20 @@ async fn run_attempt(
         command = command.temp_dir(temp);
     }
 
+    // The token the attempt runs under: the user's cancellation is a parent of
+    // it, and the degraded-selection check cancels it directly.
+    let attempt_token = token.child_token();
+    let degraded = Arc::new(AtomicBool::new(false));
     let attempt = Arc::new(AttemptShared {
         tracker: Mutex::new(ProgressTracker::new(request.spec.needs_merge())),
         files: Mutex::new(Vec::new()),
         heights: Mutex::new(Vec::new()),
         format_ids: Mutex::new(Vec::new()),
-        // The challenge is solved once the first download line appears; see the
-        // watchdog below.
         challenge_pending: Arc::new(AtomicBool::new(runtime == jsruntime::RuntimeKind::QuickJs)),
         emitter: emitter.clone(),
+        requested_height: ytdlp::requested_height(&request.spec.quality),
+        attempt_token: attempt_token.clone(),
+        degraded: Arc::clone(&degraded),
     });
 
     let stdout_sink = {
@@ -297,7 +341,6 @@ async fn run_attempt(
     // failure the user cannot act on. It is armed only until the first download
     // line, because that is when the JS challenge is provably over — after that
     // a quiet minute is a slow network or a long merge, not a challenge.
-    let attempt_token = token.child_token();
     let watchdog = {
         let pending = Arc::clone(&attempt.challenge_pending);
         let watchdog_token = attempt_token.clone();
@@ -334,6 +377,13 @@ async fn run_attempt(
         }
     };
 
+    // The degraded-selection cancel comes first: it is our own, not the user's
+    // and not the watchdog's.
+    if degraded.load(Ordering::Relaxed) {
+        return AttemptOutcome::Degraded {
+            files: attempt.seen_files(),
+        };
+    }
     if token.is_cancelled() {
         return AttemptOutcome::Cancelled;
     }
@@ -352,11 +402,27 @@ async fn run_attempt(
 
     let file = attempt.last_file();
     match file {
-        Some(file) if file.is_file() => AttemptOutcome::Finished {
-            file,
-            actual_height: attempt.actual_height(),
-            format_id: attempt.selected_format_id(),
-        },
+        Some(file) if file.is_file() => {
+            let actual_height = attempt.actual_height();
+            let format_id = attempt.selected_format_id();
+            // The early cancel did not get there in time and the wrong file
+            // completed: same verdict, and `run_job` removes it before the
+            // retry.
+            if ytdlp::is_degraded_selection(
+                attempt.requested_height,
+                actual_height,
+                format_id.as_deref(),
+            ) {
+                return AttemptOutcome::Degraded {
+                    files: attempt.seen_files(),
+                };
+            }
+            AttemptOutcome::Finished {
+                file,
+                actual_height,
+                format_id,
+            }
+        }
         Some(file) => AttemptOutcome::Failed(YtdlpError::new(
             YtdlpErrorCode::Unknown,
             format!(
@@ -382,6 +448,13 @@ struct AttemptShared {
     format_ids: Mutex<Vec<String>>,
     challenge_pending: Arc<AtomicBool>,
     emitter: Emitter,
+    /// What the user's choice asked for; the `SDP_FORMAT` check needs it.
+    requested_height: Option<u32>,
+    /// Cancels the attempt when the selected format is the degraded one.
+    attempt_token: CancellationToken,
+    /// Set when the cancel above was because of a degraded selection (as
+    /// opposed to the user or the watchdog).
+    degraded: Arc<AtomicBool>,
 }
 
 impl AttemptShared {
@@ -404,6 +477,17 @@ impl AttemptShared {
                 heights.push(height);
             }
             self.challenge_pending.store(false, Ordering::Relaxed);
+            // The decisive check, before the bytes: what exactly will be
+            // downloaded? A muxed format at a lower height than the one asked
+            // for is the degraded extraction, and it must not be finalized.
+            if ytdlp::is_degraded_selection(
+                self.requested_height,
+                format.height,
+                Some(format.format_id.as_str()),
+            ) {
+                self.degraded.store(true, Ordering::Relaxed);
+                self.attempt_token.cancel();
+            }
             return;
         }
         if let Some(parsed) = ytdlp::parse_download_line(line) {
@@ -454,6 +538,15 @@ impl AttemptShared {
         match self.format_ids.lock() {
             Ok(ids) => ids.last().cloned(),
             Err(poisoned) => poisoned.into_inner().last().cloned(),
+        }
+    }
+
+    /// Every file path yt-dlp reported (`SDP_FILE`), for cleanup after a
+    /// rejected attempt.
+    fn seen_files(&self) -> Vec<PathBuf> {
+        match self.files.lock() {
+            Ok(files) => files.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
 }

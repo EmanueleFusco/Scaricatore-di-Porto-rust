@@ -165,6 +165,7 @@ pub async fn download_start<R: tauri::Runtime>(
         runtimes: tools.runtimes,
         memory: state.runtime_memory().clone(),
         private_temp: tools.private_temp,
+        youtube_clients: settings.youtube_player_clients.clone(),
     };
 
     let token = state.start_job(job_id.clone());

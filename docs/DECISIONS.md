@@ -1878,13 +1878,20 @@ SDP_FORMAT|278+251|144|vp9|opus     ← un video con merge
 SDP_FORMAT|251|NA|none|opus         ← audio only
 ```
 
-Una riga per job con il formato **davvero scelto**. Quando l'altezza riportata è
-inferiore a quella richiesta (e la scelta ne chiedeva una: `Exact`/`MaxHeight`),
-il job è *degradato*: il file sbagliato viene rimosso e si ritenta una volta con
-Deno (stesso fallback una-tantum di §5.3.2, stessa memoria 24 h). Se Deno non
-c'è, il job finisce **con i due numeri nel payload** (`requestedHeight`,
-`actualHeight`) e la UI lo dice: "ha salvato 360p anche se ne avevi chiesti
-1440p". Niente più sorprese silenziose.
+Una riga per job con il formato **davvero scelto**, e da lì due decisioni:
+
+* **annullamento anticipato** (aggiunto in D74): alla riga `SDP_FORMAT` il job
+  sa cosa sta per scaricare. Se è un muxed più basso del richiesto, l'errore è
+  già commesso e il download viene **ucciso lì**, prima che il file sbagliato
+  venga finalizzato: si eliminano i parziali e si ritenta una volta (Deno se
+  c'è, altrimenti lo stesso runtime, perché la challenge fallita è transitoria).
+  Se anche il secondo tentativo è degradato, il job **fallisce** con
+  `YT_CHALLENGE` e un messaggio chiaro: meglio nessun file che un 360p al posto
+  di un 1440p.
+* **merge più basso = esito legittimo**: `137+140` a 720p quando ne erano
+  chiesti 1080p significa che i flussi separati c'erano e il video non ha di
+  più. Nessun ritentativo; il risultato porta `requestedHeight`/`actualHeight` e
+  la UI avvisa.
 
 **Non basta "più bassa del richiesto".** Un'altezza inferiore può essere
 legittima: il video non ha quella risoluzione, e ritentare scaricherebbe di
@@ -1967,3 +1974,56 @@ yt-dlp stampa; non un'euristica sulle altezze.
 corta **con l'avviso** e il pulsante Riprova: non può inventare risoluzioni che
 in quella run non esistono. Un video che davvero ha solo il muxed 360p non
 produce il warning, quindi non viene ritentato inutilmente.
+
+### D74 — Il bug ereditato dall'originale: la lista di client YouTube forzata
+
+Terza segnalazione del proprietario, che chiedeva di cercare il bug nel codice
+ripreso dall'app Python. Era lì, ed è un bug di **obsolescenza**.
+
+**Il sintomo.** A intermittenza l'estrazione restituisce solo il muxed 360p:
+prima in ispezione (lista corta), poi anche in download (file a 360p chiesto
+1440p). Due run su quattro, sulla stessa macchina, sullo stesso video.
+
+**La causa, in tre passi, tutti verificabili nel sorgente di yt-dlp al tag
+fissato (2026.08.19).**
+
+1. Noi passavamo `--extractor-args youtube:player_client=web_embedded,web,tv`,
+   il valore dell'app originale (spec §5.3.7). Ma i client **predefiniti** di
+   questa versione per chi non è loggato e ha un runtime JS sono
+   `_DEFAULT_CLIENTS = ('visionos', 'web')` (`_video.py`).
+2. `_base.py` dichiara, per `web` (e `web_safari`, `mweb`):
+   ```python
+   'GVS_PO_TOKEN_POLICY': {
+       StreamingProtocol.HTTPS: GvsPoTokenPolicy(required=True, recommended=True, …),
+   ```
+   mentre `visionos` non ha nessuna policy PO token e ha
+   `REQUIRE_JS_PLAYER: False`.
+3. Quindi forzare `web_embedded,web,tv` **butta via l'unico client che non
+   richiede un PO token**, e si affida a client che lo richiedono: quando
+   yt-dlp non riesce a coniarlo (o la challenge JS fallisce per quel client),
+   restano solo i formati muxed — su YouTube, il 360p. L'intermittenza è cioè la
+   *varianza dell'enforcement* di YouTube, non un caso. `web_embedded`, per
+   giunta, yt-dlp lo aggiunge **da sé** quando il video è age-gated
+   (`_video.py`, riga ~3153): forzarlo era ridondante.
+
+**La correzione.** Di default non si passa più nessun extractor arg: yt-dlp usa
+la sua lista, quella che i manutentori tengono aggiornata. La costante resta e
+alimenta un campo esperto in Impostazioni → Rete e account ("Client player di
+YouTube"), vuoto = automatico, validato su entrambi i lati (solo nomi, varianti
+con punto, virgole, esclusioni con `-`: il valore finisce in un elemento argv).
+
+**Le misure che sostengono la decisione**, non solo il ragionamento:
+
+| | lista forzata | default |
+| :-- | --: | --: |
+| formati (video 4K) | 31 | **49** |
+| self-test "Me at the zoo" | 7,4 s, 15 formati | **1,95 s, 24 formati** |
+| warning di challenge in 6 run | 0 | 0 |
+
+Nelle mie prove la degradazione non si era mai riprodotta (per questo non l'avevo
+toccata in D73); il caso del proprietario sì, e la spiegazione dei PO token è la
+sola che rende conto della *stanza* del sintomo (solo muxed) e della sua
+intermittenza. Il cambiamento è una deviazione da spec §5.3.7, che chiedeva di
+passare la lista dell'originale: la spec invita a verificare ciò che invecchia,
+e questa lista era invecchiata.
+

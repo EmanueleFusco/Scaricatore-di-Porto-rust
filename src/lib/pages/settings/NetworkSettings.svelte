@@ -7,7 +7,11 @@
    * leaving three empty fields.
    */
   import { open } from "@tauri-apps/plugin-dialog";
-  import { browserNamesForTriple, type JsRuntimeMode } from "$lib/settings";
+  import {
+    browserNamesForTriple,
+    sanitizePlayerClients,
+    type JsRuntimeMode,
+  } from "$lib/settings";
   import { settingsStore, tt } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
 
@@ -53,6 +57,28 @@
       {/each}
     </select>
     <p class="field__hint">{tt("settings.jsRuntime.hint")}</p>
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="setting-youtube-clients">
+      {tt("settings.youtubeClients")}
+    </label>
+    <input
+      class="input"
+      id="setting-youtube-clients"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder={tt("settings.youtubeClients.placeholder")}
+      value={settingsStore.settings.youtubePlayerClients ?? ""}
+      onchange={(event) =>
+        void settingsStore.update({
+          youtubePlayerClients: sanitizePlayerClients(
+            (event.currentTarget as HTMLInputElement).value,
+          ),
+        })}
+    />
+    <p class="field__hint">{tt("settings.youtubeClients.hint")}</p>
   </div>
 
   <div class="field">

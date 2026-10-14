@@ -1962,11 +1962,26 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     lista completa, si tiene il risultato migliore, e se resta ridotta il
     risultato lo dichiara (`degraded`) e la UI offre **Riprova**. Le risposte
     degradate **non** entrano nella cache.
+  - **Il bug ereditato dall'originale: via la lista di client forzata** (terza
+    segnalazione, con richiesta esplicita di cercare lì). `player_client=
+    web_embedded,web,tv` è codice dell'app Python; in questa versione di yt-dlp i
+    client predefiniti sono `visionos,web`, e solo `visionos` non richiede un PO
+    token. Forzare la vecchia lista eliminava proprio quel client, e quando il
+    token non si riusciva a coniare restavano solo i muxed — il 360p, a
+    intermittenza. Ora **di default non si passa nessun extractor arg**; la
+    costante resta in un campo esperto (Impostazioni → Rete e account), vuoto =
+    automatico. Misure: 31→**49** formati sul video 4K, self-test 7,4 s/15
+    formati → **1,95 s/24 formati**. Dettagli e sorgente citato in D74.
+  - **Il download non finalizza mai un muxed più basso del richiesto**: alla
+    riga `SDP_FORMAT` (prima dei byte) il job annulla il tentativo, elimina i
+    parziali, ritenta una volta (Deno o stesso runtime) e, se resta degradato,
+    **fallisce** con un messaggio chiaro invece di salvare il file sbagliato. Un
+    *merge* più basso resta un esito legittimo, con i due numeri nel payload.
 - **Verified by running**
-  - `cargo test`: **281** test verdi in totale (206 lib, 3 bundled_tools,
+  - `cargo test`: **284** test verdi in totale (208 lib, 3 bundled_tools,
     9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
-    21 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
-    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **158**
+    22 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **161**
     test (`npm test`), `npm run check` a 0 errori.
   - **IPC completo con il tool finto**: `inspect_url` e `download_start`
     attraverso i comandi veri, con `ToolContext` che punta al fake — il job

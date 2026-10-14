@@ -32,6 +32,12 @@ export interface Settings {
   cookiesFile: string | null;
   /** Spec §5.3.2: the Deno install offer was declined once. */
   denoOfferDismissed: boolean;
+  /**
+   * Expert override for YouTube's `player_client` (spec §5.3.7's "expert
+   * field"). Empty means yt-dlp's own client list, which is the maintained one
+   * (D74) — the app does not force the original app's list any more.
+   */
+  youtubePlayerClients: string | null;
 }
 
 /** Mirror of the Rust `state::Recovery` payload. */
@@ -68,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cookiesFromBrowser: null,
   cookiesFile: null,
   denoOfferDismissed: false,
+  youtubePlayerClients: null,
 };
 
 const LANGUAGES: readonly LangPreference[] = ["system", "it", "en"];
@@ -153,7 +160,22 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
     cookiesFile:
       typeof raw?.cookiesFile === "string" && raw.cookiesFile !== "" ? raw.cookiesFile : null,
     denoOfferDismissed: raw?.denoOfferDismissed === true,
+    youtubePlayerClients:
+      typeof raw?.youtubePlayerClients === "string" && raw.youtubePlayerClients !== ""
+        ? raw.youtubePlayerClients
+        : null,
   };
+}
+
+/**
+ * The one validation the expert field needs on this side: yt-dlp's own grammar
+ * (client names, variants, commas, `-` exclusions). The Rust side repeats it,
+ * because a settings file can be edited by hand.
+ */
+export function sanitizePlayerClients(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  return /^[A-Za-z0-9_,.-]+$/.test(trimmed) ? trimmed.toLowerCase() : null;
 }
 
 /** `navigator.languages` when available, so the `system` language has an input. */

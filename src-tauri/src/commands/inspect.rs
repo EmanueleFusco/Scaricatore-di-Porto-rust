@@ -47,6 +47,7 @@ pub async fn inspect_url(
         runtimes: tools.runtimes,
         memory: state.runtime_memory().clone(),
         private_temp: tools.private_temp,
+        youtube_clients: settings.youtube_player_clients.clone(),
     };
 
     let token = state.start_inspection(request_id);

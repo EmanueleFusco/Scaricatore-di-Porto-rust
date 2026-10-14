@@ -300,6 +300,7 @@ pub async fn tools_self_test(state: State<'_, AppState>) -> AppResult<SelfTestRe
         runtimes: tools.runtimes,
         memory: state.runtime_memory().clone(),
         private_temp: tools.private_temp,
+        youtube_clients: settings.youtube_player_clients.clone(),
     };
     Ok(crate::services::inspect::self_test(
         &environment,

@@ -153,6 +153,10 @@ pub struct Settings {
     /// Spec §5.3.2: the Deno download offer was declined. Remembered so the app
     /// asks once, not on every failed download.
     pub deno_offer_dismissed: bool,
+    /// Expert override for YouTube's `player_client` (spec §5.3.7's "expert
+    /// field"). `None` — the default — lets yt-dlp use its own client list,
+    /// which is the maintained one (D74).
+    pub youtube_player_clients: Option<String>,
 }
 
 impl Default for Settings {
@@ -169,6 +173,7 @@ impl Default for Settings {
             cookies_from_browser: None,
             cookies_file: None,
             deno_offer_dismissed: false,
+            youtube_player_clients: None,
         }
     }
 }
@@ -204,6 +209,12 @@ impl Settings {
             && file.as_os_str().is_empty()
         {
             self.cookies_file = None;
+        }
+
+        // The expert override passes through yt-dlp's own flag: only client
+        // names, variants, commas and exclusions survive.
+        if let Some(raw) = &self.youtube_player_clients {
+            self.youtube_player_clients = jsruntime::sanitize_player_clients(raw);
         }
     }
 
@@ -842,6 +853,33 @@ mod tests {
         s.normalise();
         assert_eq!(s.cookies_from_browser.as_deref(), Some("firefox"));
         assert!(s.cookies_file.is_some());
+    }
+
+    #[test]
+    fn the_expert_client_override_is_sanitised_and_empty_means_default() {
+        let mut s = Settings {
+            youtube_player_clients: Some("  WEB_EMBEDDED,web,Tv ".to_owned()),
+            ..Settings::default()
+        };
+        s.normalise();
+        assert_eq!(
+            s.youtube_player_clients.as_deref(),
+            Some("web_embedded,web,tv")
+        );
+
+        let mut s = Settings {
+            youtube_player_clients: Some("web; rm -rf /".to_owned()),
+            ..Settings::default()
+        };
+        s.normalise();
+        assert_eq!(s.youtube_player_clients, None, "not a client list");
+
+        let mut s = Settings {
+            youtube_player_clients: Some("   ".to_owned()),
+            ..Settings::default()
+        };
+        s.normalise();
+        assert_eq!(s.youtube_player_clients, None);
     }
 
     #[test]

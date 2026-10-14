@@ -557,6 +557,8 @@ pub struct InspectEnvironment {
     pub memory: Arc<RuntimeMemoryStore>,
     /// Spec §4.9: the private TMP dir for QuickJS.
     pub private_temp: Option<PathBuf>,
+    /// Expert override for YouTube's client list; `None` = yt-dlp's defaults.
+    pub youtube_clients: Option<String>,
 }
 
 /// The argv array of the inspect command (spec §6.2), URL last after `--`.
@@ -575,6 +577,7 @@ pub fn inspect_args(
     url: &str,
     runtime: Option<(RuntimeKind, &Path)>,
     cookies: &CookieSource,
+    youtube_clients: Option<&str>,
 ) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     for flag in ["--ignore-config", "-J", "--flat-playlist"] {
@@ -583,7 +586,9 @@ pub fn inspect_args(
     if let Some((kind, path)) = runtime {
         args.extend(jsruntime::runtime_args(kind, path));
     }
-    if let Some(extractor_args) = jsruntime::youtube_extractor_args(url) {
+    // Only when the expert override is set; by default yt-dlp's own client list
+    // is used (D74).
+    if let Some(extractor_args) = jsruntime::youtube_extractor_args(url, youtube_clients) {
         args.push("--extractor-args".into());
         args.push(extractor_args.into());
     }
@@ -837,7 +842,12 @@ async fn run_once(
         return RunOutcome::Failed(error);
     };
 
-    let args = inspect_args(url, Some((runtime, runtime_path)), &env.cookies);
+    let args = inspect_args(
+        url,
+        Some((runtime, runtime_path)),
+        &env.cookies,
+        env.youtube_clients.as_deref(),
+    );
     let mut command = ToolCommand::new(&env.ytdlp)
         .args(args)
         .label("yt-dlp inspect");
@@ -1262,6 +1272,7 @@ mod tests {
             "https://youtu.be/x",
             Some((RuntimeKind::QuickJs, Path::new("/opt/qjs"))),
             &CookieSource::None,
+            Some("web_embedded,web,tv"),
         );
         let rendered: Vec<String> = args
             .iter()
@@ -1286,7 +1297,12 @@ mod tests {
         assert!(rendered.contains(&jsruntime::YOUTUBE_PLAYER_CLIENTS.to_owned()));
 
         // A non-YouTube link gets no YouTube extractor args.
-        let args = inspect_args("https://vimeo.com/1", None, &CookieSource::None);
+        let args = inspect_args(
+            "https://vimeo.com/1",
+            None,
+            &CookieSource::None,
+            Some("web"),
+        );
         let rendered: Vec<String> = args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1301,6 +1317,7 @@ mod tests {
             "https://youtu.be/x",
             None,
             &CookieSource::Browser("firefox".into()),
+            None,
         );
         let rendered: Vec<String> = args
             .iter()
