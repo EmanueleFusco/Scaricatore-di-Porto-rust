@@ -70,6 +70,7 @@ pub fn run() {
             commands::settings::settings_get,
             commands::settings::settings_save,
             commands::inspect::inspect_url,
+            commands::inspect::inspect_cancel,
             commands::download::download_start,
             commands::download::download_cancel,
             commands::download::download_dismiss_deno_offer,

@@ -390,6 +390,20 @@ impl AppState {
         }
     }
 
+    /// Cancel whatever inspection is running (the URL box was cleared).
+    pub fn cancel_inspection(&self) {
+        let previous = {
+            let mut slot = match self.inspection.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            slot.take()
+        };
+        if let Some((_, token)) = previous {
+            token.cancel();
+        }
+    }
+
     /// Register the running job, cancelling whatever was registered before
     /// (M1 runs one job at a time; the UI disables Start while one runs).
     pub fn start_job(&self, id: String) -> tokio_util::sync::CancellationToken {

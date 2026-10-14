@@ -8,7 +8,71 @@
   "queue.title": "Coda",
   "queue.empty.title": "Incolla un link per iniziare",
   "queue.empty.hint": "La coda è vuota. I download e le trascrizioni appariranno qui.",
-  "queue.comingSoon": "La coda arriva nelle prossime fasi (M2).",
+  "queue.comingSoon": "Schermata temporanea: un download alla volta. La coda arriva con M2.",
+  "queue.url.label": "Link del video",
+  "queue.url.placeholder": "https://www.youtube.com/watch?v=…",
+  "queue.inspecting": "Controllo del link…",
+  "queue.clear": "Pulisci",
+  "queue.result.site": "Sito",
+  "queue.result.duration": "Durata",
+  "queue.badge.live": "Diretta",
+  "queue.resolution.label": "Risoluzione",
+  "queue.resolution.best": "Migliore disponibile",
+  "queue.audioOnly": "Solo audio (.opus)",
+  "queue.folder.label": "Salva in",
+  "queue.folder.browse": "Scegli cartella",
+  "queue.folder.system": "Cartella Download del sistema",
+  "queue.download": "Scarica",
+  "queue.cancel": "Annulla",
+  "queue.speed": "Velocità: {value} Mbit/s",
+  "queue.eta": "Tempo rimasto {value}",
+  "queue.cancelled": "Download annullato. Non è rimasto nulla in giro.",
+  "queue.done.title": "Scaricato",
+  "queue.done.runtime": "Runtime: {runtime}",
+  "queue.done.reveal": "Mostra nella cartella",
+  "queue.done.again": "Scarica un altro",
+  "queue.playlist.title": "Playlist",
+  "queue.playlist.stub": "Questo link è una playlist con {count} elementi. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
+  "queue.playlist.countUnknown": "Questo link è una playlist. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
+  "queue.inspectFailed": "Non è stato possibile controllare il link.",
+  "queue.copyDetails": "Copia i dettagli",
+  "queue.copied": "Dettagli copiati",
+
+  "job.stage.preparing": "Preparazione",
+
+  "job.stage.downloading": "Download",
+
+  "job.stage.postProcessing": "Elaborazione",
+
+  "job.stage.done": "Fatto",
+
+  "job.stage.failed": "Fallito",
+
+  "job.stage.cancelled": "Annullato",
+
+  "job.label.preparing": "Preparazione…",
+
+  "job.label.video": "Video {index}/{total}",
+
+  "job.label.audio": "Audio {index}/{total}",
+
+  "job.label.merging": "Unione in corso…",
+
+  "job.label.moving": "Ultimi ritocchi…",
+
+  "job.label.extractingAudio": "Conversione in audio…",
+
+  "job.label.embedding": "Incorporazione…",
+
+  "job.label.postProcessing": "Elaborazione…",
+
+  "job.deno.title": "Serve Deno per l'estrazione da YouTube",
+
+  "job.deno.body": "QuickJS non ha risolto la challenge di YouTube. Deno è il ripiego automatico (spec §5.3): installalo una volta e i download continuano a funzionare.",
+
+  "job.deno.install": "Installa Deno",
+
+  "job.deno.dismiss": "Non ora",
 
   "footer.idle": "In attesa",
   "footer.placeholder": "Nessun processo in esecuzione",
@@ -33,9 +97,24 @@
   "settings.section.downloads": "Download",
   "settings.section.tools": "Strumenti",
   "settings.language.resolved": "In uso: {lang}",
-  "settings.downloads.comingSoon": "Le impostazioni dei download arrivano con la fase M1/M2.",
+  "settings.downloads.comingSoon": "Le impostazioni dei download arrivano con la coda (M2).",
   "settings.tab.general": "Generali",
   "settings.tab.tools": "Strumenti",
+  "settings.tab.network": "Rete e account",
+  "settings.section.network": "Rete e account",
+  "settings.jsRuntime": "Runtime JavaScript (YouTube)",
+  "settings.jsRuntime.auto": "Automatico (QuickJS, poi Deno)",
+  "settings.jsRuntime.quickjs": "Solo QuickJS",
+  "settings.jsRuntime.deno": "Solo Deno",
+  "settings.jsRuntime.hint": "QuickJS è incluso nell'app. Deno viene scaricato solo se QuickJS fallisce e tu lo consenti; la scelta viene ricordata per 24 ore o finché yt-dlp non cambia.",
+  "settings.cookies.browser": "Cookie da un browser",
+  "settings.cookies.none": "Nessuno",
+  "settings.cookies.hint": "Alcuni video richiedono la tua sessione (età, privati, solo abbonati). Leggere il database del browser può fallire mentre il browser è aperto: in quel caso chiudilo, o usa un file di cookie.",
+  "settings.cookies.file": "File di cookie (formato Netscape)",
+  "settings.cookies.file.choose": "Scegli file…",
+  "settings.cookies.file.clear": "Rimuovi",
+  "settings.cookies.file.none": "Nessun file scelto",
+  "settings.accounts.comingSoon": "Proxy, intestazioni personalizzate e impersonificazione arrivano con M3.",
 
   "tools.title": "Strumenti esterni",
   "tools.refresh": "Ricontrolla",
@@ -47,28 +126,44 @@
   "tools.column.actions": "Azioni",
   "tools.badge.bundled": "Incluso",
   "tools.version.unknown": "sconosciuta",
+
   "tools.action.update": "Aggiorna",
+
   "tools.action.test": "Prova",
+
   "tools.action.ownPath": "Usa il mio percorso",
+
   "tools.action.clearPath": "Torna alla ricerca automatica",
+
   "tools.action.unavailable": "Non disponibile su questo sistema",
   "tools.choosePath.title": "Scegli il percorso di {tool}",
 
   "tools.state.ok": "Pronto",
+
   "tools.state.notInstalled": "Non trovato",
+
   "tools.state.belowMinVersion": "Troppo vecchio",
+
   "tools.state.notAvailable": "Non disponibile su questo sistema",
 
   "tools.source.override": "Il tuo percorso",
+
   "tools.source.appData": "Nella cartella dati dell'app",
+
   "tools.source.bundled": "Incluso nell'installer",
+
   "tools.source.path": "Nel PATH di sistema",
+
   "tools.source.wellKnown": "Installato nel sistema",
 
   "tools.channel.title": "Aggiornamenti di yt-dlp",
+
   "tools.channel.label": "Canale",
+
   "tools.channel.stable": "Stabile",
+
   "tools.channel.nightly": "Nightly",
+
   "tools.channel.hint": "L'aggiornamento riguarda solo la copia nella cartella dati dell'app, mai quella inclusa nell'installer.",
   "tools.paths.title": "Cartelle",
   "tools.paths.target": "Piattaforma",
@@ -77,13 +172,32 @@
   "tools.paths.temp": "Cartella temporanea privata",
   "tools.paths.temp.unavailable": "Non disponibile",
   "tools.paths.hint": "Nessun segreto viene scritto qui dentro. Serve per la diagnosi.",
+
   "tools.wizard.title": "Configurazione iniziale",
+
   "tools.wizard.hint": "Riapre i passaggi iniziali: sono tutti opzionali.",
+
   "tools.wizard.open": "Riapri la procedura",
 
+  "tools.action.install": "Installa",
+
+  "tools.action.installing": "Installazione… {percent}%",
+
+  "tools.action.installingUnknown": "Installazione…",
+  "tools.selfTest.title": "Estrazione da YouTube",
+  "tools.selfTest.hint": "Esegue un video pubblico noto attraverso l'ispezione e dice quale runtime JavaScript ha risposto e quanto ci ha messo (spec §5.3.6).",
+  "tools.selfTest.button": "Prova l'estrazione da YouTube",
+  "tools.selfTest.running": "In esecuzione…",
+  "tools.selfTest.ok": "Funziona con {runtime}: {seconds} s, {formats} formati.",
+  "tools.selfTest.failed": "Fallito: {message}",
+  "tools.selfTest.never": "Mai eseguito.",
+
   "tools.update.done": "yt-dlp aggiornato alla versione {version}.",
+
   "tools.update.upToDate": "yt-dlp è già alla versione {version}.",
+
   "tools.update.notChanged": "yt-dlp non è cambiato.",
+
   "tools.update.broken": "yt-dlp è stato aggiornato ma non risponde più: ripristina la copia dall'installer.",
 
   "wizard.title": "Configurazione iniziale",
@@ -98,14 +212,18 @@
   "wizard.tools.deno": "Deno non viene installato ora: serve solo se l'interprete JavaScript non bastasse.",
   "wizard.transcription.body": "La trascrizione offline arriva più avanti, con Whisper. Questo passaggio si può saltare.",
   "wizard.output.body": "I download finiscono nella cartella Download del sistema, se esiste.",
-  "wizard.output.comingSoon": "La scelta della cartella per singolo download arriva con la coda.",
+  "wizard.output.comingSoon": "La coda arriva con M2; questa schermata temporanea ha già la scelta della cartella.",
 
   "plural.running": "{count} in esecuzione",
+
   "plural.running.one": "{count} in esecuzione",
+
   "plural.queued": "{count} in coda",
+
   "plural.queued.one": "{count} in coda",
 
   "toast.settingsRecovered": "Il file delle impostazioni era illeggibile: è stato spostato in {path} e sono state usate le impostazioni predefinite.",
+
   "toast.dismiss": "Chiudi",
 
   "error.io": "Errore di I/O",
@@ -114,10 +232,42 @@
   "error.settingsCorrupt": "Impostazioni danneggiate",
   "error.unsupported": "Operazione non supportata",
   "error.process": "Errore di un programma esterno",
+  "error.cancelled": "Annullato",
+
+  "error.ytdlp.ffmpegMissing": "Manca ffmpeg: serve sia per unire video e audio, sia per la conversione in opus",
+
+  "error.ytdlp.ytChallenge": "YouTube ha rifiutato l'estrazione (challenge). Riprova, aggiorna yt-dlp, o usa i cookie",
+
+  "error.ytdlp.auth": "Questo video richiede la tua sessione: imposta i cookie dal browser o da un file",
+
+  "error.ytdlp.unavailable": "Il video non è disponibile (rimosso, privato o bloccato)",
+
+  "error.ytdlp.geo": "Non disponibile nel tuo Paese: un proxy può aiutare",
+
+  "error.ytdlp.format": "Quel formato non è disponibile: scegli un'altra qualità",
+
+  "error.ytdlp.unsupported": "Questo link non ha contenuti scaricabili. Aggiornare yt-dlp può aiutare",
+
+  "error.ytdlp.drm": "I contenuti protetti da DRM non sono supportati",
+
+  "error.ytdlp.antibot": "Il sito ha bloccato la richiesta (anti-bot). Riprovare con l'impersonificazione del browser può aiutare (M3)",
+
+  "error.ytdlp.cookies": "Non è stato possibile leggere i cookie del browser: chiudilo, o usa un file di cookie",
+
+  "error.ytdlp.diskFull": "Spazio esaurito sul disco",
+
+  "error.ytdlp.network": "Problema di rete: controlla la connessione e riprova",
+
+  "error.ytdlp.extract": "yt-dlp non ha saputo leggere questa pagina: di solito si risolve aggiornandolo",
+
+  "error.ytdlp.denoMissing": "Deno, il ripiego JavaScript, non è installato",
+
+  "error.ytdlp.unknown": "Download non riuscito",
 
   "a11y.skipToContent": "Vai al contenuto",
   "a11y.sidebar": "Navigazione principale",
   "a11y.statusBar": "Stato dell'applicazione",
+
   "common.back": "Indietro",
   "common.close": "Chiudi"
 }

@@ -7,9 +7,13 @@
  * with the "not installed" state instead of an error banner.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  normaliseSelfTest,
   normaliseToolStatus,
   normaliseToolsView,
+  type SelfTestReport,
+  type ToolProgressEvent,
   type ToolStatus,
   type ToolsView,
   type UpdateOutcome,
@@ -33,11 +37,18 @@ export interface UpdateReport extends UpdateOutcome {
 class ToolsStore {
   view = $state<ToolsView>(EMPTY_VIEW);
   loading = $state(false);
-  /** `true` while an update or a path change is in flight. */
+  /** `true` while an update, an install or a path change is in flight. */
   busy = $state(false);
   lastUpdate = $state<UpdateReport | null>(null);
   errorKey = $state<string | null>(null);
   errorDetail = $state<string | null>(null);
+  /** Which tool an install is downloading right now, if any. */
+  installingTool = $state<string | null>(null);
+  /** 0–100 while the size is known; `null` otherwise. */
+  installPercent = $state<number | null>(null);
+  /** Last "Test YouTube extraction" run (spec §5.3.6). */
+  selfTest = $state<SelfTestReport | null>(null);
+  selfTestRunning = $state(false);
 
   /** Read every tool. Safe to call from `onMount` and from a Refresh button. */
   async refresh(): Promise<void> {
@@ -126,6 +137,62 @@ class ToolsStore {
       this.#fail(err);
     } finally {
       this.busy = false;
+    }
+  }
+
+  /**
+   * Install a tool on demand (spec §5.3.2).
+   *
+   * `tool:progress` is listened to for the duration of the call only: installs
+   * are rare, and a permanent listener would keep a reference to a closed view.
+   */
+  async install(tool: string): Promise<ToolStatus | null> {
+    this.busy = true;
+    this.installingTool = tool;
+    this.installPercent = null;
+    let unlisten: UnlistenFn | null = null;
+    try {
+      if (!isTauriRuntime()) return null;
+      unlisten = await listen<ToolProgressEvent>("tool:progress", (event) => {
+        const payload = event.payload;
+        if (payload.tool !== tool) return;
+        this.installPercent =
+          typeof payload.total === "number" && payload.total > 0
+            ? Math.min(100, Math.round((payload.received / payload.total) * 100))
+            : null;
+      });
+      const status = normaliseToolStatus(await invoke<ToolStatus>("tools_install", { tool }));
+      this.view = {
+        ...this.view,
+        tools: this.view.tools.map((row) => (row.name === status.name ? status : row)),
+      };
+      this.clearError();
+      return status;
+    } catch (err) {
+      this.#fail(err);
+      return null;
+    } finally {
+      if (unlisten) unlisten();
+      this.installingTool = null;
+      this.installPercent = null;
+      this.busy = false;
+    }
+  }
+
+  /** "Test YouTube extraction" (spec §5.3.6). */
+  async runSelfTest(): Promise<SelfTestReport | null> {
+    this.selfTestRunning = true;
+    try {
+      if (!isTauriRuntime()) return null;
+      const report = normaliseSelfTest(await invoke("tools_self_test"));
+      this.selfTest = report;
+      this.clearError();
+      return report;
+    } catch (err) {
+      this.#fail(err);
+      return null;
+    } finally {
+      this.selfTestRunning = false;
     }
   }
 

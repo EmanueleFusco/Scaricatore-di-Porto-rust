@@ -241,6 +241,26 @@ describe("readyToolCount() and wizardToolNames()", () => {
   });
 });
 
+describe("optional tools never look like a problem", () => {
+  it("a missing Deno is not a problem; a missing ffmpeg is", () => {
+    const deno = tool({ name: "deno", bundled: false, source: null, path: null, version: null });
+    const ffmpeg = tool({ name: "ffmpeg", bundled: false, source: null, path: null, version: null });
+    expect(toolState(deno)).toEqual({
+      state: "notInstalled",
+      key: "tools.state.notInstalled",
+      problem: false,
+    });
+    expect(toolState(ffmpeg).problem).toBe(true);
+    expect(hasToolProblem([deno])).toBe(false);
+    expect(hasToolProblem([deno, ffmpeg])).toBe(true);
+  });
+
+  it("an installed Deno is simply ok", () => {
+    const deno = tool({ name: "deno", source: "appData", path: "/data/tools/deno/deno" });
+    expect(toolState(deno).state).toBe("ok");
+  });
+});
+
 describe("the dictionaries", () => {
   it("still carry the same keys in both languages", () => {
     expect(keysOf("it")).toEqual(keysOf("en"));

@@ -141,13 +141,19 @@ pub enum PlaylistKind {
 }
 
 /// The M1 stub: classification and count, no entries (M3).
+///
+/// The data field is `playlist_kind`, not `kind`: `Inspected` is serialised as
+/// an internally tagged enum whose tag **is** `kind`, and a second field with
+/// the same name would produce a duplicate JSON key — one that serde writes
+/// happily and every reader resolves differently. Found by the TypeScript
+/// compiler on the frontend side of the boundary.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistStub {
     pub id: String,
     pub title: String,
     pub site: String,
-    pub kind: PlaylistKind,
+    pub playlist_kind: PlaylistKind,
     pub count: Option<u32>,
     /// True when the enumeration hit `-I :1000` and more entries exist
     /// (always false in M1, where no cap is applied yet).
@@ -271,7 +277,7 @@ fn classify_info(info: RawInfo) -> Inspected {
             .playlist_count
             .or_else(|| info.entries.as_ref().map(|e| e.len() as u32));
         return Inspected::Playlist(PlaylistStub {
-            kind: playlist_kind(&site, &id, &url),
+            playlist_kind: playlist_kind(&site, &id, &url),
             id,
             title: info.title.unwrap_or_default(),
             site,
@@ -939,10 +945,31 @@ mod tests {
         let Inspected::Playlist(playlist) = parse_inspect_json(raw) else {
             panic!("expected a playlist");
         };
-        assert_eq!(playlist.kind, PlaylistKind::Playlist);
+        assert_eq!(playlist.playlist_kind, PlaylistKind::Playlist);
         assert_eq!(playlist.count, Some(42));
         assert_eq!(playlist.title, "A playlist");
         assert!(!playlist.truncated);
+    }
+
+    #[test]
+    fn the_playlist_stub_serialises_without_duplicate_keys() {
+        // `Inspected` is internally tagged with `kind`; the stub's own field is
+        // `playlistKind`. A field named `kind` would emit the key twice, and
+        // nothing on the Rust side would complain.
+        let playlist = Inspected::Playlist(PlaylistStub {
+            id: "PL1".into(),
+            title: "t".into(),
+            site: "Youtube".into(),
+            playlist_kind: PlaylistKind::Channel,
+            count: Some(3),
+            truncated: false,
+        });
+        let json = serde_json::to_string(&playlist).expect("serialise");
+        assert_eq!(json.matches("\"kind\"").count(), 1, "{json}");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["kind"], "playlist");
+        assert_eq!(value["playlistKind"], "channel");
+        assert_eq!(value["count"], 3);
     }
 
     #[test]

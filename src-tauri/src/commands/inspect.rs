@@ -68,6 +68,12 @@ pub async fn inspect_url(
     }
 }
 
+/// Cancel the running inspection; used when the URL box is cleared (spec §6.2).
+#[tauri::command]
+pub fn inspect_cancel(state: State<'_, AppState>) {
+    state.cancel_inspection();
+}
+
 fn refuse(detail: impl Into<String>) -> ErrorInfo {
     ErrorInfo::new(ErrorCode::Unsupported, detail)
 }

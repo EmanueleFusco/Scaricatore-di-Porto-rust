@@ -8,13 +8,15 @@
    * keep working (spec §11.9).
    */
   import GeneralSettings from "$lib/pages/settings/GeneralSettings.svelte";
+  import NetworkSettings from "$lib/pages/settings/NetworkSettings.svelte";
   import ToolsPage from "$lib/pages/ToolsPage.svelte";
   import { router } from "$lib/router.svelte";
   import { tt } from "$lib/stores/settings.svelte";
 
   const tabs = [
-    { href: "/settings", key: "settings.tab.general" },
-    { href: "/settings/tools", key: "settings.tab.tools" },
+    { href: "/settings", key: "settings.tab.general", exact: true },
+    { href: "/settings/tools", key: "settings.tab.tools", exact: false },
+    { href: "/settings/network", key: "settings.tab.network", exact: false },
   ];
 </script>
 
@@ -30,7 +32,9 @@
       <a
         class="settings__tab"
         href={tab.href}
-        aria-current={router.isActive(tab.href) ? "page" : undefined}
+        aria-current={(tab.exact ? router.path === tab.href : router.isActive(tab.href))
+          ? "page"
+          : undefined}
         onclick={(event) => router.follow(event, tab.href)}
       >
         {tt(tab.key)}
@@ -40,6 +44,8 @@
 
   {#if router.isActive("/settings/tools")}
     <ToolsPage />
+  {:else if router.isActive("/settings/network")}
+    <NetworkSettings />
   {:else}
     <GeneralSettings />
   {/if}

@@ -10,6 +10,9 @@ import type { ThemePreference } from "$lib/theme";
 /** Release channel for the yt-dlp updater (spec §5.5, §11.8). */
 export type YtdlpChannel = "stable" | "nightly";
 
+/** JavaScript runtime strategy (spec §5.3.3). */
+export type JsRuntimeMode = "auto" | "quickjs" | "deno";
+
 /** Mirror of the Rust `state::Settings` document (spec §2.6, §2.8). */
 export interface Settings {
   schemaVersion: number;
@@ -21,6 +24,14 @@ export interface Settings {
   ytdlpChannel: YtdlpChannel;
   /** Spec §11.1: the Setup wizard shows once and is re-openable from Tools. */
   setupWizardCompleted: boolean;
+  /** Spec §5.3.3: Auto (QuickJS→Deno) | QuickJS only | Deno only. */
+  jsRuntimeMode: JsRuntimeMode;
+  /** Spec §8.6: `--cookies-from-browser`, one of {@link BROWSER_COOKIE_NAMES}. */
+  cookiesFromBrowser: string | null;
+  /** Spec §6.3.3: a Netscape cookies file instead of the browser database. */
+  cookiesFile: string | null;
+  /** Spec §5.3.2: the Deno install offer was declined once. */
+  denoOfferDismissed: boolean;
 }
 
 /** Mirror of the Rust `state::Recovery` payload. */
@@ -46,18 +57,56 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
   toolPaths: {},
   ytdlpChannel: "stable",
   setupWizardCompleted: false,
+  jsRuntimeMode: "auto",
+  cookiesFromBrowser: null,
+  cookiesFile: null,
+  denoOfferDismissed: false,
 };
 
 const LANGUAGES: readonly LangPreference[] = ["system", "it", "en"];
 const THEMES: readonly ThemePreference[] = ["system", "dark", "light"];
 const CHANNELS: readonly YtdlpChannel[] = ["stable", "nightly"];
+const RUNTIME_MODES: readonly JsRuntimeMode[] = ["auto", "quickjs", "deno"];
+
+/**
+ * The browsers `--cookies-from-browser` knows (spec §8.6), in a stable order.
+ * Safari exists only on macOS and is filtered by {@link browserNamesForTriple}.
+ */
+export const BROWSER_COOKIE_NAMES = [
+  "chrome",
+  "edge",
+  "firefox",
+  "brave",
+  "opera",
+  "vivaldi",
+  "chromium",
+  "safari",
+] as const;
+
+/**
+ * Which browsers the dropdown may offer on this build.
+ *
+ * The triple comes from the backend (`tools_status`), which is the same source
+ * the Rust-side normalisation uses; an empty triple (plain-browser dev run)
+ * offers everything except Safari, because guessing "mac" from a user agent is
+ * exactly the unreliable-platform-detection the spec moves to the backend.
+ */
+export function browserNamesForTriple(triple: string): string[] {
+  return BROWSER_COOKIE_NAMES.filter(
+    (name) => name !== "safari" || triple.includes("apple-darwin"),
+  );
+}
+
+export function isJsRuntimeMode(value: unknown): value is JsRuntimeMode {
+  return RUNTIME_MODES.includes(value as JsRuntimeMode);
+}
 
 export function isLangPreference(value: unknown): value is LangPreference {
   return LANGUAGES.includes(value as LangPreference);
@@ -96,6 +145,14 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
     toolPaths: paths,
     ytdlpChannel: isYtdlpChannelValue(raw?.ytdlpChannel) ? raw.ytdlpChannel : "stable",
     setupWizardCompleted: raw?.setupWizardCompleted === true,
+    jsRuntimeMode: isJsRuntimeMode(raw?.jsRuntimeMode) ? raw.jsRuntimeMode : "auto",
+    cookiesFromBrowser:
+      typeof raw?.cookiesFromBrowser === "string" && raw.cookiesFromBrowser !== ""
+        ? raw.cookiesFromBrowser
+        : null,
+    cookiesFile:
+      typeof raw?.cookiesFile === "string" && raw.cookiesFile !== "" ? raw.cookiesFile : null,
+    denoOfferDismissed: raw?.denoOfferDismissed === true,
   };
 }
 
