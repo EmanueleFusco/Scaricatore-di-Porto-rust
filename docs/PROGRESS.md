@@ -1943,9 +1943,13 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     a avvio manuale** (D70). `npm run check:ci` e `check:runners` verdi su di
     esso.
 - **Verified by running**
-  - `cargo test`: **199** lib + 3 bundled_tools + 9 download + 6 m1_ipc +
-    16 process_tree + 6 settings_ipc + 13 tools + 15 ytdlp_job (3 `#[ignore]`,
-    vedi sotto); `cargo clippy -D warnings` e `cargo fmt --check` puliti.
+  - `cargo test`: **268** test verdi in totale (199 lib, 3 bundled_tools,
+    9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
+    15 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti.
+  - **IPC completo con il tool finto**: `inspect_url` e `download_start`
+    attraverso i comandi veri, con `ToolContext` che punta al fake — il job
+    scrive il file e lo stato torna a fermo. È in `m1_ipc.rs`.
   - `npm run check` 0 errori, `npm test` **152** verdi, `npm run build` ok.
   - **Reale, con i binari inclusi** (`cargo test --test real_selftest --
     --ignored --nocapture --test-threads=1`): self-test ok con **quickjs** in

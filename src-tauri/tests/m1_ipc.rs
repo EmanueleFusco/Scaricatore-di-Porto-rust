@@ -59,6 +59,57 @@ fn webview(app: &tauri::App<MockRuntime>) -> WebviewWindow<MockRuntime> {
         .expect("mock webview must build")
 }
 
+/// The `fake_ytdlp` example, copied under the names the lookup expects so the
+/// real `resolve` finds it: `yt-dlp-<triple>`, `qjs-<triple>`, `ffmpeg-<triple>`
+/// inside the context's bundled directory (a debug build looks for the triple
+/// suffix, D39).
+fn fake_tool_environment(root: &Path) -> scaricatore_di_porto_lib::state::ToolContext {
+    let profile_dir = std::env::current_exe()
+        .expect("test binary path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("<profile>/deps")
+        .to_path_buf();
+    let mut source = profile_dir.join("examples").join("fake_ytdlp");
+    if cfg!(windows) {
+        source.set_extension("exe");
+    }
+    assert!(
+        source.is_file(),
+        "run the suite as `cargo test`: {}",
+        source.display()
+    );
+
+    let triple =
+        scaricatore_di_porto_lib::services::manifest::current_target_triple().expect("triple");
+    let bundled = root.join("bundled");
+    std::fs::create_dir_all(&bundled).expect("bundled dir");
+    for tool in ["yt-dlp", "qjs", "ffmpeg"] {
+        let mut name = format!("{tool}-{triple}");
+        if cfg!(windows) {
+            name.push_str(".exe");
+        }
+        std::fs::copy(&source, bundled.join(name)).expect("copy the fake");
+    }
+    scaricatore_di_porto_lib::state::ToolContext::in_dir(root)
+}
+
+fn app_with_fakes_in(dir: &Path) -> tauri::App<MockRuntime> {
+    let tools = fake_tool_environment(dir);
+    let state =
+        AppState::from_path_with_tools(dir.join("settings.json"), tools).expect("state loads");
+    let app = mock_builder()
+        .invoke_handler(tauri::generate_handler![
+            scaricatore_di_porto_lib::commands::inspect::inspect_url,
+            scaricatore_di_porto_lib::commands::download::download_start,
+            scaricatore_di_porto_lib::commands::download::download_cancel,
+        ])
+        .build(mock_context(noop_assets()))
+        .expect("mock app must build");
+    app.manage(state);
+    app
+}
+
 fn call(
     webview: &WebviewWindow<MockRuntime>,
     cmd: &str,
@@ -197,4 +248,69 @@ fn dismissing_the_deno_offer_is_persisted() {
         serde_json::from_str(&std::fs::read_to_string(&path).expect("settings file"))
             .expect("parse");
     assert!(on_disk.deno_offer_dismissed);
+}
+
+#[test]
+fn inspect_and_download_work_through_the_real_commands_with_a_fake_tool() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_with_fakes_in(dir.path());
+    let window = webview(&app);
+
+    // 1. Inspect: the fake answers `-J` with its canned video document.
+    let view = call(
+        &window,
+        "inspect_url",
+        json!({ "requestId": 7, "url": "https://youtu.be/good" }),
+    )
+    .expect("inspect must succeed");
+    assert_eq!(view["requestId"], 7);
+    assert_eq!(view["inspected"]["kind"], "video");
+    assert_eq!(view["inspected"]["title"], "Fake title");
+    assert_eq!(view["inspected"]["heights"], json!([1080, 720, 360]));
+
+    // 2. Download: returns a job id immediately; the job then runs in the
+    // background and writes into the chosen folder.
+    let started = call(
+        &window,
+        "download_start",
+        json!({
+            "url": "https://youtu.be/good",
+            "quality": { "kind": "exact", "height": 720 },
+            "outputDir": out.display().to_string()
+        }),
+    )
+    .expect("download_start must succeed");
+    let job_id = started["jobId"].as_str().expect("job id").to_owned();
+    assert_eq!(started["outputDir"], out.display().to_string());
+
+    // 3. Wait for the job to finish. `job:done` is emitted to the webview the
+    // mock does not have event plumbing for, so the state is the source of
+    // truth here; the event payload itself is covered by `ytdlp_job.rs`.
+    let state = app.state::<AppState>();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while state.job_running() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the job did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let produced: Vec<_> = std::fs::read_dir(&out)
+        .expect("out dir")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        produced,
+        vec!["Fake title [fakeid].mkv".to_owned()],
+        "the file the fake reported via SDP_FILE must be in the folder"
+    );
+
+    // A cancelled/stale id is still just `false`.
+    let value =
+        call(&window, "download_cancel", json!({ "jobId": job_id })).expect("must not fail");
+    assert_eq!(value, json!(false));
 }
