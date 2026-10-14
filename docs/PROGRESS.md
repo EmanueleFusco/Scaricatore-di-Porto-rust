@@ -1950,15 +1950,23 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     stessi numeri già sotto il nome del video (seconda segnalazione dell'utente).
   - **Risoluzione degradata riconosciuta** (segnalato: "1440p scelto, 360p
     scaricato, una volta"). Nuova stampa `before_dl:SDP_FORMAT…` (misurata sul
-    binario vero) che dice il formato davvero scelto; se è più basso del
+    binario vero) che dice il formato davvero scelto; se è un muxed più basso del
     richiesto il file viene rimosso e si ritenta una volta con Deno, altrimenti
     il risultato porta `requestedHeight`/`actualHeight` e la UI lo dichiara.
     Dettagli e limiti in D71.
+  - **Ispezione ridotta riconosciuta e ritentata** (seconda segnalazione: "a
+    volte incollando il link ci sono solo 360p, riprovando ci sono tutte").
+    L'ispezione non passa più `--no-warnings` (deviazione deliberata da §6.2,
+    motivata in D73) perché yt-dlp annuncia lì la challenge fallita; un secondo
+    tentativo — Deno se disponibile, altrimenti lo stesso runtime — recupera la
+    lista completa, si tiene il risultato migliore, e se resta ridotta il
+    risultato lo dichiara (`degraded`) e la UI offre **Riprova**. Le risposte
+    degradate **non** entrano nella cache.
 - **Verified by running**
-  - `cargo test`: **275** test verdi in totale (204 lib, 3 bundled_tools,
+  - `cargo test`: **281** test verdi in totale (206 lib, 3 bundled_tools,
     9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
-    18 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
-    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **157**
+    21 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **158**
     test (`npm test`), `npm run check` a 0 errori.
   - **IPC completo con il tool finto**: `inspect_url` e `download_start`
     attraverso i comandi veri, con `ToolContext` che punta al fake — il job

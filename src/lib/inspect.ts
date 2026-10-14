@@ -36,6 +36,12 @@ export interface VideoInfo {
   heights: number[];
   hasVideo: boolean;
   hasAudio: boolean;
+  /**
+   * The backend's verdict: even after its retries the extraction still looked
+   * incomplete (yt-dlp's JS-challenge warning, or no usable height at all), so
+   * the list may be missing resolutions. The UI says so and offers a retry.
+   */
+  degraded: boolean;
 }
 
 export type PlaylistKind = "playlist" | "channel" | "mix" | "other";
@@ -113,6 +119,7 @@ export function normaliseInspected(raw: unknown): Inspected {
         : [],
       hasVideo: value.hasVideo === true,
       hasAudio: value.hasAudio === true,
+      degraded: value.degraded === true,
     };
   }
 
@@ -228,9 +235,12 @@ export class MetadataCache {
   }
 
   set(url: string, inspected: Inspected): void {
-    // Only complete video answers are worth remembering: an error or a
-    // playlist stub is cheap to fetch again and would go stale fastest.
-    if (inspected.kind !== "video") return;
+    // Only complete video answers are worth remembering: an error, a playlist
+    // stub, or a **degraded** video (the list may be missing resolutions — the
+    // backend already retried) is cheap to fetch again and would go stale
+    // fastest. Caching a degraded one would also mean that pasting the same
+    // link again shows the same short list with no way to get the real one.
+    if (inspected.kind !== "video" || inspected.degraded) return;
     this.#entries.delete(url);
     this.#entries.set(url, inspected);
     while (this.#entries.size > CACHE_LIMIT) {

@@ -1915,3 +1915,55 @@ errore il messaggio, e la voce degli strumenti con problemi porta a Strumenti
 stessi due numeri già sotto il nome del video, e ripeterli non aggiungeva
 niente. Il footer è un riassunto a colpo d'occhio, il dettaglio sta dove c'è la
 barra.
+
+### D73 — L'ispezione ridotta si riconosce dal warning di yt-dlp, e si ritenta
+
+Seconda segnalazione del proprietario, e più precisa della prima: **a volte,
+incollando il link, la lista delle risoluzioni contiene solo 360p**; pulendo e
+reincollando compaiono tutte. Il download non c'entra — è l'ispezione.
+
+**La causa, e la prova che era già scritta.** Quando la challenge JS non viene
+risolta, yt-dlp continua con quello che il player response ancora offre: i
+formati muxed, e su YouTube l'unico muxed è il **360p**. Non lo nasconde: lo
+dice, e il testo è nel suo sorgente al tag fissato
+(`yt_dlp/extractor/youtube/_video.py`):
+
+```
+WARNING: [youtube] n challenge solving failed: Some formats may be missing. …
+WARNING: [youtube] Signature solving failed: Some formats may be missing. …
+```
+
+Sono su **stderr**; il JSON è su **stdout**. Peccato che il comando di
+ispezione passasse `--no-warnings`, cioè **cancellava l'unica prova**. Da qui la
+deviazione, deliberata, da spec §6.2: l'ispezione **non** passa più
+`--no-warnings`. Il download continua a passarlo (lì il segnale è `SDP_FORMAT`,
+D71), e il parsing non cambia perché i warning non toccano stdout.
+
+**Cosa fa l'app adesso**, in quest'ordine:
+1. un tentativo con il runtime scelto;
+2. se il risultato è *degradato* — il warning qui sopra, o un video senza
+   nessuna altezza utile (la condizione che spec §5.3.2 già nomina), **un solo**
+   tentativo in più: con Deno se il ripiego è disponibile (e allora si ricorda
+   per 24 h), altrimenti **con lo stesso runtime**, perché una challenge fallita
+   è transitoria — è esattamente ciò che l'utente ha risolto ricopiando il link;
+3. si restituisce il **migliore** dei risultati visti (più altezze, poi la più
+   alta: `choose_next`, funzione pura con test); se è ancora degradato, il
+   risultato lo dice (`video.degraded = true`).
+
+**La lista parziale non si mette in cache.** Il frontend non memorizza un
+risultato degradato, quindi reincollare lo stesso link richiede davvero di
+nuovo, e accanto alla lista compare un avviso con **Riprova** (che salta il
+debounce e la cache). Prima, "Pulisci + reincolla" funzionava per caso: la cache
+veniva svuotata dal pulsante.
+
+*Nessuna delle prove è contro un caso reale, ed è giusto dirlo:* sulla macchina
+di sviluppo la degradazione **non** è riproducibile (6 run con e 6 senza la
+lista di client forzata: sempre 8 altezze, zero warning). Per questo la regola
+non tenta di *prevenire* la challenge — non ho prove su come farlo — ma di
+**accorgersene e riprovare**, che è ciò che mancava. Il segnale è quello che
+yt-dlp stampa; non un'euristica sulle altezze.
+
+**Il limite.** Se anche il secondo tentativo è degradato, l'app mostra la lista
+corta **con l'avviso** e il pulsante Riprova: non può inventare risoluzioni che
+in quella run non esistono. Un video che davvero ha solo il muxed 360p non
+produce il warning, quindi non viene ritentato inutilmente.

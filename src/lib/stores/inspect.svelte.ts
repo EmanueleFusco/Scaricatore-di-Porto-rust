@@ -95,6 +95,29 @@ class InspectStore {
     }
   }
 
+  /**
+   * Ask again **now**, without the debounce and without the cache.
+   *
+   * This is the "Riprova" button next to a degraded resolution list: the
+   * backend already retried once on its own, so a second try is a user
+   * decision, and it must not be answered from the cache.
+   */
+  retry(): void {
+    const url = this.url.trim();
+    if (url === "") return;
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.latestRequest += 1;
+    const requestId = this.latestRequest;
+    this.inspected = null;
+    this.loading = true;
+    this.errorKey = null;
+    this.errorDetail = null;
+    void this.#run(requestId, url);
+  }
+
   async #run(requestId: number, url: string): Promise<void> {
     this.loading = true;
     try {

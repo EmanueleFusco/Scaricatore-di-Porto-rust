@@ -215,6 +215,10 @@ async fn a_real_inspection_and_download_end_to_end() {
     );
     assert!(video.has_video, "this video has video formats");
     assert!(!video.heights.is_empty());
+    assert!(
+        !video.degraded,
+        "a healthy extraction must not be flagged as degraded"
+    );
 
     // 2. Download it at the smallest available height (the zoo is 144p).
     let request = JobRequest {

@@ -99,6 +99,29 @@ fn write_pid() {
     let _ = std::fs::write(path, std::process::id().to_string());
 }
 
+/// How many inspect/download invocations this copy has seen (the `--version`
+/// probe does not count). Used by the degraded-extraction scenarios, where the
+/// first call is intentionally worse than the second.
+fn invocation_count() -> u32 {
+    let path = own_dir().join("fake-ytdlp.calls");
+    let previous = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let next = previous + 1;
+    let _ = std::fs::write(path, next.to_string());
+    next
+}
+
+/// yt-dlp's own wording for a failed JS challenge, verbatim from its source at
+/// the pinned version. The app must recognise exactly this.
+fn challenge_warning() {
+    eprintln!(
+        "WARNING: [youtube] n challenge solving failed: Some formats may be missing. \
+         Ensure you have a supported JavaScript runtime installed"
+    );
+}
+
 fn inspect_url(url: &str, runtime: &str) -> i32 {
     if url.contains("auth-fail") {
         eprintln!(
@@ -110,6 +133,27 @@ fn inspect_url(url: &str, runtime: &str) -> i32 {
         // A challenge failure of the family the classifier maps to YT_CHALLENGE.
         eprintln!("ERROR: [youtube] x: Unable to solve the JS challenge (nsig)");
         return 1;
+    }
+    // The degraded extraction of the real report: the JS challenge fails, yt-dlp
+    // warns, and the only format left is the muxed 360p. "degraded-once" is
+    // fixed by the next call (any runtime); "degraded-always" never recovers.
+    if url.contains("degraded-once") {
+        if invocation_count() == 1 {
+            challenge_warning();
+            println!(
+                r#"{{"_type":"video","id":"deg","title":"degraded","extractor_key":"Youtube","formats":[{{"format_id":"18","ext":"mp4","height":360,"vcodec":"avc1","acodec":"mp4a"}},{{"format_id":"sb0","ext":"mhtml","vcodec":"none","acodec":"none","protocol":"mhtml"}}]}}"#
+            );
+            return 0;
+        }
+        print!("{VIDEO_JSON}");
+        return 0;
+    }
+    if url.contains("degraded-always") {
+        challenge_warning();
+        println!(
+            r#"{{"_type":"video","id":"deg","title":"degraded","extractor_key":"Youtube","formats":[{{"format_id":"18","ext":"mp4","height":360,"vcodec":"avc1","acodec":"mp4a"}}]}}"#
+        );
+        return 0;
     }
     if url.contains("noheights") || (url.contains("degraded") && runtime == "quickjs") {
         // Video formats exist but none has a height: the fallback condition of

@@ -204,6 +204,17 @@
         </label>
       </div>
 
+      {#if video.degraded}
+        <!-- The backend retried once already; a second try is the user's call,
+             and it must not come from the cache. -->
+        <p class="queue__warning" role="status">
+          {tt("queue.degraded.hint")}
+          <button type="button" class="btn" disabled={running} onclick={() => inspectStore.retry()}>
+            {tt("queue.retry")}
+          </button>
+        </p>
+      {/if}
+
       <div class="field">
         <span class="field__label">{tt("queue.folder.label")}</span>
         <div class="queue__folder">

@@ -126,8 +126,67 @@ pub struct VideoInfo {
     pub heights: Vec<u32>,
     pub has_video: bool,
     pub has_audio: bool,
+    /// Set by the runner, not by the parse: `true` when even after the retries
+    /// the extraction still looked incomplete (the JS challenge failed, or no
+    /// format declared a height). The UI then says so and offers a retry
+    /// instead of presenting a short resolution list as the whole truth.
+    pub degraded: bool,
 }
 
+/// Does this run say the extraction is incomplete because the JS challenge was
+/// not solved?
+///
+/// The two phrases are yt-dlp's own, per its source at the pinned version
+/// (`report_warning(f'n challenge solving failed: Some formats may be
+/// missing…')` and the `Signature solving failed` analogue). Matching on
+/// "solving failed" plus "may be missing" keeps an age-restriction warning
+/// ("some formats may be missing without account age-verification") out: that
+/// one needs cookies, not another attempt.
+pub fn is_challenge_degraded(stderr_tail: &[String]) -> bool {
+    stderr_tail.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("solving failed") && lower.contains("may be missing")
+    })
+}
+
+/// Does this video look like the resolution list is not the whole story?
+///
+/// Two signals, both specific:
+/// * the warning above (authoritative);
+/// * a video that declares video formats but no usable height at all — the
+///   condition spec §5.3.2 already names ("zero video formats with a height").
+///
+/// A muxed-only source without a warning is **not** flagged: plenty of sites
+/// legitimately publish one muxed file, and re-running would change nothing.
+pub fn looks_degraded(url: &str, video: &VideoInfo, degraded_warning: bool) -> bool {
+    if degraded_warning {
+        return true;
+    }
+    video.has_video && video.heights.is_empty() && jsruntime::is_youtube_url(url)
+}
+
+/// Should `next` replace `previous` as the inspection result?
+///
+/// Only for two videos: the longer resolution list wins, then the higher top
+/// height. A video is never replaced by a playlist or an error — the video is
+/// what the user is looking at. Pure, so the rule is testable.
+pub fn choose_next(previous: &Inspected, next: &Inspected) -> bool {
+    match (previous, next) {
+        (Inspected::Video(before), Inspected::Video(after)) => {
+            let before_best = (
+                before.heights.len(),
+                before.heights.first().copied().unwrap_or(0),
+            );
+            let after_best = (
+                after.heights.len(),
+                after.heights.first().copied().unwrap_or(0),
+            );
+            after_best > before_best
+        }
+        (Inspected::Video(_), _) => false,
+        _ => true,
+    }
+}
 /// What kind of playlist a URL is (spec §6.4). The distinction is made at
 /// inspection time because the UI wording differs ("playlist" vs "channel" vs
 /// the endless mix warning).
@@ -321,6 +380,9 @@ fn classify_info(info: RawInfo) -> Inspected {
             heights,
             has_video,
             has_audio,
+            // The parser cannot know: only the runner sees yt-dlp's warnings and
+            // knows whether a retry already happened.
+            degraded: false,
         }));
     }
 
@@ -498,13 +560,24 @@ pub struct InspectEnvironment {
 }
 
 /// The argv array of the inspect command (spec §6.2), URL last after `--`.
+///
+/// **Deviation from spec §6.2, deliberate:** this command does *not* pass
+/// `--no-warnings`. yt-dlp announces a degraded extraction only there —
+/// measured on the pinned binary and confirmed in its source
+/// (`yt_dlp/extractor/youtube/_video.py`): `Signature solving failed: Some
+/// formats may be missing` and `n challenge solving failed: Some formats may be
+/// missing`. Those two lines are the difference between "this video really has
+/// only 360p" and "the JS challenge failed, so the DASH streams are gone", and
+/// they are on **stderr** while the JSON is on **stdout**, so parsing is not
+/// affected. Downloads keep `--no-warnings`; there the detection uses
+/// `SDP_FORMAT` instead.
 pub fn inspect_args(
     url: &str,
     runtime: Option<(RuntimeKind, &Path)>,
     cookies: &CookieSource,
 ) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = Vec::new();
-    for flag in ["--ignore-config", "-J", "--flat-playlist", "--no-warnings"] {
+    for flag in ["--ignore-config", "-J", "--flat-playlist"] {
         args.push(flag.into());
     }
     if let Some((kind, path)) = runtime {
@@ -608,12 +681,21 @@ pub async fn self_test(env: &InspectEnvironment, token: CancellationToken) -> Se
     }
 }
 
-/// Inspect `url`, including the one-shot QuickJS→Deno fallback of spec §5.3.2.
+/// Inspect `url`, including the retries that keep the resolution list honest.
 ///
-/// Fallback triggers for an inspection: a classified `YT_CHALLENGE`, or a
-/// **successful** run that found video formats but no usable heights (the
-/// "zero video formats with a height" condition), which is what degraded
-/// extraction looks like from out here.
+/// The rule, in order:
+/// 1. one attempt with the chosen runtime;
+/// 2. if the result looks degraded — yt-dlp's own "solving failed: some formats
+///    may be missing" warning, or a video with no usable height (spec §5.3.2) —
+///    make **one** more attempt: with Deno when the fallback is available
+///    (spec §5.3.2/§5.3.3, remembered for 24 h), otherwise with the same
+///    runtime, because a failed challenge solve is transient (that is exactly
+///    what a user's "paste it again" fixes);
+/// 3. return the best of what was seen; if it is still degraded, the flag says
+///    so and the UI can offer a retry instead of pretending the list is
+///    complete.
+///
+/// A `YT_CHALLENGE` **error** also triggers the runtime fallback, as before.
 pub async fn inspect(
     env: &InspectEnvironment,
     url: &str,
@@ -622,7 +704,10 @@ pub async fn inspect(
     let now = jsruntime::now_unix();
     let mut runtime = env.runtimes.start(env.memory.get().as_ref(), now);
     let mut fell_back = false;
+    let mut extra_attempt_made = false;
     let mut elapsed_ms = 0_u64;
+    // The best result seen so far, with whether *that* attempt was degraded.
+    let mut best: Option<(Box<Inspected>, bool)> = None;
 
     loop {
         let started = std::time::Instant::now();
@@ -630,21 +715,44 @@ pub async fn inspect(
         elapsed_ms += u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match outcome {
             RunOutcome::Cancelled => return InspectOutcome::Cancelled,
-            RunOutcome::Inspected(inspected) => {
-                let degraded = matches!(
-                    &*inspected,
-                    Inspected::Video(video) if video.has_video && video.heights.is_empty()
-                );
-                if degraded && env.runtimes.may_fallback_to_deno(runtime, fell_back) {
-                    runtime = RuntimeKind::Deno;
-                    fell_back = true;
+            RunOutcome::Inspected {
+                inspected,
+                degraded_warning,
+            } => {
+                let degraded = match &*inspected {
+                    Inspected::Video(video) => looks_degraded(url, video, degraded_warning),
+                    _ => false,
+                };
+                let (chosen, chosen_degraded) = match best.take() {
+                    Some((previous, previous_degraded)) => {
+                        if choose_next(&previous, &inspected) {
+                            (inspected, degraded)
+                        } else {
+                            (previous, previous_degraded)
+                        }
+                    }
+                    None => (inspected, degraded),
+                };
+
+                if degraded && !extra_attempt_made {
+                    // One more attempt: Deno when the fallback is available
+                    // (spec §5.3.2/§5.3.3), otherwise the same runtime, because
+                    // a failed challenge solve is transient — that is exactly
+                    // what a user's "paste it again" fixes.
+                    extra_attempt_made = true;
+                    best = Some((chosen, chosen_degraded));
+                    if env.runtimes.may_fallback_to_deno(runtime, fell_back) {
+                        runtime = RuntimeKind::Deno;
+                        fell_back = true;
+                    }
                     continue;
                 }
+
                 if fell_back {
                     remember_deno(env, now);
                 }
                 return InspectOutcome::Inspected {
-                    inspected,
+                    inspected: mark_degraded(*chosen, chosen_degraded),
                     runtime,
                     elapsed_ms,
                 };
@@ -657,6 +765,18 @@ pub async fn inspect(
                     fell_back = true;
                     continue;
                 }
+                // An attempt that failed after a usable degraded one: keep the
+                // usable one rather than losing the whole inspection.
+                if let Some((best, best_degraded)) = best.take() {
+                    if fell_back {
+                        remember_deno(env, now);
+                    }
+                    return InspectOutcome::Inspected {
+                        inspected: mark_degraded(*best, best_degraded),
+                        runtime,
+                        elapsed_ms,
+                    };
+                }
                 return InspectOutcome::Inspected {
                     inspected: Box::new(Inspected::Error(error.to_error_info())),
                     runtime,
@@ -664,6 +784,17 @@ pub async fn inspect(
                 };
             }
         }
+    }
+}
+
+/// Set the flag on a video result (no-op for anything else).
+fn mark_degraded(inspected: Inspected, degraded: bool) -> Box<Inspected> {
+    match inspected {
+        Inspected::Video(mut video) => {
+            video.degraded = degraded;
+            Box::new(Inspected::Video(video))
+        }
+        other @ (Inspected::Playlist(_) | Inspected::Error(_)) => Box::new(other),
     }
 }
 
@@ -677,7 +808,12 @@ fn remember_deno(env: &InspectEnvironment, now: u64) {
 }
 
 enum RunOutcome {
-    Inspected(Box<Inspected>),
+    Inspected {
+        inspected: Box<Inspected>,
+        /// yt-dlp said the JS challenge failed (its "solving failed … some
+        /// formats may be missing" warning).
+        degraded_warning: bool,
+    },
     Failed(YtdlpError),
     Cancelled,
 }
@@ -756,7 +892,10 @@ async fn run_once(
         Ok(text) => text.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
-    RunOutcome::Inspected(Box::new(parse_inspect_json(&raw)))
+    RunOutcome::Inspected {
+        inspected: Box::new(parse_inspect_json(&raw)),
+        degraded_warning: is_challenge_degraded(&process_result.stderr_tail),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1165,77 @@ mod tests {
     }
 
     #[test]
+    fn only_the_challenge_warnings_count_as_a_degraded_extraction() {
+        // The two sentences yt-dlp prints in the pinned version.
+        assert!(is_challenge_degraded(&[
+            "WARNING: [youtube] n challenge solving failed: Some formats may be missing. Make sure you have a JavaScript runtime".to_owned()
+        ]));
+        assert!(is_challenge_degraded(&[
+            "WARNING: [youtube] Signature solving failed: Some formats may be missing.".to_owned()
+        ]));
+        // The age-restriction warning contains the same tail but is not this
+        // problem: it needs cookies, not another attempt.
+        assert!(!is_challenge_degraded(&[
+            "WARNING: [youtube] x: This video is age-restricted; some formats may be missing without account age-verification".to_owned()
+        ]));
+        assert!(!is_challenge_degraded(&[]));
+        assert!(!is_challenge_degraded(&[
+            "[download] Destination: x".to_owned()
+        ]));
+    }
+
+    #[test]
+    fn the_degraded_flag_needs_the_warning_or_a_video_without_heights() {
+        let mut video = match parse_inspect_json(YOUTUBE_4K) {
+            Inspected::Video(video) => video,
+            other => panic!("expected a video: {other:?}"),
+        };
+        // A healthy YouTube video with the full ladder.
+        assert!(!looks_degraded(
+            "https://www.youtube.com/watch?v=x",
+            &video,
+            false
+        ));
+        // The warning alone is enough, whatever the heights say.
+        assert!(looks_degraded(
+            "https://www.youtube.com/watch?v=x",
+            &video,
+            true
+        ));
+        // No heights at all on a YouTube URL: the spec §5.3.2 condition.
+        video.heights.clear();
+        assert!(looks_degraded(
+            "https://www.youtube.com/watch?v=x",
+            &video,
+            false
+        ));
+        // …but not on a generic site: a muxed-only source is a normal source.
+        assert!(!looks_degraded("https://vimeo.com/1", &video, false));
+    }
+
+    #[test]
+    fn the_better_result_wins_and_a_video_is_never_replaced_by_an_error() {
+        let full = parse_inspect_json(YOUTUBE_4K); // 5 heights
+        let degraded = parse_inspect_json(
+            r#"{"_type":"video","id":"x","title":"t","extractor_key":"Youtube",
+                 "formats":[{"format_id":"18","ext":"mp4","height":360,"vcodec":"avc1","acodec":"mp4a"}]}"#,
+        );
+        // The full list replaces the degraded one…
+        assert!(choose_next(&degraded, &full));
+        // …and never the other way round.
+        assert!(!choose_next(&full, &degraded));
+
+        let error = parse_inspect_json("null");
+        assert!(
+            !choose_next(&full, &error),
+            "an error never replaces a video"
+        );
+        assert!(choose_next(&error, &full), "a video replaces an error");
+        // Same shape: keep the first (no needless churn).
+        assert!(!choose_next(&full, &full));
+    }
+
+    #[test]
     fn the_timeout_follows_the_url_shape() {
         assert_eq!(
             inspect_timeout("https://www.youtube.com/watch?v=x"),
@@ -1057,9 +1267,17 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        for required in ["--ignore-config", "-J", "--flat-playlist", "--no-warnings"] {
+        for required in ["--ignore-config", "-J", "--flat-playlist"] {
             assert!(rendered.contains(&required.to_owned()), "{rendered:?}");
         }
+        // Deliberate deviation from spec §6.2: warnings stay ON, because the
+        // "solving failed: some formats may be missing" line is the only honest
+        // signal of a degraded extraction (they go to stderr, the JSON to
+        // stdout).
+        assert!(
+            !rendered.contains(&"--no-warnings".to_owned()),
+            "the inspection must keep warnings: {rendered:?}"
+        );
         let clear = rendered.iter().position(|a| a == "--no-js-runtimes");
         let enable = rendered.iter().position(|a| a == "--js-runtimes");
         assert!(clear < enable);

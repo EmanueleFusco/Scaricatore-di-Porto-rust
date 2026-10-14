@@ -30,6 +30,7 @@ function video(partial: Partial<VideoInfo> = {}): VideoInspected {
     heights: [1080, 720, 360],
     hasVideo: true,
     hasAudio: true,
+    degraded: false,
     ...partial,
   };
 }
@@ -155,6 +156,18 @@ describe("the URL metadata cache (spec §2.9)", () => {
     cache.clear();
     expect(cache.size).toBe(0);
     expect(cache.get("https://a")).toBeUndefined();
+  });
+
+  it("never caches a degraded list: the next paste must ask again", () => {
+    // Otherwise a degraded answer would stick for the whole session and
+    // re-pasting the link would show the same short list.
+    const cache = new MetadataCache();
+    cache.set("https://a", video({ degraded: true }));
+    expect(cache.get("https://a")).toBeUndefined();
+    expect(cache.size).toBe(0);
+
+    cache.set("https://a", video({ degraded: false }));
+    expect(cache.get("https://a")).toBeDefined();
   });
 
   it("summarise keeps the four fields the original cached", () => {

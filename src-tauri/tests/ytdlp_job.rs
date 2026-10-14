@@ -649,6 +649,104 @@ async fn an_inspection_parses_a_video_and_filters_storyboards() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_inspection_retries_itself_and_returns_the_full_list() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    // No Deno: the extra attempt has to use the same runtime, because a failed
+    // challenge solve is transient (it is what a re-paste fixes by hand).
+    let env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
+
+    let outcome = inspect::inspect(
+        &env,
+        "https://youtu.be/degraded-once",
+        CancellationToken::new(),
+    )
+    .await;
+    let inspected = inspected(outcome);
+    let Inspected::Video(video) = &*inspected else {
+        panic!("expected a video, got {inspected:?}");
+    };
+    assert_eq!(
+        video.heights,
+        vec![1080, 720, 360],
+        "the retry fixed the list"
+    );
+    assert!(!video.degraded, "and the UI is told the list is complete");
+    let log = fixture.log_lines();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(log[0].contains("runtime=quickjs"));
+    assert!(
+        log[1].contains("runtime=quickjs"),
+        "same runtime when no Deno"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_inspection_with_deno_switches_runtime() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = inspect_env(&fixture, JsRuntimeMode::Auto, true, &memory);
+
+    let outcome = inspect::inspect(
+        &env,
+        "https://youtu.be/degraded-once",
+        CancellationToken::new(),
+    )
+    .await;
+    let inspect::InspectOutcome::Inspected {
+        inspected, runtime, ..
+    } = outcome
+    else {
+        panic!("cancelled");
+    };
+    assert_eq!(
+        runtime,
+        RuntimeKind::Deno,
+        "the fallback did the second try"
+    );
+    let Inspected::Video(video) = &*inspected else {
+        panic!("expected a video");
+    };
+    assert_eq!(video.heights, vec![1080, 720, 360]);
+    assert!(!video.degraded);
+    let log = fixture.log_lines();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(log[0].contains("runtime=quickjs"));
+    assert!(log[1].contains("runtime=deno"));
+    assert_eq!(
+        memory.get().expect("remembered").preferred,
+        RuntimeKind::Deno
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_inspection_that_never_recovers_is_flagged() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
+
+    let outcome = inspect::inspect(
+        &env,
+        "https://youtu.be/degraded-always",
+        CancellationToken::new(),
+    )
+    .await;
+    let inspected = inspected(outcome);
+    let Inspected::Video(video) = &*inspected else {
+        panic!("expected a video, got {inspected:?}");
+    };
+    // The list is short, but it is *there*, and the flag says it may be
+    // incomplete instead of pretending it is the whole truth.
+    assert_eq!(video.heights, vec![360]);
+    assert!(video.degraded);
+    assert_eq!(
+        fixture.log_lines().len(),
+        2,
+        "one extra attempt, not a loop"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_playlist_url_returns_the_stub() {
     let fixture = fixture();
     let memory = fixture.memory();

@@ -36,6 +36,8 @@
   "queue.copyDetails": "Copy details",
   "queue.copied": "Details copied",
   "queue.warning.heightLower": "yt-dlp saved {actual}p although {requested}p was requested: the extraction was degraded in that run (some streams were missing), so its own fallback chose a muxed format. Try again, or install Deno in Settings → Tools.",
+  "queue.degraded.hint": "This list may be missing resolutions: the extraction was degraded in this run (the JavaScript challenge failed). Try again — or install Deno in Settings → Tools.",
+  "queue.retry": "Try again",
 
   "job.stage.preparing": "Preparing",
 

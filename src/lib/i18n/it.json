@@ -36,6 +36,8 @@
   "queue.copyDetails": "Copia i dettagli",
   "queue.copied": "Dettagli copiati",
   "queue.warning.heightLower": "yt-dlp ha salvato in {actual}p anche se ne avevi chiesti {requested}p: in quella esecuzione l'estrazione era ridotta (mancavano alcuni flussi) e il suo ripiego ha scelto un formato muxed. Riprova, o installa Deno in Impostazioni → Strumenti.",
+  "queue.degraded.hint": "Questa lista potrebbe non avere tutte le risoluzioni: in questa lettura l'estrazione era ridotta (la challenge JavaScript non è riuscita). Riprova — o installa Deno in Impostazioni → Strumenti.",
+  "queue.retry": "Riprova",
 
   "job.stage.preparing": "Preparazione",
 
