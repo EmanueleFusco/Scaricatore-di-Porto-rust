@@ -46,7 +46,7 @@ impl ErrorCode {
 }
 
 /// Wire format for every error returned to the frontend (spec §3).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorInfo {
     pub code: String,
