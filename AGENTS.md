@@ -2,6 +2,41 @@
 
 You are a coding agent working on a rewrite of **Scaricatore Di Porto** (a Python/CustomTkinter downloader + transcriber) as a light, cross-platform **Rust + Tauri v2 + Svelte (TypeScript)** desktop app for Windows, macOS and Linux. Read this file at the start of **every** session.
 
+## Language of the repository — read this first
+
+**Everything published to GitHub is written in English.** This is not a style
+preference: the repository, its history and its issues are read by people and
+tools that do not read Italian, and a mixed-language history is permanently
+ambiguous.
+
+In English, always:
+
+* **commit messages**, subject and body (see §5);
+* **branch and tag names**;
+* **code comments and doc comments** — Rust (`//`, `///`, `//!`), TypeScript,
+  Svelte, CSS;
+* **test names** (`#[test] fn …`, `describe("…")`), fixture contents and the
+  comments around them;
+* **CI**: workflow and job/step names, their comments, and every message a
+  script prints;
+* **`scripts/*.mjs`** comments and messages, `tools.manifest.json` notes and
+  `$comment` blocks;
+* **`README`, `AGENTS.md`, `docs/*`** and any PR or issue text.
+
+**Never translated**, because they are the product rather than the
+documentation:
+
+* user-visible strings, which live in the i18n dictionaries
+  (`src/lib/i18n/it.json`, `src/lib/i18n/en.json`) and in the `message_key`
+  names the backend sends;
+* output of the external tools.
+
+`docs/PROGRESS.md`, `docs/DECISIONS.md` and `docs/SPIKES.md` were written in
+Italian before this rule (2026-10-14). **New entries in them are English from
+now on**, and translating the historical part is one deliberate, separate task:
+it must not be mixed into a functional change, and it must not change a single
+fact while doing it.
+
 ## 1. Source of truth
 
 | File | Role | Rule |
@@ -56,7 +91,7 @@ npm run tauri build                 # bundle
 ## 5. Git
 
 * Branch per phase: `m0-skeleton`, `m1-single-video`, … Commit often.
-* Commit message: `<area>: <what> (spec §x.y)` — e.g. `process: kill process tree on Windows via Job Object (spec §4.2)`.
+* Commit message: `<area>: <what> (spec §x.y)` — e.g. `process: kill process tree on Windows via Job Object (spec §4.2)`. **In English**, like everything else on GitHub (see the language section at the top).
 * Never commit: downloaded tool binaries, models, API keys, `.env`, user data. `src-tauri/binaries/` and `target/` stay git-ignored.
 
 ## 6. Code rules
