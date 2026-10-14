@@ -1939,6 +1939,9 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     risoluzione, switch audio, cartella, progresso con velocità/ETA, errore con
     "Copia i dettagli", banner Deno), tab "Rete e account" (runtime JS, cookie),
     "Prova l'estrazione da YouTube" su Strumenti, i18n IT/EN completa.
+  - `.github/workflows/selftest.yml`: il self-test vero sui tre sistemi, **solo
+    a avvio manuale** (D70). `npm run check:ci` e `check:runners` verdi su di
+    esso.
 - **Verified by running**
   - `cargo test`: **199** lib + 3 bundled_tools + 9 download + 6 m1_ipc +
     16 process_tree + 6 settings_ipc + 13 tools + 15 ytdlp_job (3 `#[ignore]`,

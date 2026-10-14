@@ -1840,3 +1840,17 @@ agent (stessa fonte della normalizzazione Rust, che scarta un browser che su
 questo OS non esiste). Un triplo vuoto — `npm run dev` nel browser — offre tutto
 tranne Safari: indovinare "mac" da una UA è la classe di rilevamento inaffidabile
 che questa separazione evita.
+
+### D70 — Il self-test in CI esiste, ma non gira da solo
+
+Spec §5.3.6 dice di usarlo in CI sulle tre piattaforme, §13.5 lo mette in un
+"nightly job". `selftest.yml` lo fa, ma **solo su `workflow_dispatch`**: un run
+tocca YouTube e ffmpeg di sistema, sui tre sistemi costa ~45 minuti di quota
+(il repository è privato e i minuti sono limitati), e può fallire per cause che
+non sono nostre. La differenza fra "un pulsante che risponde la verità quando lo
+premi" e "una notifica notturna che si impara a ignorare" è tutta qui. Renderlo
+notturno è una decisione del proprietario: il file è pronto, la pianificazione
+no.
+
+I test veri sono anche `#[ignore]` in locale (D68): la suite normale non tocca
+mai la rete, e la CI a ogni push non paga niente per questo workflow.

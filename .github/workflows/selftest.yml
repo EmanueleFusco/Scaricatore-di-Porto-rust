@@ -1,0 +1,103 @@
+# "Test YouTube extraction" reale su Linux, Windows e macOS (spec §5.3.6,
+# §13.5d: "run the real tool self-test in a nightly job").
+#
+# SOLO AVVIO MANUALE, e il motivo e' la quota: questo repository e' privato e
+# ogni run tocca la rete, YouTube e ffmpeg di sistema. Un run sui tre sistemi
+# costa circa 45 minuti di quota (Linux 1x, Windows 2x, macOS 10x) e puo'
+# fallire per cause che non sono nostre (YouTube che cambia, un video rimosso).
+# Renderlo notturno e' una decisione del proprietario, non un default: qui si
+# avvia a mano quando si vuole la risposta vera.
+#
+# Cosa verifica, e perche' non basta la suite normale: il fake yt-dlp di
+# `tests/ytdlp_job.rs` prova la *nostra* logica; questo job prova che i flag,
+# il runtime QuickJS incluso e il merge con ffmpeg funzionano davvero, sui tre
+# sistemi, con il binario vero.
+#
+# I test sono `#[ignore]` anche localmente (AGENTS.md §6: nessun test della
+# suite normale dipende da YouTube vivo); qui si invocano esplicitamente.
+
+name: Self-test
+
+on:
+  workflow_dispatch:
+
+# Niente `cancel-in-progress`: un self-test in corso ha gia' pagato il suo
+# costo, e due run simultanee non si danno fastidio.
+concurrency:
+  group: selftest-${{ github.ref }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Come nel job `check`: questo job non impacchetta, e `tauri_build::build()`
+  # gira a ogni cargo (D48). I tool inclusi vengono comunque scaricati per il
+  # self-test, ma senza externalBin il compile non dipende da loro.
+  TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+
+jobs:
+  selftest:
+    name: self-test (${{ matrix.target }})
+    strategy:
+      # Un sistema che fallisce non deve nascondere gli altri due: il senso di
+      # girare su tre piattaforme e' sapere *quale* differisce.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+          - os: macos-26
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # ffmpeg di sistema: il download a 144p deve unire due stream e l'audio
+      # only deve produrre Opus (spec §5.2.1). Senza, il job fallisce con
+      # FFMPEG_MISSING — che e' a sua volta una risposta, ma non quella che si
+      # vuole misurare qui.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        # `choco` e' preinstallato sui runner Windows; --no-progress tiene il log
+        # leggibile e -y evita prompt che non esistono.
+        run: choco install ffmpeg -y --no-progress
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      # I tool inclusi: yt-dlp (dal release piu' recente) e qjs (pinnato). Il
+      # token serve solo al rate limit della API GitHub (D54) e non viene mai
+      # stampato.
+      - name: Fetch the bundled tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run fetch:tools
+
+      - name: Where the tools landed
+        run: ls -l src-tauri/binaries
+
+      - name: Real self-test and end-to-end download
+        working-directory: src-tauri
+        run: cargo test --test real_selftest -- --ignored --nocapture --test-threads=1
