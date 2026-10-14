@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   fileName,
   footerStateKey,
+  heightWarning,
   labelKey,
   normaliseDone,
   normaliseProgress,
@@ -118,5 +119,36 @@ describe("the status footer helpers (spec §11.2)", () => {
     expect(fileName("  /out/Title.mkv  ")).toBe("Title.mkv");
     expect(fileName("Title.mkv")).toBe("Title.mkv");
     expect(fileName("")).toBe("");
+  });
+});
+
+describe("the degraded-resolution warning", () => {
+  function done(partial: Partial<Parameters<typeof normaliseDone>[0]> = {}) {
+    return normaliseDone({
+      jobId: "job-1",
+      status: "done",
+      file: "/out/a.mkv",
+      requestedHeight: 1080,
+      actualHeight: 1080,
+      ...partial,
+    });
+  }
+
+  it("stays quiet when the height is the one that was asked for", () => {
+    expect(heightWarning(done())).toBeNull();
+  });
+
+  it("flags a lower result, which is what a degraded run looks like", () => {
+    expect(heightWarning(done({ actualHeight: 360 }))).toEqual({
+      requested: 1080,
+      actual: 360,
+    });
+  });
+
+  it("says nothing when a side is unknown or the job did not succeed", () => {
+    expect(heightWarning(done({ actualHeight: null }))).toBeNull();
+    expect(heightWarning(done({ requestedHeight: null }))).toBeNull();
+    expect(heightWarning(done({ status: "failed" }))).toBeNull();
+    expect(heightWarning(null)).toBeNull();
   });
 });

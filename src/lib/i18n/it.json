@@ -35,6 +35,7 @@
   "queue.playlist.countUnknown": "Questo link è una playlist. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
   "queue.copyDetails": "Copia i dettagli",
   "queue.copied": "Dettagli copiati",
+  "queue.warning.heightLower": "yt-dlp ha salvato in {actual}p anche se ne avevi chiesti {requested}p: in quella esecuzione l'estrazione era ridotta (mancavano alcuni flussi) e il suo ripiego ha scelto un formato muxed. Riprova, o installa Deno in Impostazioni → Strumenti.",
 
   "job.stage.preparing": "Preparazione",
 
@@ -75,7 +76,6 @@
   "footer.idle": "In attesa",
   "footer.placeholder": "Nessun processo in esecuzione",
   "footer.toolsPending": "Strumenti da controllare",
-  "footer.speed": "{value} Mbit/s",
   "footer.percent": "{value}%",
 
   "settings.title": "Impostazioni",

@@ -317,6 +317,80 @@ async fn cancelling_a_job_kills_the_tree_and_removes_nothing_else() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_download_retries_with_deno_instead_of_silently_keeping_360p() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, true, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    // The fake mimics a degraded extraction: QuickJS "selects" 360p, Deno the
+    // 1080p the user asked for.
+    let outcome = job::run_job(
+        &env,
+        &fixture.request("https://youtu.be/degraded-download"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+
+    let JobOutcome::Done {
+        runtime,
+        requested_height,
+        actual_height,
+        ..
+    } = outcome
+    else {
+        panic!("expected success, got {outcome:?}");
+    };
+    assert_eq!(
+        runtime,
+        RuntimeKind::Deno,
+        "the runtime used is the second one"
+    );
+    assert_eq!(requested_height, Some(1080));
+    assert_eq!(actual_height, Some(1080), "not the degraded 360p");
+    let log = fixture.log_lines();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(log[0].contains("runtime=quickjs"));
+    assert!(log[1].contains("runtime=deno"));
+    assert_eq!(
+        memory.get().expect("remembered").preferred,
+        RuntimeKind::Deno
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_degraded_download_without_deno_reports_what_it_got() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    // No Deno: the fallback cannot run, so the job must still finish — and say
+    // which height it really produced, instead of pretending it was 1080p.
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let outcome = job::run_job(
+        &env,
+        &fixture.request("https://youtu.be/degraded-download"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+
+    let JobOutcome::Done {
+        requested_height,
+        actual_height,
+        ..
+    } = outcome
+    else {
+        panic!("expected success, got {outcome:?}");
+    };
+    assert_eq!(requested_height, Some(1080));
+    assert_eq!(actual_height, Some(360));
+    assert_eq!(fixture.log_lines().len(), 1);
+    assert!(memory.get().is_none(), "nothing to remember");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_format_failure_retries_once_without_the_selector() {
     let fixture = fixture();
     let memory = fixture.memory();

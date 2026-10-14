@@ -168,7 +168,25 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
         sleep_forever();
     }
 
+    // A degraded extraction: the separate streams are missing, so yt-dlp's own
+    // fallback chain lands on the muxed 360p format. QuickJS "has" it, Deno
+    // does not — which is exactly the symptom the runner must notice.
+    if url.contains("degraded-download") {
+        let height = if runtime == "deno" { 1080 } else { 360 };
+        let vcodec = if runtime == "deno" { "vp9" } else { "avc1" };
+        println!("SDP_FORMAT|137+140|{height}|{vcodec}|mp4a.40.2");
+        emit_download_line("downloading", 2048, 4096, vcodec);
+        emit_download_line("finished", 4096, 4096, vcodec);
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join("Fake title [fakeid].mkv");
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
+
     // A normal two-stream download with a merge.
+    println!("SDP_FORMAT|137+140|1080|avc1|mp4a.40.2");
     emit_download_line("downloading", 2048, 4096, "vp9");
     emit_download_line("finished", 4096, 4096, "vp9");
     emit_download_line("downloading", 1024, 2048, "none");
@@ -182,6 +200,9 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
     let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&home);
     let opus = args.iter().any(|arg| arg == "-x");
+    if opus {
+        println!("SDP_FORMAT|251|NA|none|opus");
+    }
     let name = if opus {
         "Fake song [fakeid].opus"
     } else {

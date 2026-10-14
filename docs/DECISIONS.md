@@ -1854,3 +1854,59 @@ no.
 
 I test veri sono anche `#[ignore]` in locale (D68): la suite normale non tocca
 mai la rete, e la CI a ogni push non paga niente per questo workflow.
+
+### D71 — "1440p scelto, 360p scaricato": rilevato con `SDP_FORMAT`, e non più silenzioso
+
+Segnalato dal proprietario: su un video aveva scelto 1440p e il file era 360p;
+riprovando due volte è venuto 1440p come previsto. Non era casuale, ed è la
+conseguenza di due cose che si sommano:
+
+1. il selettore di spec §8.2 finisce con un ripiego muxed:
+   `bv[height=N]+ba/bv[height<=N]+ba/b[height<=N]/b`. Se in *quella* esecuzione
+   l'estrazione è ridotta (flussi separati assenti — il sintomo di
+   §5.3.2), `bv…` non trova nulla e vince `b[height<=N]`, che su YouTube è il
+   muxed **360p**;
+2. yt-dlp in quel caso **esce 0**: nessun errore, nessuna riga da classificare,
+   quindi né il fallback né l'avviso si attivavano. Il risultato era "riuscito"
+   e sbagliato.
+
+La correzione usa una stampa in più, misurata sul binario fissato:
+
+```
+--print "before_dl:SDP_FORMAT|%(format_id)s|%(height)s|%(vcodec)s|%(acodec)s"
+SDP_FORMAT|278+251|144|vp9|opus     ← un video con merge
+SDP_FORMAT|251|NA|none|opus         ← audio only
+```
+
+Una riga per job con il formato **davvero scelto**. Quando l'altezza riportata è
+inferiore a quella richiesta (e la scelta ne chiedeva una: `Exact`/`MaxHeight`),
+il job è *degradato*: il file sbagliato viene rimosso e si ritenta una volta con
+Deno (stesso fallback una-tantum di §5.3.2, stessa memoria 24 h). Se Deno non
+c'è, il job finisce **con i due numeri nel payload** (`requestedHeight`,
+`actualHeight`) e la UI lo dice: "ha salvato 360p anche se ne avevi chiesti
+1440p". Niente più sorprese silenziose.
+
+Due limiti dichiarati:
+* un'altezza inferiore **può essere legittima** (il video non ha quella
+  risoluzione). Per questo non è un errore ma un ritentativo una volta; se anche
+  il secondo tentativo è più basso, il risultato è comunque `done` con i numeri
+  in chiaro.
+* la regola non guarda l'audio only (`height = NA`) né `Best` (nessuna altezza
+  richiesta).
+
+### D72 — Il footer di stato dice la verità, e non ripete la pagina
+
+`FooterStatus.svelte` era il segnaposto di M0: stringhe fisse, mai collegate.
+Andava bene finché non c'era niente da contare, ma durante un download
+affermava "Nessun processo in esecuzione" mentre la pagina mostrava "Video 1/2 ·
+73 Mbit/s": non un segnaposto, una bugia. Segnalato dal proprietario.
+
+Ora legge il job: stadio, flusso, percentuale; a fine job il nome del file, in
+errore il messaggio, e la voce degli strumenti con problemi porta a Strumenti
+(anche `footer.toolsPending` era definito e mai usato). I contatori
+`N in esecuzione · M in coda` di §7.5 restano a M2.
+
+**Velocità ed ETA non sono più nel footer** (seconda segnalazione): erano gli
+stessi due numeri già sotto il nome del video, e ripeterli non aggiungeva
+niente. Il footer è un riassunto a colpo d'occhio, il dettaglio sta dove c'è la
+barra.

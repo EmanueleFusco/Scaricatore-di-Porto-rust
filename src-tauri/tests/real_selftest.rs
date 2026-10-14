@@ -236,10 +236,15 @@ async fn a_real_inspection_and_download_end_to_end() {
         file,
         runtime,
         elapsed_ms,
+        requested_height,
+        actual_height,
     } = outcome
     else {
         panic!("download failed: {outcome:?}");
     };
+    // The whole point of the 144p request: this really is the height produced.
+    assert_eq!(requested_height, Some(144));
+    assert_eq!(actual_height, Some(144), "the selected format must be 144p");
     eprintln!(
         "download: {} | runtime {} | {} ms",
         file.display(),

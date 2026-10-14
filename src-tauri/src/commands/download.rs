@@ -95,6 +95,10 @@ pub struct JobDoneEvent {
     /// `quickjs` | `deno` — spec §15 item 3: the UI shows the runtime used.
     pub runtime: Option<String>,
     pub elapsed_ms: Option<u64>,
+    /// What the user asked for and what yt-dlp reported selecting
+    /// (`SDP_FORMAT`); the UI warns when the second is lower than the first.
+    pub requested_height: Option<u32>,
+    pub actual_height: Option<u32>,
     pub error: Option<ErrorInfo>,
 }
 
@@ -193,12 +197,16 @@ pub async fn download_start<R: tauri::Runtime>(
                 file,
                 runtime,
                 elapsed_ms,
+                requested_height,
+                actual_height,
             } => JobDoneEvent {
                 job_id: started_id.clone(),
                 status: "done",
                 file: Some(file.display().to_string()),
                 runtime: Some(runtime.as_str().to_owned()),
                 elapsed_ms: Some(elapsed_ms),
+                requested_height,
+                actual_height,
                 error: None,
             },
             JobOutcome::Failed(error) => JobDoneEvent {
@@ -207,6 +215,8 @@ pub async fn download_start<R: tauri::Runtime>(
                 file: None,
                 runtime: None,
                 elapsed_ms: None,
+                requested_height: None,
+                actual_height: None,
                 error: Some(error.to_error_info()),
             },
             JobOutcome::Cancelled => JobDoneEvent {
@@ -215,6 +225,8 @@ pub async fn download_start<R: tauri::Runtime>(
                 file: None,
                 runtime: None,
                 elapsed_ms: None,
+                requested_height: None,
+                actual_height: None,
                 error: None,
             },
         };

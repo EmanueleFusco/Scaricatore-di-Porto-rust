@@ -47,10 +47,23 @@ pub const POSTPROCESS_PROGRESS_ARG: &str =
 /// guessed from the title (spec §8.3, §12.4).
 pub const PRINT_FILE_ARG: &str = "after_move:SDP_FILE|%(filepath)s";
 
-/// Machine prefixes of the three template outputs.
+/// Prints the format yt-dlp **actually selected**, before downloading.
+///
+/// Why it exists: `-f "bv[height=1440]+ba/bv[height<=1440]+ba/b[height<=1440]/b"`
+/// has a muxed fallback, so a degraded extraction (no separate video/audio
+/// formats in that run) does not fail — it quietly picks `b[height<=1440]`,
+/// which on YouTube is the 360p muxed format. Measured on the pinned yt-dlp:
+/// one line per job, with the *combined* id (`278+251`, height 144) and `NA`
+/// for the audio-only path. Comparing this height with what was asked for is
+/// what turns a silent surprise into something the app can react to.
+pub const PRINT_FORMAT_ARG: &str =
+    "before_dl:SDP_FORMAT|%(format_id)s|%(height)s|%(vcodec)s|%(acodec)s";
+
+/// Machine prefixes of the four template outputs.
 pub const DOWNLOAD_PREFIX: &str = "SDP_DL|";
 pub const POSTPROCESS_PREFIX: &str = "SDP_PP|";
 pub const FILE_PREFIX: &str = "SDP_FILE|";
+pub const FORMAT_PREFIX: &str = "SDP_FORMAT|";
 
 /// Default file name template (spec §6.3.8: the id is always included because
 /// titles elsewhere are often empty or duplicated; the original's ASCII-only
@@ -347,6 +360,8 @@ pub fn download_args(
     args.push("--progress-template".into());
     args.push(POSTPROCESS_PROGRESS_ARG.into());
     args.push("--print".into());
+    args.push(PRINT_FORMAT_ARG.into());
+    args.push("--print".into());
     args.push(PRINT_FILE_ARG.into());
 
     if spec.quality.extracts_audio() {
@@ -464,6 +479,63 @@ pub fn parse_file_line(line: &str) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(path))
+}
+
+/// The format yt-dlp says it selected, from `SDP_FORMAT` (`before_dl`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatLine {
+    /// `278+251` for a merge, `18` for a muxed format, `251` for audio.
+    pub format_id: String,
+    /// `None` for the audio-only path (`NA`).
+    pub height: Option<u32>,
+    pub vcodec: Option<String>,
+    pub acodec: Option<String>,
+}
+
+impl FormatLine {
+    pub fn has_video(&self) -> bool {
+        self.vcodec.as_deref().is_some_and(|codec| codec != "none")
+    }
+}
+
+pub fn parse_format_line(line: &str) -> Option<FormatLine> {
+    let rest = line.strip_prefix(FORMAT_PREFIX)?;
+    let fields: Vec<&str> = rest.split('|').collect();
+    if fields.len() != 4 {
+        return None;
+    }
+    let text = |value: &str| match value.trim() {
+        "" | "NA" => None,
+        other => Some(other.to_owned()),
+    };
+    Some(FormatLine {
+        format_id: fields[0].trim().to_owned(),
+        height: number(fields[1]).and_then(|value| u32::try_from(value).ok()),
+        vcodec: text(fields[2]),
+        acodec: text(fields[3]),
+    })
+}
+
+/// The height the user's choice asked for, when it asked for one.
+pub fn requested_height(choice: &FormatChoice) -> Option<u32> {
+    match choice {
+        FormatChoice::Exact { height } | FormatChoice::MaxHeight { height } => Some(*height),
+        FormatChoice::Best | FormatChoice::AudioOnly | FormatChoice::Explicit { .. } => None,
+    }
+}
+
+/// Did the run deliver a lower resolution than the choice asked for?
+///
+/// Only when both sides are known: `MaxHeight`/`Exact` deliberately fall back to
+/// a lower height in yt-dlp's own selector, so the answer "lower than asked" is
+/// not by itself proof of anything — but on the pinned yt-dlp, with a *degraded*
+/// extraction, the fallback is the muxed 360p format, and this is what tells the
+/// two apart from the outside.
+pub fn is_degraded_resolution(requested: Option<u32>, actual: Option<u32>) -> bool {
+    match (requested, actual) {
+        (Some(want), Some(got)) => got < want,
+        _ => false,
+    }
 }
 
 /// A stable token the frontend translates; no concatenated sentences
@@ -1248,6 +1320,63 @@ mod tests {
             Some(PathBuf::from("/out/Title [id].mkv"))
         );
         assert_eq!(parse_file_line("SDP_FILE|  "), None);
+    }
+
+    #[test]
+    fn the_selected_format_line_parses_the_measured_shapes() {
+        // Measured on the pinned yt-dlp (2026-10-14): a merge prints the
+        // combined id and the video height.
+        let merged = parse_format_line("SDP_FORMAT|278+251|144|vp9|opus").expect("parses");
+        assert_eq!(merged.format_id, "278+251");
+        assert_eq!(merged.height, Some(144));
+        assert!(merged.has_video());
+        assert_eq!(merged.acodec.as_deref(), Some("opus"));
+
+        // The audio-only path prints `NA` for the height.
+        let audio = parse_format_line("SDP_FORMAT|251|NA|none|opus").expect("parses");
+        assert_eq!(audio.height, None);
+        assert!(!audio.has_video());
+
+        // A muxed format has both codecs.
+        let muxed = parse_format_line("SDP_FORMAT|18|360|avc1.42001E|mp4a.40.2").expect("parses");
+        assert_eq!(muxed.height, Some(360));
+        assert!(muxed.has_video());
+
+        assert!(parse_format_line("SDP_FORMAT|too|few|fields").is_none());
+        assert!(parse_format_line("SDP_DL|x|y|z|w|v|u|t").is_none());
+    }
+
+    #[test]
+    fn only_height_choices_carry_a_requested_height() {
+        assert_eq!(
+            requested_height(&FormatChoice::Exact { height: 1440 }),
+            Some(1440)
+        );
+        assert_eq!(
+            requested_height(&FormatChoice::MaxHeight { height: 720 }),
+            Some(720)
+        );
+        assert_eq!(requested_height(&FormatChoice::Best), None);
+        assert_eq!(requested_height(&FormatChoice::AudioOnly), None);
+        assert_eq!(
+            requested_height(&FormatChoice::Explicit {
+                format_id: "137".into(),
+                has_audio: false,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_lower_than_asked_height_is_flagged_only_when_both_are_known() {
+        assert!(is_degraded_resolution(Some(1440), Some(360)));
+        assert!(!is_degraded_resolution(Some(1440), Some(1440)));
+        // A higher result is not a problem to invent a warning about.
+        assert!(!is_degraded_resolution(Some(720), Some(1080)));
+        // Unknown on either side: no claim.
+        assert!(!is_degraded_resolution(None, Some(360)));
+        assert!(!is_degraded_resolution(Some(1440), None));
+        assert!(!is_degraded_resolution(None, None));
     }
 
     #[test]

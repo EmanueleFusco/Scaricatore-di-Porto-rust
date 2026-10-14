@@ -72,6 +72,11 @@ pub enum JobOutcome {
         /// must show it).
         runtime: jsruntime::RuntimeKind,
         elapsed_ms: u64,
+        /// The height the user asked for, when the choice asked for one.
+        requested_height: Option<u32>,
+        /// The height yt-dlp reported it selected (`SDP_FORMAT`). `None` for
+        /// audio-only and for extractors that do not declare one.
+        actual_height: Option<u32>,
     },
     Failed(YtdlpError),
     Cancelled,
@@ -123,7 +128,25 @@ pub async fn run_job(
             run_attempt(env, request, runtime, omit_format, token.clone(), &emitter).await;
 
         match attempt {
-            AttemptOutcome::Finished { file } => {
+            AttemptOutcome::Finished {
+                file,
+                actual_height,
+            } => {
+                let requested_height = ytdlp::requested_height(&request.spec.quality);
+                // A result lower than asked for, on a fresh runtime, is the
+                // degraded-extraction symptom: yt-dlp's own fallback chain
+                // (`…/b[height<=N]`) silently picks the muxed 360p format when
+                // the separate streams are missing from that run's extraction.
+                // The runtime swap is the same one-shot fallback of
+                // spec §5.3.2; the wrong-quality file is removed first, so the
+                // next attempt cannot resume from it.
+                let degraded = ytdlp::is_degraded_resolution(requested_height, actual_height);
+                if degraded && env.runtimes.may_fallback_to_deno(runtime, fell_back) {
+                    let _ = std::fs::remove_file(&file);
+                    runtime = jsruntime::RuntimeKind::Deno;
+                    fell_back = true;
+                    continue;
+                }
                 if fell_back {
                     // spec §5.3.3: start with Deno for the next 24 h, or until
                     // either version changes.
@@ -139,6 +162,8 @@ pub async fn run_job(
                     file,
                     runtime,
                     elapsed_ms,
+                    requested_height,
+                    actual_height,
                 };
             }
             AttemptOutcome::Failed(error) => {
@@ -199,6 +224,8 @@ pub async fn run_job(
 enum AttemptOutcome {
     Finished {
         file: PathBuf,
+        /// The selected height from `SDP_FORMAT`, when the template printed one.
+        actual_height: Option<u32>,
     },
     Failed(YtdlpError),
     /// The challenge watchdog fired: the runtime gets replaced, not the user
@@ -241,6 +268,7 @@ async fn run_attempt(
     let attempt = Arc::new(AttemptShared {
         tracker: Mutex::new(ProgressTracker::new(request.spec.needs_merge())),
         files: Mutex::new(Vec::new()),
+        heights: Mutex::new(Vec::new()),
         // The challenge is solved once the first download line appears; see the
         // watchdog below.
         challenge_pending: Arc::new(AtomicBool::new(runtime == jsruntime::RuntimeKind::QuickJs)),
@@ -316,7 +344,10 @@ async fn run_attempt(
 
     let file = attempt.last_file();
     match file {
-        Some(file) if file.is_file() => AttemptOutcome::Finished { file },
+        Some(file) if file.is_file() => AttemptOutcome::Finished {
+            file,
+            actual_height: attempt.actual_height(),
+        },
         Some(file) => AttemptOutcome::Failed(YtdlpError::new(
             YtdlpErrorCode::Unknown,
             format!(
@@ -335,6 +366,8 @@ async fn run_attempt(
 struct AttemptShared {
     tracker: Mutex<ProgressTracker>,
     files: Mutex<Vec<PathBuf>>,
+    /// Heights of the formats yt-dlp said it selected (`SDP_FORMAT`).
+    heights: Mutex<Vec<u32>>,
     challenge_pending: Arc<AtomicBool>,
     emitter: Emitter,
 }
@@ -345,6 +378,17 @@ impl AttemptShared {
             if let Ok(mut files) = self.files.lock() {
                 files.push(last);
             }
+            return;
+        }
+        if let Some(format) = ytdlp::parse_format_line(line) {
+            // A format line with no height is the audio stream of an audio-only
+            // job: nothing to compare.
+            if let Some(height) = format.height
+                && let Ok(mut heights) = self.heights.lock()
+            {
+                heights.push(height);
+            }
+            self.challenge_pending.store(false, Ordering::Relaxed);
             return;
         }
         if let Some(parsed) = ytdlp::parse_download_line(line) {
@@ -378,6 +422,15 @@ impl AttemptShared {
         match self.files.lock() {
             Ok(files) => files.last().cloned(),
             Err(poisoned) => poisoned.into_inner().last().cloned(),
+        }
+    }
+
+    /// The height yt-dlp reported it selected: the largest one seen, which is
+    /// the video stream when there was a merge.
+    fn actual_height(&self) -> Option<u32> {
+        match self.heights.lock() {
+            Ok(heights) => heights.iter().copied().max(),
+            Err(poisoned) => poisoned.into_inner().iter().copied().max(),
         }
     }
 }

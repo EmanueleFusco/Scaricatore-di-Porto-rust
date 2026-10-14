@@ -16,7 +16,7 @@
     secondsToClock,
     speedMbits,
   } from "$lib/inspect";
-  import { offersDenoInstall, progressLabel, stageKey, type QualityRequest } from "$lib/job";
+  import { heightWarning, offersDenoInstall, progressLabel, stageKey, type QualityRequest } from "$lib/job";
   import { activeLang, errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
   import { inspectStore } from "$lib/stores/inspect.svelte";
   import { jobStore } from "$lib/stores/job.svelte";
@@ -48,6 +48,7 @@
   const progress = $derived(jobStore.progress);
   const done = $derived(jobStore.done);
   const doneError = $derived(done?.status === "failed" ? done.error : null);
+  const resolutionWarning = $derived(heightWarning(done));
   const running = $derived(jobStore.status === "running");
 
   async function browse(): Promise<void> {
@@ -269,6 +270,14 @@
         {/if}
         {#if done.runtime}
           <p class="field__hint">{tt("queue.done.runtime", { runtime: done.runtime })}</p>
+        {/if}
+        {#if resolutionWarning}
+          <p class="queue__warning" role="status">
+            {tt("queue.warning.heightLower", {
+              actual: resolutionWarning.actual,
+              requested: resolutionWarning.requested,
+            })}
+          </p>
         {/if}
         <div class="queue__actions">
           <button type="button" class="btn" onclick={reveal}>{tt("queue.done.reveal")}</button>
@@ -515,6 +524,13 @@
 
   .queue__deno-title {
     font-weight: 700;
+  }
+
+  .queue__warning {
+    padding: var(--space-2) var(--space-3);
+    border-left: 3px solid var(--warning, var(--accent));
+    color: var(--text);
+    font-size: 12px;
   }
 
   .queue__playlist {

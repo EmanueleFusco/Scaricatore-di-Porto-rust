@@ -35,6 +35,7 @@
   "queue.playlist.countUnknown": "This URL is a playlist. Playlist downloads arrive with M3; for now, open a single video link.",
   "queue.copyDetails": "Copy details",
   "queue.copied": "Details copied",
+  "queue.warning.heightLower": "yt-dlp saved {actual}p although {requested}p was requested: the extraction was degraded in that run (some streams were missing), so its own fallback chose a muxed format. Try again, or install Deno in Settings → Tools.",
 
   "job.stage.preparing": "Preparing",
 
@@ -75,7 +76,6 @@
   "footer.idle": "Idle",
   "footer.placeholder": "No process running",
   "footer.toolsPending": "Tools need attention",
-  "footer.speed": "{value} Mbit/s",
   "footer.percent": "{value}%",
 
   "settings.title": "Settings",

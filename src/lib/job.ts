@@ -45,6 +45,10 @@ export interface JobDoneEvent {
   file: string | null;
   runtime: string | null;
   elapsedMs: number | null;
+  /** The height the user asked for, when the choice asked for one. */
+  requestedHeight: number | null;
+  /** The height yt-dlp reported selecting (`SDP_FORMAT`). */
+  actualHeight: number | null;
   error: BackendErrorInfo | null;
 }
 
@@ -95,6 +99,8 @@ export function normaliseDone(raw: unknown): JobDoneEvent {
     file: typeof value.file === "string" && value.file !== "" ? value.file : null,
     runtime: typeof value.runtime === "string" && value.runtime !== "" ? value.runtime : null,
     elapsedMs: asNullableNumber(value.elapsedMs),
+    requestedHeight: asNullableNumber(value.requestedHeight),
+    actualHeight: asNullableNumber(value.actualHeight),
     error:
       error && typeof error === "object"
         ? {
@@ -175,6 +181,25 @@ export function offersDenoInstall(
   dismissed: boolean,
 ): boolean {
   return !dismissed && done?.status === "failed" && done.error?.code === "DENO_MISSING";
+}
+
+/**
+ * A finished job whose resolution is lower than the one requested, when both
+ * numbers are known.
+ *
+ * This is the visible half of the degraded-extraction case: yt-dlp's fallback
+ * chain ends on the muxed 360p format when the separate streams are missing in
+ * that run, and the job still "succeeds". The backend already retried with Deno
+ * when it could; what is left to do is tell the truth about what is on disk.
+ */
+export function heightWarning(
+  done: JobDoneEvent | null,
+): { requested: number; actual: number } | null {
+  if (done?.status !== "done") return null;
+  const requested = done.requestedHeight;
+  const actual = done.actualHeight;
+  if (requested === null || actual === null || actual >= requested) return null;
+  return { requested, actual };
 }
 
 /**

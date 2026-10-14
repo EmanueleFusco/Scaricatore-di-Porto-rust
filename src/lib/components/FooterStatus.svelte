@@ -8,7 +8,7 @@
    * running/queued counters and the aggregate speed of spec §7.5 arrive with
    * the queue (M2); the shape and the tool warning are already here.
    */
-  import { isDeterminate, secondsToClock, speedMbits } from "$lib/inspect";
+  import { isDeterminate } from "$lib/inspect";
   import { fileName, footerStateKey, progressLabel } from "$lib/job";
   import { router } from "$lib/router.svelte";
   import { activeLang, errorText, tt } from "$lib/stores/settings.svelte";
@@ -22,16 +22,6 @@
   const toolsProblem = $derived(hasToolProblem(toolsStore.view.tools));
 
   const stateText = $derived(tt(footerStateKey(status, progress?.stage ?? null)));
-  const speed = $derived(
-    progress?.speedBps !== null && progress?.speedBps !== undefined
-      ? speedMbits(progress.speedBps)
-      : null,
-  );
-  const eta = $derived(
-    progress?.etaSec !== null && progress?.etaSec !== undefined
-      ? secondsToClock(progress.etaSec)
-      : null,
-  );
 </script>
 
 <footer class="status" aria-label={tt("a11y.statusBar")}>
@@ -41,16 +31,11 @@
   </span>
 
   {#if status === "running" && progress}
-    <!-- Separate spans, never a sentence built by concatenation (spec §11.9). -->
+    <!-- A summary, not a copy of the page: the speed and the ETA live there,
+         with the bar; here only the stream and how far it is. -->
     <span class="status__detail">{progressLabel(activeLang(), progress)}</span>
     {#if isDeterminate(progress.percent)}
       <span class="status__detail">{tt("footer.percent", { value: Math.round(progress.percent!) })}</span>
-    {/if}
-    {#if speed}
-      <span class="status__detail">{tt("footer.speed", { value: speed })}</span>
-    {/if}
-    {#if eta}
-      <span class="status__detail">{tt("queue.eta", { value: eta })}</span>
     {/if}
   {:else if status === "done" && done?.file}
     <span class="status__detail">{fileName(done.file)}</span>

@@ -1943,15 +1943,23 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     a avvio manuale** (D70). `npm run check:ci` e `check:runners` verdi su di
     esso.
   - **Footer di stato collegato al job** (segnalato dall'utente: diceva "Nessun
-    processo in esecuzione" durante un download). Ora mostra stadio, flusso,
-    percentuale, velocità e tempo rimasto; a fine job il nome del file, in
-    errore il messaggio localizzato, e il pallino rosso degli strumenti porta
-    a Strumenti. I contatori "N in coda" di spec §7.5 restano per M2.
+    processo in esecuzione" durante un download). Ora mostra stadio, flusso e
+    percentuale; a fine job il nome del file, in errore il messaggio
+    localizzato, e la voce degli strumenti con problemi porta a Strumenti. I
+    contatori di spec §7.5 restano per M2. **Senza** velocità ed ETA: erano gli
+    stessi numeri già sotto il nome del video (seconda segnalazione dell'utente).
+  - **Risoluzione degradata riconosciuta** (segnalato: "1440p scelto, 360p
+    scaricato, una volta"). Nuova stampa `before_dl:SDP_FORMAT…` (misurata sul
+    binario vero) che dice il formato davvero scelto; se è più basso del
+    richiesto il file viene rimosso e si ritenta una volta con Deno, altrimenti
+    il risultato porta `requestedHeight`/`actualHeight` e la UI lo dichiara.
+    Dettagli e limiti in D71.
 - **Verified by running**
-  - `cargo test`: **268** test verdi in totale (199 lib, 3 bundled_tools,
+  - `cargo test`: **273** test verdi in totale (202 lib, 3 bundled_tools,
     9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
-    15 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
-    `cargo clippy -D warnings` e `cargo fmt --check` puliti.
+    17 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **157**
+    test (`npm test`), `npm run check` a 0 errori.
   - **IPC completo con il tool finto**: `inspect_url` e `download_start`
     attraverso i comandi veri, con `ToolContext` che punta al fake — il job
     scrive il file e lo stato torna a fermo. È in `m1_ipc.rs`.
