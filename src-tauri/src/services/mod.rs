@@ -9,3 +9,4 @@ pub mod manifest;
 pub mod paths;
 pub mod process;
 pub mod tools;
+pub mod ytdlp;
