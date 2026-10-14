@@ -2068,3 +2068,84 @@ caso parte subito (`inspectDelay(true) === 0`). È una deviazione piccola e
 deliberata dalla parità con l'originale, che debounceva anche l'incolla perché
 aveva un solo percorso di input; qui l'incolla è l'interazione dominante
 (spec §2.3), e con la cache di D75 il tempo che resta è tutto estrazione.
+
+### D77 — The Italian text still to translate, and how to do it (recorded, not done)
+
+The language rule at the top of `AGENTS.md` (2026-10-14) makes English mandatory
+for everything published, and says the historical Italian part is translated in
+one deliberate, separate task. **The owner asked for the inventory to be
+recorded and left for later**, so this is the list; nothing here has been
+translated.
+
+**Inventory** (counts are matching lines, found 2026-10-14 with a word-list
+grep over `git ls-files`):
+
+| file | what is Italian inside | lines |
+| :-- | :-- | --: |
+| `docs/DECISIONS.md` | the whole file, D1–D76 | 664 |
+| `docs/PROGRESS.md` | the whole file, every step block | 484 |
+| `.github/workflows/ci.yml` | header comments, step names, comments inside `run:` blocks | 123 |
+| `docs/SPIKES.md` | the whole file (human checklists) | 50 |
+| `scripts/check-ci-runners.mjs` | comments and console messages | 46 |
+| `scripts/check-ci-runners.test.mjs` | test names (`describe`/`it`) and assertions on those messages | 32 |
+| `scripts/report-bundle-sizes.mjs` | comments and console messages | 24 |
+| `.github/workflows/tier2.yml` | comments and step names | 15 |
+| `scripts/run.mjs` | comments and console messages | 12 |
+| `scripts/check-ci-syntax.mjs` | comments and console messages | 12 |
+| `.gitignore` | comments only | 10 |
+| `src-tauri/windows-app-manifest.xml` | comments only | 9 |
+| `scripts/fetch_bundled_tools.mjs` | comments and console messages | 7 |
+| `scripts/check-release-version.mjs` | comments and console messages | 5 |
+| `scripts/ci-steps.test.mjs` | assertions on `check-ci-syntax.mjs` messages | 2 |
+
+**Traps, i.e. why this cannot be a search-and-replace:**
+
+* **Two pairs must change together.** `scripts/check-ci-runners.test.mjs`
+  asserts the Italian messages printed by `scripts/check-ci-runners.mjs`, and
+  `scripts/ci-steps.test.mjs` asserts those of `scripts/check-ci-syntax.mjs`
+  (e.g. `expect(output).toContain("doveva essere solo arm64")`). Translating one
+  side alone turns a green suite red.
+* **The two documents are read by every session.** They are append-only logs of
+  what happened; the translation must not change a single fact, number or
+  conclusion while changing the language.
+* **`docs/PROGRESS.md` and `docs/DECISIONS.md` are currently bilingual**: the
+  rule took effect on 2026-10-14, so entries after D77 are English and the
+  earlier ones Italian until this task runs.
+
+**Correctly Italian and never to be translated** (excluded on purpose):
+
+* `src/lib/i18n/it.json` — product strings, the rule itself lists them as never
+  translated;
+* `docs/RUST_PORT_GUIDELINES.md` — read-only specification, in English already;
+* `src-tauri/src/services/paths.rs:286` — a test fixture string (`"Perché no"`)
+  that exists to prove accented text survives sanitising;
+* binaries (`src-tauri/icons/icon.icns` and friends) — grep matches bytes.
+
+**The six commit messages already pushed** (`3a01559`…`29ddd09`, subjects in
+Italian) stay as they are. Rewriting them means a force-push on a branch that is
+already published, and the rule is about what we publish from now on: a
+rewritten history is a larger problem than a few Italian subjects. New commits
+are English (`c24f0c6`, `9e0be32`).
+
+**How to do the pass when it is done** (the rule's own conditions, made
+concrete):
+
+1. one commit per group — `.github/` + `scripts/` first (small, and they are the
+   files agents edit most), then `docs/SPIKES.md`, then the two logs;
+2. prose only: no code, no behaviour, no number, no conclusion changed;
+3. run `npm run check:ci`, `npm run check:runners`, `npm test`, `cargo test`
+   after each group — those are exactly the checks that catch trap #1;
+4. say in `PROGRESS.md` that the pass happened, with the commit range.
+
+### D78 — `docs/PROJECT_REPORT.md` is listed by AGENTS.md but does not exist
+
+Found while building the D77 inventory: `AGENTS.md` §1 lists
+`docs/PROJECT_REPORT.md` as a read-only source of truth, but the file is neither
+in the repository nor on disk (`git ls-files docs/` lists only `DECISIONS.md`,
+`PROGRESS.md`, `RUST_PORT_GUIDELINES.md`, `SPIKES.md`).
+
+Two possible explanations, and I cannot choose: it was never added, or it is kept
+out of the repository on purpose. What is certain is that a pointer to a missing
+file costs every session that follows it, so the table row now says it is not
+part of this repository, and this decision records why. If the file exists
+somewhere, adding it back is a one-line change to that row.

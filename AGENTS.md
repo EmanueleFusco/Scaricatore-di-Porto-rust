@@ -35,7 +35,9 @@ documentation:
 Italian before this rule (2026-10-14). **New entries in them are English from
 now on**, and translating the historical part is one deliberate, separate task:
 it must not be mixed into a functional change, and it must not change a single
-fact while doing it.
+fact while doing it. The exact inventory of what is still Italian, the traps
+(script messages asserted by tests), and the order to do it in are in
+`docs/DECISIONS.md`, D77.
 
 ## 1. Source of truth
 
@@ -43,7 +45,7 @@ fact while doing it.
 | :-- | :-- | :-- |
 | `docs/RUST_PORT_GUIDELINES.md` | The specification (rev. 3). Product decisions, architecture, flags, phases, acceptance tests. | **Read-only.** Never edit it. If it is wrong or ambiguous, write the problem in `docs/DECISIONS.md` and continue with the safest interpretation. |
 | `reference/ScaricatoreDiPorto.py` | Original app. Shows the real behaviour to keep (parity) and the bugs not to port (spec §12). | Read-only. |
-| `docs/PROJECT_REPORT.md` | High-level description of the original app. | Read-only. |
+| `docs/PROJECT_REPORT.md` | High-level description of the original app. | Read-only. **Not present in this repository** (D78): do not go looking for it. |
 | `docs/PROGRESS.md` | Your running log (you maintain it). | Update at the end of every step. |
 | `docs/DECISIONS.md` | Questions, deviations, things marked "verify" that you could not verify (you maintain it). | Append only. |
 
