@@ -377,6 +377,19 @@ pub fn playlist_kind(extractor_key: &str, id: &str, url: &str) -> PlaylistKind {
 // Running the inspection
 // ---------------------------------------------------------------------------
 
+/// What a fallback trigger should do (spec §5.3.2, §5.3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackDecision {
+    /// Swap to Deno for the next attempt.
+    Switch,
+    /// The trigger fired but Deno is not installed: the "ask once" case of
+    /// spec §5.3.2, which the UI answers with an install offer.
+    DenoMissing,
+    /// The trigger is not actionable: quickjs-only mode, or the fallback has
+    /// already run.
+    No,
+}
+
 /// A resolved runtime with the version its memory key needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRuntime {
@@ -419,6 +432,46 @@ impl Runtimes {
     /// The automatic fallback of spec §5.3.2 only exists in Auto mode.
     pub fn fallback_allowed(&self) -> bool {
         self.mode == jsruntime::JsRuntimeMode::Auto
+    }
+
+    /// May this run switch from the current runtime to Deno right now?
+    ///
+    /// One shot, Auto mode only, QuickJS → Deno, and only when Deno really is
+    /// there (an uninstalled fallback is reported as `DENO_MISSING` so the UI
+    /// can offer to install it — never attempted blindly).
+    pub fn may_fallback_to_deno(&self, current: RuntimeKind, already_fell_back: bool) -> bool {
+        self.fallback_decision(current, already_fell_back) == FallbackDecision::Switch
+    }
+
+    /// The three-way decision behind both callers (inspection and download).
+    pub fn fallback_decision(
+        &self,
+        current: RuntimeKind,
+        already_fell_back: bool,
+    ) -> FallbackDecision {
+        if !self.fallback_allowed() || already_fell_back || current != RuntimeKind::QuickJs {
+            return FallbackDecision::No;
+        }
+        if self.deno.is_some() {
+            FallbackDecision::Switch
+        } else {
+            FallbackDecision::DenoMissing
+        }
+    }
+
+    /// The requested runtime is missing and cannot be substituted.
+    pub fn missing_runtime_error(&self, kind: RuntimeKind) -> YtdlpError {
+        match kind {
+            RuntimeKind::Deno => YtdlpError::new(
+                YtdlpErrorCode::DenoMissing,
+                "QuickJS could not solve the YouTube challenge and Deno, the automatic \
+                 fallback, is not installed (spec §5.3). Install it from Settings → Tools.",
+            ),
+            RuntimeKind::QuickJs => YtdlpError::new(
+                YtdlpErrorCode::YtChallenge,
+                "QuickJS is required in this mode but is not available; check Settings → Tools.",
+            ),
+        }
     }
 
     pub fn qjs_version(&self) -> Option<&str> {
@@ -492,7 +545,7 @@ pub async fn inspect(
                     &*inspected,
                     Inspected::Video(video) if video.has_video && video.heights.is_empty()
                 );
-                if degraded && may_fallback(&env.runtimes, runtime, fell_back) {
+                if degraded && env.runtimes.may_fallback_to_deno(runtime, fell_back) {
                     runtime = RuntimeKind::Deno;
                     fell_back = true;
                     continue;
@@ -504,7 +557,7 @@ pub async fn inspect(
             }
             RunOutcome::Failed(error) => {
                 if error.code == YtdlpErrorCode::YtChallenge
-                    && may_fallback(&env.runtimes, runtime, fell_back)
+                    && env.runtimes.may_fallback_to_deno(runtime, fell_back)
                 {
                     runtime = RuntimeKind::Deno;
                     fell_back = true;
@@ -516,13 +569,6 @@ pub async fn inspect(
             }
         }
     }
-}
-
-fn may_fallback(runtimes: &Runtimes, current: RuntimeKind, already_fell_back: bool) -> bool {
-    runtimes.fallback_allowed()
-        && !already_fell_back
-        && current == RuntimeKind::QuickJs
-        && runtimes.deno.is_some()
 }
 
 fn remember_deno(env: &InspectEnvironment, now: u64) {

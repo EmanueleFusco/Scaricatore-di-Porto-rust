@@ -5,6 +5,7 @@
 
 pub mod download;
 pub mod inspect;
+pub mod job;
 pub mod jsruntime;
 pub mod manifest;
 pub mod paths;

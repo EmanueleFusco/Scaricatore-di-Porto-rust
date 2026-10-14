@@ -126,6 +126,16 @@ test = false
 bench = false
 doc = false
 
+# Fake yt-dlp for the M1 integration tests (spec §15). Same reasoning as
+# `fake_tool`: a Rust program so the same tests run on the three OSes, and an
+# `example` so the bundler never ships it.
+[[example]]
+name = "fake_ytdlp"
+path = "tests/bin/fake_ytdlp.rs"
+test = false
+bench = false
+doc = false
+
 # Release profile mandated by spec §1 "Weight rules":
 # opt-level = "s", lto = true, codegen-units = 1, panic = "abort", strip = true.
 [profile.release]

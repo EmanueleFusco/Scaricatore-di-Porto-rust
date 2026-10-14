@@ -627,10 +627,11 @@ impl ProgressThrottle {
         }
     }
 
-    /// Forget the last emission, so the next `should_emit` is `true` — used for
-    /// stage changes and the final state, which must never be coalesced away.
-    pub fn force_next(&mut self) {
-        self.last_emit = None;
+    /// Record that an update went out *now*, without consulting the window.
+    /// Used after a forced emission: the change itself must pass, but the next
+    /// identical update still waits for its window.
+    pub fn mark_emitted(&mut self, now: Instant) {
+        self.last_emit = Some(now);
     }
 }
 
@@ -655,6 +656,10 @@ pub enum YtdlpErrorCode {
     DiskFull,
     Network,
     Extract,
+    /// QuickJS failed and the automatic fallback has no Deno to switch to
+    /// (spec §5.3.2: "ask once, remember the answer" — the UI offers the
+    /// install).
+    DenoMissing,
     Unknown,
 }
 
@@ -674,6 +679,7 @@ impl YtdlpErrorCode {
             Self::DiskFull => "DISK_FULL",
             Self::Network => "NETWORK",
             Self::Extract => "EXTRACT",
+            Self::DenoMissing => "DENO_MISSING",
             Self::Unknown => "UNKNOWN",
         }
     }
@@ -694,6 +700,7 @@ impl YtdlpErrorCode {
             Self::DiskFull => "error.ytdlp.diskFull",
             Self::Network => "error.ytdlp.network",
             Self::Extract => "error.ytdlp.extract",
+            Self::DenoMissing => "error.ytdlp.denoMissing",
             Self::Unknown => "error.ytdlp.unknown",
         }
     }
@@ -1294,18 +1301,18 @@ mod tests {
     }
 
     #[test]
-    fn the_throttle_lets_ten_updates_a_second_through_and_forces_the_last_one() {
+    fn the_throttle_lets_ten_updates_a_second_through() {
         let mut throttle = ProgressThrottle::new(Duration::from_millis(100));
         let start = Instant::now();
         assert!(throttle.should_emit(start));
         assert!(!throttle.should_emit(start + Duration::from_millis(50)));
         assert!(throttle.should_emit(start + Duration::from_millis(100)));
         assert!(!throttle.should_emit(start + Duration::from_millis(150)));
-        throttle.force_next();
-        assert!(
-            throttle.should_emit(start + Duration::from_millis(150)),
-            "a forced update must not be coalesced away"
-        );
+        // A forced emission (a stage change that must not be coalesced away)
+        // still counts as this window's update.
+        throttle.mark_emitted(start + Duration::from_millis(150));
+        assert!(!throttle.should_emit(start + Duration::from_millis(200)));
+        assert!(throttle.should_emit(start + Duration::from_millis(250)));
     }
 
     // -- classifier (spec §8.5, spec §15 "error classifier") -----------------
@@ -1521,6 +1528,7 @@ mod tests {
             YtdlpErrorCode::DiskFull,
             YtdlpErrorCode::Network,
             YtdlpErrorCode::Extract,
+            YtdlpErrorCode::DenoMissing,
             YtdlpErrorCode::Unknown,
         ];
         let mut strings: Vec<&str> = codes.iter().map(|c| c.as_str()).collect();
