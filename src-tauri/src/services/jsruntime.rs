@@ -88,6 +88,12 @@ impl RuntimeKind {
 
 /// `Settings.jsRuntimeMode` (spec §5.3.3: *Auto (QuickJS→Deno)*, *QuickJS only*,
 /// *Deno only*).
+///
+/// The explicit `rename`s keep the wire values (`auto`, `quickjs`, `deno`)
+/// independent of the Rust variant names: with `rename_all` alone, `DenoOnly`
+/// serialised as `"denoonly"`, the frontend fell back to `auto`, and a mode the
+/// user picked was silently dropped on the next save. Found by the IPC
+/// round-trip test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JsRuntimeMode {
@@ -96,8 +102,10 @@ pub enum JsRuntimeMode {
     #[default]
     Auto,
     /// Never fall back; a QuickJS failure is the user's answer.
+    #[serde(rename = "quickjs")]
     QuickJsOnly,
     /// Start with Deno directly.
+    #[serde(rename = "deno")]
     DenoOnly,
 }
 
@@ -505,6 +513,34 @@ mod tests {
         assert_eq!(holder.mode, JsRuntimeMode::Auto);
         let holder: Holder = serde_json::from_str(r#"{"mode":"deno"}"#).expect("parse");
         assert_eq!(holder.mode, JsRuntimeMode::DenoOnly);
+    }
+
+    #[test]
+    fn the_wire_values_of_the_runtime_mode_are_auto_quickjs_deno() {
+        // The frontend keys its dictionary by these exact strings; the derive's
+        // default would have produced "quickjsonly"/"denoonly".
+        assert_eq!(
+            serde_json::to_value(JsRuntimeMode::Auto).expect("serialise"),
+            serde_json::json!("auto")
+        );
+        assert_eq!(
+            serde_json::to_value(JsRuntimeMode::QuickJsOnly).expect("serialise"),
+            serde_json::json!("quickjs")
+        );
+        assert_eq!(
+            serde_json::to_value(JsRuntimeMode::DenoOnly).expect("serialise"),
+            serde_json::json!("deno")
+        );
+        // And they round-trip through the same names.
+        for mode in [
+            JsRuntimeMode::Auto,
+            JsRuntimeMode::QuickJsOnly,
+            JsRuntimeMode::DenoOnly,
+        ] {
+            let json = serde_json::to_string(&mode).expect("serialise");
+            let back: JsRuntimeMode = serde_json::from_str(&json).expect("parse");
+            assert_eq!(back, mode);
+        }
     }
 
     #[test]

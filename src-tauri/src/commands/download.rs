@@ -101,8 +101,8 @@ pub struct JobDoneEvent {
 /// Start one download. Returns as soon as the job is registered; progress and
 /// completion arrive as events.
 #[tauri::command]
-pub async fn download_start(
-    app: AppHandle,
+pub async fn download_start<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     url: String,
     quality: QualityRequest,

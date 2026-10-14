@@ -14,7 +14,7 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const BACKUP_SUFFIX: &str = ".bak";
 
 /// `…/<AppConfig>/settings.json`
-pub fn settings_file(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn settings_file<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     let dir = app
         .path()
         .app_config_dir()
@@ -24,14 +24,14 @@ pub fn settings_file(app: &AppHandle) -> io::Result<PathBuf> {
 
 /// The app's writable data directory. Everything the app installs or remembers
 /// at runtime lives below it (tools, runtime memory, downloaded models).
-pub fn app_data_dir(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn app_data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     app.path()
         .app_data_dir()
         .map_err(|e| io::Error::other(format!("cannot resolve the app data dir: {e}")))
 }
 
 /// Directory for downloaded/installed tools (spec §5.2 lookup order #2).
-pub fn tools_dir(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn tools_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     Ok(app_data_dir(app)?.join("tools"))
 }
 
@@ -56,7 +56,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Per-app private temp dir handed to child processes as `TMPDIR`/`TEMP`/`TMP`
 /// (spec §4.9). Created with mode `0700` on Unix because QuickJS writes EJS
 /// scripts there.
-pub fn private_temp_dir(app: &AppHandle) -> io::Result<PathBuf> {
+pub fn private_temp_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     let dir = app
         .path()
         .app_cache_dir()
@@ -96,7 +96,7 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
 
 /// Default output folder: the OS "Downloads" folder when the platform exposes
 /// one, otherwise `None` (the user then picks a folder in Settings, spec §11.8).
-pub fn default_output_dir(app: &AppHandle) -> Option<PathBuf> {
+pub fn default_output_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path()
         .download_dir()
         .ok()

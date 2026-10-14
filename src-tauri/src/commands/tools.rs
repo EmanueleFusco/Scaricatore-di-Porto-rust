@@ -214,8 +214,8 @@ pub fn tools_complete_setup(state: State<'_, AppState>) -> AppResult<()> {
 /// with licence and size consequences, and a button that silently does nothing
 /// would be worse than the words.
 #[tauri::command]
-pub async fn tools_install(
-    app: tauri::AppHandle,
+pub async fn tools_install<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     tool: String,
 ) -> AppResult<ToolStatus> {
