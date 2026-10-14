@@ -298,6 +298,9 @@ pub struct AppState {
     inspection: Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
     /// The one download job of M1 (the queue arrives in M2).
     job: Mutex<Option<ActiveJob>>,
+    /// The on-demand install in flight, so the provisioning UI can cancel it
+    /// (spec §5.2: "UI shows … progress, Cancel").
+    install: Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 /// A running download, as the temporary UI knows it.
@@ -350,6 +353,7 @@ impl AppState {
             tools,
             inspection: Mutex::new(None),
             job: Mutex::new(None),
+            install: Mutex::new(None),
         })
     }
 
@@ -456,6 +460,50 @@ impl AppState {
         match self.job.lock() {
             Ok(guard) => guard.is_some(),
             Err(poisoned) => poisoned.into_inner().is_some(),
+        }
+    }
+
+    /// Register an on-demand install, returning the token that cancels it
+    /// (spec §5.2: the provisioning UI has a Cancel).
+    pub fn start_install(&self) -> tokio_util::sync::CancellationToken {
+        let token = tokio_util::sync::CancellationToken::new();
+        let previous = {
+            let mut slot = match self.install.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            slot.replace(token.clone())
+        };
+        if let Some(previous) = previous {
+            previous.cancel();
+        }
+        token
+    }
+
+    /// Forget the install (successful, failed or already cancelled).
+    pub fn finish_install(&self) {
+        let mut slot = match self.install.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = None;
+    }
+
+    /// Cancel the install in flight. `false` means there was nothing to cancel.
+    pub fn cancel_install(&self) -> bool {
+        let taken = {
+            let mut slot = match self.install.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            slot.take()
+        };
+        match taken {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
         }
     }
 

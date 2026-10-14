@@ -140,6 +140,15 @@
                     {tt("tools.action.install")}
                   {/if}
                 </button>
+                {#if toolsStore.installingTool === tool.name}
+                  <button
+                    type="button"
+                    class="btn"
+                    onclick={() => void toolsStore.cancelInstall()}
+                  >
+                    {tt("tools.action.cancel")}
+                  </button>
+                {/if}
               {/if}
               <button
                 type="button"

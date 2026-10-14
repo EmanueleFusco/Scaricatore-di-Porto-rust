@@ -311,7 +311,7 @@
               <button
                 type="button"
                 class="btn btn--primary"
-                disabled={toolsStore.busy}
+                disabled={toolsStore.busy && toolsStore.installingTool !== "deno"}
                 onclick={() => void installDeno()}
               >
                 {#if toolsStore.installingTool === "deno"}
@@ -322,6 +322,15 @@
                   {tt("job.deno.install")}
                 {/if}
               </button>
+              {#if toolsStore.installingTool === "deno"}
+                <button
+                  type="button"
+                  class="btn"
+                  onclick={() => void toolsStore.cancelInstall()}
+                >
+                  {tt("tools.action.cancel")}
+                </button>
+              {/if}
               <button
                 type="button"
                 class="btn"

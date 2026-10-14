@@ -229,7 +229,7 @@ pub async fn tools_install<R: tauri::Runtime>(
     }
 
     let context = state.tools();
-    let token = tokio_util::sync::CancellationToken::new();
+    let token = state.start_install();
     let events = app.clone();
     let tool_name = name.clone();
     // `tool:progress` (spec §3): the download callback is synchronous, so the
@@ -245,15 +245,16 @@ pub async fn tools_install<R: tauri::Runtime>(
         );
     };
 
-    tools::install_deno(
+    let installed = tools::install_deno(
         context.manifest(),
         context.triple(),
         context.tools_dir(),
         &token,
         on_progress,
     )
-    .await
-    .map_err(|err| err.to_error_info())?;
+    .await;
+    state.finish_install();
+    installed.map_err(|err| err.to_error_info())?;
 
     // Report the row as the Tools page would show it after a refresh.
     let settings = state.settings();
@@ -266,6 +267,12 @@ pub async fn tools_install<R: tauri::Runtime>(
         context.temp_dir(),
     )
     .await)
+}
+
+/// Cancel the install in flight (spec §5.2: progress **and** Cancel).
+#[tauri::command]
+pub fn tools_cancel_install(state: State<'_, AppState>) -> bool {
+    state.cancel_install()
 }
 
 /// The `tool:progress` payload (spec §3).

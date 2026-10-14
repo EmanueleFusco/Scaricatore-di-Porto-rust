@@ -196,6 +196,15 @@ class ToolsStore {
     }
   }
 
+  /** Cancel the install in flight (spec §5.2: progress **and** Cancel). */
+  async cancelInstall(): Promise<void> {
+    try {
+      if (isTauriRuntime()) await invoke("tools_cancel_install");
+    } catch (err) {
+      this.#fail(err);
+    }
+  }
+
   /** Mark the wizard as done so it stops appearing at every launch. */
   async completeSetup(): Promise<void> {
     try {

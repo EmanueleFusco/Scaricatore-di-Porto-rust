@@ -45,6 +45,7 @@ fn app_with_settings_in(dir: &Path) -> tauri::App<MockRuntime> {
             scaricatore_di_porto_lib::commands::download::download_start,
             scaricatore_di_porto_lib::commands::download::download_cancel,
             scaricatore_di_porto_lib::commands::download::download_dismiss_deno_offer,
+            scaricatore_di_porto_lib::commands::tools::tools_cancel_install,
         ])
         .build(mock_context(noop_assets()))
         .expect("mock app must build");
@@ -174,6 +175,10 @@ fn cancelling_an_unknown_job_is_false_not_an_error() {
 
     let value =
         call(&window, "download_cancel", json!({ "jobId": "job-0-0" })).expect("must not fail");
+    assert_eq!(value, json!(false));
+
+    // Same contract for the on-demand install (spec §5.2: progress + Cancel).
+    let value = call(&window, "tools_cancel_install", json!({})).expect("must not fail");
     assert_eq!(value, json!(false));
 }
 

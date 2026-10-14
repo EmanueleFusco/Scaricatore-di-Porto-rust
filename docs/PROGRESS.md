@@ -1904,3 +1904,81 @@ Node 24, guardia): **verde tutto, e senza warning**.
   *pacchetto* funziona — ma perché **un controllo che gira prima di spendere 95
   minuti di quota cambia il costo dell'errore**, e con esso la voglia di
   verificare.
+
+## 2026-10-14 — M1 / Video singolo: ispezione, download, runtime JS, cancellazione
+
+Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`).
+
+- **Done**
+  - `services/jsruntime.rs`: modalità Auto/QuickJS/Deno, flag nel verso giusto
+    (`--no-js-runtimes` **prima** di `--js-runtimes`), riconoscimento host
+    YouTube, costante `YOUTUBE_PLAYER_CLIENTS`, memoria `(yt-dlp, qjs)` con TTL
+    24 h su `runtime-memory.json` (best effort, atomica).
+  - `services/process.rs`: secondo sink per lo **stderr** (il progress
+    postprocess di yt-dlp esce lì — misurato), ring buffer invariato.
+  - `services/ytdlp.rs`: selettori esatto/max/best/audio/id esplicito, merge
+    `mp4/mkv`, `--windows-filenames`, template progress/print di §8.3, parser
+    (`SDP_DL`/`SDP_PP`/`SDP_FILE`, "NA" compreso), tracker "Video 1/2"/"Audio
+    2/2"/"Merging…", throttle a 10/s, classificatore §8.5 (tutte le righe della
+    tabella + `DENO_MISSING`), cookie §8.6 per OS.
+  - `services/inspect.rs`: `-J --flat-playlist`, modello `Inspected`
+    (Video/Playlist stub/Error), scala risoluzioni con fallback dell'originale e
+    filtro storyboard, timeout 60/120 s, self-test §5.3.6.
+  - `services/job.rs`: pipeline a video singolo con fallback QuickJS→Deno (una
+    volta: errore `YT_CHALLENGE`, zero formati con altezza, stallo 90 s nel
+    canale di download), retry **senza `-f`** su `FORMAT`, cancel che uccide
+    l'albero e pulisce `.sdp-tmp-<job>`, storage dell'esito per la prossima
+    volta, pulizia dei `.sdp-tmp-*` orfani all'avvio.
+  - IPC: `inspect_url`/`inspect_cancel` (request id, cancellazione della
+    precedente), `download_start`/`download_cancel`/`download_dismiss_deno_offer`,
+    eventi `job:progress`/`job:done`; `tools_install` installa **Deno** dal
+    manifest con `tool:progress`; `tools_self_test`.
+  - Manifest: voce `deno` pinnata 2.9.7 (sei piattaforme, zip, sha256), non
+    inclusa nell'installer.
+  - Frontend: schermata temporanea (URL con debounce 500 ms e cache, selettore
+    risoluzione, switch audio, cartella, progresso con velocità/ETA, errore con
+    "Copia i dettagli", banner Deno), tab "Rete e account" (runtime JS, cookie),
+    "Prova l'estrazione da YouTube" su Strumenti, i18n IT/EN completa.
+- **Verified by running**
+  - `cargo test`: **199** lib + 3 bundled_tools + 9 download + 6 m1_ipc +
+    16 process_tree + 6 settings_ipc + 13 tools + 15 ytdlp_job (2 `#[ignore]`,
+    vedi sotto); `cargo clippy -D warnings` e `cargo fmt --check` puliti.
+  - `npm run check` 0 errori, `npm test` **152** verdi, `npm run build` ok.
+  - **Reale, con i binari inclusi** (`cargo test --test real_selftest --
+    --ignored --nocapture --test-threads=1`): self-test ok con **quickjs** in
+    7,4 s; ispezione "Me at the zoo" → altezze `[240, 144]`; download a 144p
+    unito in `.mkv` (il merge sceglie MKV per VP9+Opus, come previsto); audio
+    only → `.opus`; le temp dir spariscono, gli output restano.
+  - L'argomento del merge e i template sono stati verificati **eseguendo** il
+    binario fissato su un video vero (non solo `--help`): `SDP_DL`/`SDP_FILE`
+    su stdout, `SDP_PP` su stderr, `NA` per i campi ignoti.
+  - `-U` reale su una copia in `/tmp`: aggiornamento a nightly e no-op di
+    `--update-to stable` da nightly (D66).
+  - L'app parte: `npm run app` (vedi "run" qui sotto).
+- **Not verified / stubbed**
+  - **Playlist**: solo lo stub (tipo e conteggio). Elenco, selezione, archivio
+    sono M3.
+  - **Firma/notarizzazione macOS e antivirus Windows**: invariati da M0-C
+    (SPIKES.md).
+  - Il **cancel con un download vero**: coperto con il falso yt-dlp dalla suite;
+    la prova manuale con l'elenco dei processi resta S5 per l'umano.
+  - L'interfaccia grafica non è stata cliccata da qui (nessun modo di pilotare la
+    finestra): avvio e assenza di errori all'avvio verificati, i percorsi di
+    click no. Elencato per onestà.
+  - `--limit-rate`, proxy e impersonificazione: M3.
+- **Spec items marked "verify" che ho chiuso**
+  - `--js-runtimes`/`--no-js-runtimes` esistono nel binario fissato e sono nati
+    esattamente in **2025.11.12** (sorgente `options.py` ai tag): `minVersion`
+    confermato (D56).
+  - `--playlist-end` **non esiste più** in 2026.08.19; M3 userà `-I :1000` (D60).
+  - Asset e checksum Deno: nomi verificati nella release v2.9.7; sha256 linux
+    x64 verificato byte per byte (D59).
+  - `--print after_move:` scarica davvero (non simula) e stampa il percorso
+    finale dopo il merge (misurato).
+  - Il video di prova `BaW_jenozKc` non è più disponibile; usato
+    `jNQXAC9IVRw` (D63).
+- **Decisions/deviations (anche in DECISIONS.md)**: D56–D69.
+- **Next step**
+  1. Prova manuale dell'interfaccia sulla macchina di sviluppo (URL, altezza,
+     audio, cartella, annulla) — è l'unica cosa che qui non si può fare.
+  2. Merge del branch dopo la revisione; poi M2 (coda).

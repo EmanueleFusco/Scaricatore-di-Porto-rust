@@ -1696,3 +1696,147 @@ matrice, ed è la ragione per cui va rimisurato e non dato per buono. Non ho
 eseguito nessuna build su 24.04: ho verificato che i pacchetti ci sono e che
 `ubuntu-24.04` è un'etichetta valida, non che `tauri build` produca lo stesso
 binario. Questo lo dice la prossima run.
+
+## 2026-10-14 — M1 (video singolo: ispezione, download, runtime JS, cancellazione)
+
+### D56 — `minVersion` di yt-dlp: **confermato** `2025.11.12` (chiude il TODO di D42)
+
+D42 lasciava un `TODO(verify)`: "verificare con `--help` del binario fissato quale
+sia la release minima reale". Il `--help` non lo dice — dice che il flag esiste
+*oggi* — quindi la verifica è stata fatta sulla sorgente delle opzioni ai tag:
+
+```
+2025.10.14  yt_dlp/options.py → nessuna occorrenza di --js-runtimes
+2025.10.22  yt_dlp/options.py → nessuna occorrenza
+2025.11.12  yt_dlp/options.py → righe 460-478: --js-runtimes, --no-js-runtimes
+```
+
+Quindi `2025.11.12` è **esattamente** la prima release con i flag, non un
+pavimento conservativo. Il valore nel manifest resta e il TODO si chiude. Nota
+utile trovata nella stessa lettura: la help di quella opzione dice
+`--no-js-runtimes needs to be passed before enabling other runtimes`, cioè
+l'ordine di spec §5.3.1 è documentato da monte, non dedotto da noi.
+
+### D57 — ffmpeg è un pre-flight, non una scoperta a download finito
+
+`run_job` rifiuta di partire se ffmpeg non è risolto, con codice
+`FFMPEG_MISSING`. Non è una preferenza: è il risultato di una misura. Con
+`--ffmpeg-location /nonexistent`, yt-dlp **esce 0** e lascia due file separati
+(`x.f278.webm` + `x.f251.webm`): "due file splittati" non è un risultato, e
+distinguerlo a posteriori richiederebbe di capire dallo stderr un esito che il
+codice di uscita dichiara riuscito.
+
+Il costo: su un sito il cui selettore sceglierebbe un singolo stream muxed, il
+job viene comunque rifiutato. È accettato per M1 (YouTube-centric) e va rivisto
+in M3, quando i siti generici arrivano davvero — con la stessa nota nel codice.
+
+### D58 — Anche lo stderr ha una callback (misurato, non simmetrico per gusto)
+
+Misurato sul binario fissato: i template `download:` finiscono su **stdout**,
+quelli `postprocess:` su **stderr**. "Merging…" e la conversione audio si
+possono seguire solo leggendo stderr, quindi `process.rs` ha ora `LineSinks`
+con due callback e il ring buffer che continua a riempirsi in ogni caso (il
+classificatore di §8.5 legge quello). Un test d'integrazione lo pinna.
+
+### D59 — Deno nel manifest: pinnato 2.9.7, checksum verificati
+
+D34 diceva "deno non è nel manifest, per ora: M1 è dove si pinna". Ora c'è, con
+`bundled: false` (spec §0.7: solo yt-dlp e qjs nell'installer), `versioning:
+pinned`, sei asset. I checksum vengono dai file `<asset>.sha256sum` pubblicati
+dalla release; quello per `x86_64-unknown-linux-gnu` è stato **verificato byte
+per byte** scaricando lo zip (41,6 MB) il 2026-10-14 e confrontando lo sha256.
+Gli altri cinque non sono stati scaricati: sono i valori pubblicati, e questo è
+scritto nella `note` del manifest, non solo qui.
+
+Deno **non** entra in `wizardToolNames` come problema: `toolState` lo tratta
+come opzionale, altrimenti il pallino rosso del footer si accende su ogni
+installazione nuova per uno strumento che serve solo come ripiego.
+
+### D60 — `--playlist-end` non esiste più: fuori dall'M1, nota per M3
+
+Spec §6.2 e §6.4 nominano `--playlist-end 1000`. Sul binario fissato
+(2026.08.19) il flag **non c'è più**: l'equivalente è `-I :1000`
+(`--playlist-items`, con `[START]:[STOP][:STEP]`). M1 non enumera playlist,
+quindi nessun codice lo usa; M3 deve usare `-I`. Verificato con `--help` e con
+la tabella delle opzioni, non con la memoria.
+
+### D61 — La memoria QuickJS→Deno vive in `runtime-memory.json`, ed è best effort
+
+`<app data>/runtime-memory.json`, scritto atomico, letto con tolleranza: un file
+corrotto vale come "nessuna memoria" (costa un tentativo lento, non un errore).
+La chiave è `(yt-dlp version, qjs version)` con TTL 24 h; un orologio che torna
+indietro non rende eterna una decisione vecchia (`now >= decided_at` è parte del
+test). Un aggiornamento di yt-dlp la invalida da solo, che è la ragione per cui
+la chiave esiste.
+
+### D62 — Eventi temporanei `job:progress` / `job:done`
+
+Spec §3 elenca `queue:update`; la coda è M2. Fino a lì il job singolo emette
+`job:progress` (payload di spec §3 più `jobId`) e `job:done` (esito terminale,
+una volta sola). M2 li sostituirà: il payload è già quello giusto perché lo
+spostamento sia una rinomina, non una riscrittura.
+
+### D63 — Il video di prova del self-test: `jNQXAC9IVRw`
+
+"Me at the zoo" (2005, il primo video di YouTube). Il candidato ovvio — 
+`BaW_jenozKc`, il video di prova storico di youtube-dl — **oggi risponde "This
+video is unavailable"**: verificato il 2026-10-14 con il binario fissato. Un id
+verificato non resta verificato per sempre, quindi il self-test riporta runtime,
+secondi e numero di formati invece di fidarsi di un nome.
+
+### D64 — Timeout di ispezione: 60 s, 120 s se l'URL sembra una playlist
+
+Euristica pura su `list=`, `/playlist`, `/videos`, `/shorts`, `/@`, …: serve a
+scegliere il timeout *prima* dell'ispezione che lo direbbe. Il costo di una
+risposta sbagliata è solo "quale dei due timeout si applica".
+
+### D65 — `playlistKind`, non `kind`: una chiave doppia trovata dal compilatore
+
+`Inspected` è un enum con tag `kind`; `PlaylistStub` aveva un campo `kind`
+proprio. Serde lo avrebbe serializzato **due volte** con la stessa chiave — JSON
+che il nostro scrittore accetta e ogni lettore risolve diversamente. Non l'ha
+trovato un test Rust: l'ha trovato TypeScript dall'altra parte del confine
+(`"error" | "playlist" | "video"` non assegnabile). Il campo ora è
+`playlistKind`, e un test Rust verifica che la chiave `"kind"` compaia una volta
+sola nel JSON serializzato.
+
+### D66 — `-U` sul vero yt-dlp: provato, e il cambio di canale non è simmetrico
+
+Il follow-up di M0-C chiedeva di provare l'aggiornatore sul binario vero, che
+riscrive il proprio file mentre è in esecuzione. Fatto su una copia in `/tmp`
+(come D43 vuole: mai su un tool non nostro):
+
+* `--update-to nightly` da 2026.08.19: **aggiornato** a
+  `nightly@2026.10.10.233141`, il file cambia dimensione, il binario riparte.
+* `--update-to stable` da nightly: **no-op con uscita 0**, "yt-dlp is up to
+  date (nightly@…)": yt-dlp non considera un downgrade di data un aggiornamento.
+
+Il secondo caso è esattamente ciò per cui `classify_update` di D44 confronta le
+versioni prima del testo: uscita 0 e nessun cambiamento → `updated: false`,
+messaggio dell'updater. Non serve altro codice.
+
+### D67 — Gli extractor args di YouTube riducono i formati; restano perché la spec li vuole
+
+Misurato il 2026-10-14 sul binario fissato, video 4K: senza `--extractor-args`
+49 formati, con `youtube:player_client=web_embedded,web,tv` (il valore
+dell'originale, spec §5.3.7) **31**. La scala delle risoluzioni è identica
+(2160…144). La spec chiede di tenerli, "user-overridable in an expert field":
+restano, in una sola costante (`YOUTUBE_PLAYER_CLIENTS`), con la misura scritta
+accanto, così la prossima decisione è una riga. Il campo esperto arriva con
+§11.8.
+
+### D68 — Il test vero è `#[ignore]`, e si lancia a mano
+
+`tests/real_selftest.rs` usa il vero yt-dlp e il vero qjs, con rete: ispezione,
+download a 144p con merge, audio-only in `.opus`, self-test. È ignorato di
+default perché AGENTS.md §6 vieta test che dipendono da YouTube vivo nella suite
+normale; il comando per eseguirlo sta in testa al file. La suite normale lo
+conta come "ignored" — due test — e non come "passed", che è il punto.
+
+### D69 — `browserNamesForTriple`: Safari solo dove esiste
+
+Il dropdown dei cookie si costruisce dal **triple del backend**, non dallo user
+agent (stessa fonte della normalizzazione Rust, che scarta un browser che su
+questo OS non esiste). Un triplo vuoto — `npm run dev` nel browser — offre tutto
+tranne Safari: indovinare "mac" da una UA è la classe di rilevamento inaffidabile
+che questa separazione evita.

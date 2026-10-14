@@ -184,6 +184,7 @@
   "tools.action.installing": "Installazione… {percent}%",
 
   "tools.action.installingUnknown": "Installazione…",
+  "tools.action.cancel": "Annulla",
   "tools.selfTest.title": "Estrazione da YouTube",
   "tools.selfTest.hint": "Esegue un video pubblico noto attraverso l'ispezione e dice quale runtime JavaScript ha risposto e quanto ci ha messo (spec §5.3.6).",
   "tools.selfTest.button": "Prova l'estrazione da YouTube",

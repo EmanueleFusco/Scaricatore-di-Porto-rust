@@ -80,6 +80,7 @@ pub fn run() {
             commands::tools::tools_set_ytdlp_channel,
             commands::tools::tools_update_ytdlp,
             commands::tools::tools_install,
+            commands::tools::tools_cancel_install,
             commands::tools::tools_self_test,
             commands::tools::tools_complete_setup,
         ])

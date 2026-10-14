@@ -184,6 +184,7 @@
   "tools.action.installing": "Installing… {percent}%",
 
   "tools.action.installingUnknown": "Installing…",
+  "tools.action.cancel": "Cancel",
   "tools.selfTest.title": "YouTube extraction",
   "tools.selfTest.hint": "Runs one known public video through the inspection path and reports which JavaScript runtime answered and how long it took (spec §5.3.6).",
   "tools.selfTest.button": "Test YouTube extraction",
