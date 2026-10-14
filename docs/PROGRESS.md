@@ -1980,6 +1980,10 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
   - **Cookie da un browser vero**: gli argomenti sono provati con il falso tool
     e il filtro per OS con i test; leggere il database di un browser reale no
     (servono la macchina e una sessione dell'utente).
+  - **Pulizia all'avvio** dei `.sdp-tmp-*` orfani: copre solo la cartella
+    predefinita (impostazione o Download di sistema), non una cartella scelta al
+    volo nel selettore. Con M2 `queue.json` saprà quali cartelle appartengono a
+    elementi interrotti.
   - L'interfaccia grafica non è stata cliccata da qui (nessun modo di pilotare la
     finestra): avvio e assenza di errori all'avvio verificati, i percorsi di
     click no. Elencato per onestà.

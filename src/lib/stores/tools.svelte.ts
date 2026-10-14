@@ -46,6 +46,9 @@ class ToolsStore {
   installingTool = $state<string | null>(null);
   /** 0–100 while the size is known; `null` otherwise. */
   installPercent = $state<number | null>(null);
+  /** Set when the user pressed Cancel, so the cancelled download is not
+   * reported as a failure (spec §5.2: Cancel is a normal outcome). */
+  #installCancelled = false;
   /** Last "Test YouTube extraction" run (spec §5.3.6). */
   selfTest = $state<SelfTestReport | null>(null);
   selfTestRunning = $state(false);
@@ -150,6 +153,7 @@ class ToolsStore {
     this.busy = true;
     this.installingTool = tool;
     this.installPercent = null;
+    this.#installCancelled = false;
     let unlisten: UnlistenFn | null = null;
     try {
       if (!isTauriRuntime()) return null;
@@ -169,12 +173,17 @@ class ToolsStore {
       this.clearError();
       return status;
     } catch (err) {
-      this.#fail(err);
+      // A cancel is an answer, not a failure; the backend only says the
+      // download stopped.
+      if (!this.#installCancelled) {
+        this.#fail(err);
+      }
       return null;
     } finally {
       if (unlisten) unlisten();
       this.installingTool = null;
       this.installPercent = null;
+      this.#installCancelled = false;
       this.busy = false;
     }
   }
@@ -198,6 +207,7 @@ class ToolsStore {
 
   /** Cancel the install in flight (spec §5.2: progress **and** Cancel). */
   async cancelInstall(): Promise<void> {
+    this.#installCancelled = true;
     try {
       if (isTauriRuntime()) await invoke("tools_cancel_install");
     } catch (err) {
