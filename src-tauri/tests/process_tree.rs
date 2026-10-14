@@ -229,6 +229,34 @@ async fn a_non_zero_exit_code_is_reported_as_a_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stderr_can_have_a_live_callback_without_losing_the_ring_buffer() {
+    let _serial = serial().await;
+
+    // Measured on the pinned yt-dlp (2026.08.19): `postprocess:` progress goes
+    // to stderr, not stdout. Following "Merging…" live therefore needs a stderr
+    // callback, and the classifier still needs the tail — both at once, which is
+    // what this test pins down.
+    let (stdout_sink, stdout_lines) = collector();
+    let (stderr_sink, stderr_lines) = collector();
+    let result = process::spawn_tool_with_sinks(
+        command(&["both", "3"]),
+        CancellationToken::new(),
+        process::LineSinks::new(stdout_sink, stderr_sink),
+    )
+    .await
+    .expect("the tool must run");
+
+    assert!(result.success());
+    assert_eq!(collected(&stdout_lines), vec!["out-0", "out-1", "out-2"]);
+    assert_eq!(collected(&stderr_lines), vec!["err-0", "err-1", "err-2"]);
+    assert_eq!(
+        result.stderr_tail,
+        vec!["err-0", "err-1", "err-2"],
+        "the ring buffer must keep filling while the callback runs"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tool_that_does_not_exist_is_an_error_not_a_panic() {
     let _serial = serial().await;
 

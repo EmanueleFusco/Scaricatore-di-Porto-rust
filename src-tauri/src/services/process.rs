@@ -432,6 +432,34 @@ where
     Arc::new(sink)
 }
 
+/// The two line callbacks of one run.
+///
+/// stderr has a callback **as well as** the ring buffer, and that is not
+/// symmetric decoration: measured with the pinned yt-dlp (2026.08.19), the
+/// `download:` progress template goes to stdout while `postprocess:` goes to
+/// stderr, so "Merging…" and the audio extraction can only be followed live by
+/// reading stderr. The ring buffer keeps being filled either way, because the
+/// error classifier of spec §8.5 needs the tail.
+#[derive(Clone)]
+pub struct LineSinks {
+    pub stdout: LineSink,
+    pub stderr: LineSink,
+}
+
+impl LineSinks {
+    pub fn new(stdout: LineSink, stderr: LineSink) -> Self {
+        Self { stdout, stderr }
+    }
+
+    /// Only stdout is interesting; stderr still lands in the ring buffer.
+    pub fn stdout_only(stdout: LineSink) -> Self {
+        Self {
+            stdout,
+            stderr: discard_lines(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The tree handle
 // ---------------------------------------------------------------------------
@@ -981,6 +1009,14 @@ impl Drop for RunningTool {
 
 /// Start a tool. Both pipes are already being drained when this returns.
 pub async fn spawn(cmd: ToolCommand, on_stdout_line: LineSink) -> Result<RunningTool, AppError> {
+    spawn_with_sinks(cmd, LineSinks::stdout_only(on_stdout_line)).await
+}
+
+/// Start a tool, handing every stdout *and* stderr line to its callback.
+///
+/// See [`LineSinks`] for why stderr can have one: the pinned yt-dlp writes
+/// post-processing progress there, not on stdout.
+pub async fn spawn_with_sinks(cmd: ToolCommand, sinks: LineSinks) -> Result<RunningTool, AppError> {
     cmd.validate()?;
 
     let label = if cmd.label.is_empty() {
@@ -1043,7 +1079,7 @@ pub async fn spawn(cmd: ToolCommand, on_stdout_line: LineSink) -> Result<Running
 
     let stdout_task = match child.stdout.take() {
         Some(stdout) => {
-            let sink = Arc::clone(&on_stdout_line);
+            let sink = Arc::clone(&sinks.stdout);
             tokio::spawn(async move {
                 let _ = drain_lines(stdout, move |line| sink(&line)).await;
             })
@@ -1052,13 +1088,20 @@ pub async fn spawn(cmd: ToolCommand, on_stdout_line: LineSink) -> Result<Running
     };
 
     let stderr_task = match child.stderr.take() {
-        Some(stderr) => tokio::spawn(async move {
-            // The buffer lives inside the task, so the parent never shares a lock
-            // with a running child: it just receives it back when the task ends.
-            let mut ring = RingBuffer::new(STDERR_TAIL_LINES);
-            let _ = drain_lines(stderr, |line| ring.push(line)).await;
-            ring
-        }),
+        Some(stderr) => {
+            let sink = Arc::clone(&sinks.stderr);
+            tokio::spawn(async move {
+                // The buffer lives inside the task, so the parent never shares a lock
+                // with a running child: it just receives it back when the task ends.
+                let mut ring = RingBuffer::new(STDERR_TAIL_LINES);
+                let _ = drain_lines(stderr, |line| {
+                    sink(&line);
+                    ring.push(line);
+                })
+                .await;
+                ring
+            })
+        }
         None => tokio::spawn(async { RingBuffer::new(STDERR_TAIL_LINES) }),
     };
 
@@ -1084,7 +1127,17 @@ pub async fn spawn_tool(
     token: CancellationToken,
     on_stdout_line: LineSink,
 ) -> Result<ProcessResult, AppError> {
-    let mut tool = spawn(cmd, on_stdout_line).await?;
+    spawn_tool_with_sinks(cmd, token, LineSinks::stdout_only(on_stdout_line)).await
+}
+
+/// [`spawn_tool`] with a callback on stderr too, for tools that report progress
+/// there (yt-dlp's post-processing templates).
+pub async fn spawn_tool_with_sinks(
+    cmd: ToolCommand,
+    token: CancellationToken,
+    sinks: LineSinks,
+) -> Result<ProcessResult, AppError> {
+    let mut tool = spawn_with_sinks(cmd, sinks).await?;
     tool.wait(token).await
 }
 
