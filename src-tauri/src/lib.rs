@@ -38,12 +38,25 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            app.manage(AppState::load(&handle)?);
+            let state = AppState::load(&handle)?;
+            // Spec §5.2.1: copy the bundled yt-dlp into the app data dir on
+            // first launch, so the copy is the thing that runs and the thing
+            // `-U` can replace. Best effort: without it the app still works on
+            // the bundled binary.
+            commands::tools::bootstrap_first_run(state.tools());
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings::settings_get,
             commands::settings::settings_save,
+            commands::tools::tools_status,
+            commands::tools::tools_test,
+            commands::tools::tools_set_path,
+            commands::tools::tools_set_ytdlp_channel,
+            commands::tools::tools_update_ytdlp,
+            commands::tools::tools_install,
+            commands::tools::tools_complete_setup,
         ])
         .build(tauri::generate_context!());
 

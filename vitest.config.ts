@@ -13,7 +13,10 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    // `src` holds the frontend's pure modules; `scripts` holds the build
+    // helpers, whose parsing/validation logic (the tools manifest, the CI
+    // syntax lint) is exactly the kind that silently rots if nothing checks it.
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     environment: "node",
   },
 });

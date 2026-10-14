@@ -77,7 +77,12 @@ fn settings_get_returns_the_defaults_on_a_fresh_install() {
     let value = call(&window, "settings_get", json!({})).expect("settings_get must succeed");
     assert_eq!(value["settings"]["language"], "system");
     assert_eq!(value["settings"]["theme"], "system");
-    assert_eq!(value["settings"]["schemaVersion"], 1);
+    // Asserted against the constant, not a literal: the schema version changes
+    // when the document does, and a hardcoded "1" here would only ever fail.
+    assert_eq!(
+        value["settings"]["schemaVersion"],
+        scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION
+    );
     assert!(value["settings"]["defaultOutputDir"].is_null());
     assert!(value["recovery"].is_null());
     assert!(
@@ -85,6 +90,63 @@ fn settings_get_returns_the_defaults_on_a_fresh_install() {
             .as_str()
             .expect("path")
             .ends_with("settings.json")
+    );
+}
+
+#[test]
+fn tool_settings_travel_through_the_ipc() {
+    // The Tools page writes `toolPaths` and `ytdlpChannel`; if they were
+    // dropped by serialisation the override would silently stop applying.
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_with_settings_in(dir.path());
+    let window = webview(&app);
+
+    // The override has to be absolute *on this host*: the document is normalised
+    // on the way in, and `/opt/mine/yt-dlp` is rooted-but-driveless, so on
+    // Windows it is correctly treated as a relative path and dropped. That is
+    // the behaviour the second half of this test relies on, arriving by
+    // accident through the first half.
+    let override_path = if cfg!(windows) {
+        r"C:\opt\mine\yt-dlp"
+    } else {
+        "/opt/mine/yt-dlp"
+    };
+    let saved = call(
+        &window,
+        "settings_save",
+        json!({
+            "settings": {
+                "language": "en",
+                "theme": "dark",
+                "toolPaths": { "yt-dlp": override_path },
+                "ytdlpChannel": "nightly",
+                "setupWizardCompleted": true
+            }
+        }),
+    )
+    .expect("settings_save must succeed");
+
+    assert_eq!(saved["settings"]["toolPaths"]["yt-dlp"], override_path);
+    assert_eq!(saved["settings"]["ytdlpChannel"], "nightly");
+    assert_eq!(saved["settings"]["setupWizardCompleted"], true);
+
+    // A relative override is dropped by normalisation instead of being stored
+    // and refused later by the process layer (spec §4.8).
+    let saved = call(
+        &window,
+        "settings_save",
+        json!({
+            "settings": {
+                "toolPaths": { "ffmpeg": "relative/ffmpeg" }
+            }
+        }),
+    )
+    .expect("settings_save must succeed");
+    assert!(
+        saved["settings"]["toolPaths"]
+            .as_object()
+            .expect("object")
+            .is_empty()
     );
 }
 

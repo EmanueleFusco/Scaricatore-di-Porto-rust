@@ -1011,3 +1011,850 @@ scrive il codice e non a chi lo fa girare:
 ### Next step
 
 **M0-C**, senza altri prerequisiti da questa parte.
+
+---
+
+## 2026-10-13 — M0-C (manifest, tool inclusi, provisioning, pagina Strumenti, CI)
+
+### Done
+
+* **`tools.manifest.json`** (spec §5.1): `yt-dlp` in modo *always latest* con checksum
+  dal `SHA2-256SUMS` della release, `qjs` (QuickJS-NG) con tag e sha256 fissati.
+  Solo questi due sono inclusi (spec §0.7). `deno` **non** c'è: D34.
+* **`src-tauri/src/services/manifest.rs`**: tipi serde + validazione, 22 test. Il
+  manifesto è compilato nel binario (D31).
+* **`scripts/fetch_bundled_tools.mjs`**: scarica, verifica, rinomina, colloca in
+  `src-tauri/binaries/<nome>-<triple>[.exe]`. Risolve il tag via API GitHub
+  perché l'alias `latest` è risultato inaffidabile (D33). `--check` valida il
+  manifesto offline, `--verify-pins` riverifica gli sha256.
+* **`bundle.externalBin`** con `yt-dlp` e `qjs`; a runtime si cercano accanto
+  all'eseguibile (verificato in `tauri-bundler`).
+* **`services/tools.rs`**: le cinque fonti della lookup di spec §5.2 come lista
+  pura e ordinata; ogni candidata è validata **eseguendola** con timeout di 5 s.
+  Copia in app data al primo avvio; `-U` solo sulla copia nostra (D43).
+* **`services/download.rs`**: HTTPS, resume con `Range`, sha256, `chmod +x`,
+  rename atomico, zip/tar/tar.gz/tar.xz con un solo guard di path traversal.
+* **`commands/tools.rs`**: 9 comandi sottili + copia al primo avvio in `setup`.
+* **UI**: pagina Strumenti (tabella, azioni per riga, path e banner), procedura
+  iniziale con i passaggi 1, 2 e 4 di spec §11.1 (il 3 è un segnaposto
+  saltabile per M5), Impostazioni a schede, dizionari IT/EN completi.
+* **CI**: `npm run check:tools` nel job `check` (offline), fetch dei tool + test
+  sui tool **reali** + `ls` nel job `bundle` e in quello universale.
+* **`docs/SPIKES.md`** riscritto: sei prove con il metodo, cosa può andare storto
+  e i campi da riempire.
+
+### Verified by running
+
+Tutti i comandi di `AGENTS.md` §4, più quelli nuovi:
+
+| controllo | esito |
+| :-- | :-- |
+| `cargo fmt --all -- --check` | pulito |
+| `cargo clippy --all-targets -- -D warnings` | pulito |
+| `cargo test` | **179 verdi** (133 lib + 3 bundled_tools + 9 download + 15 process_tree + 6 settings_ipc + 13 tools) |
+| `npm run check` | 0 errori, 0 warning |
+| `npm test` | **72 verdi** in 5 file |
+| `npm run build` | ok, 108,71 kB JS |
+| `npm run check:ci` | 8 blocchi `run: \|` validi |
+| `npm run check:tools` | manifesto valido, 2 tool inclusi |
+| `node scripts/fetch_bundled_tools.mjs` | yt-dlp **2026.08.19**, qjs **0.17.0**, checksum verificati |
+
+**Il criterio di uscita di M0, provato per davvero** (spec §14: "yt-dlp + qjs
+work offline right after install"):
+
+* `cargo test --test bundled_tools` esegue i **binari veri** attraverso la lookup
+  dell'app, senza rete:
+  ```
+  yt-dlp: 2026.08.19 (from …/src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu)
+  qjs: 0.17.0 (from …/src-tauri/binaries/qjs-x86_64-unknown-linux-gnu)
+  ```
+  e per qjs anche uno script vero (`console.log('sdp-qjs-ok')`), perché è qjs
+  che yt-dlp esegue per la sfida EJS: un interprete che risponde solo a
+  `--version` passerebbe ogni altro test e fallirebbe sul primo link.
+* `npx tauri build` completo. Contenuto del `.deb` **verificato**, non supposto:
+  ```
+  /usr/bin/scaricatore-di-porto   5 039 440 byte
+  /usr/bin/yt-dlp               40 446 224 byte
+  /usr/bin/qjs                   2 562 504 byte
+  ```
+* L'app avviata davvero (build di debug, `XDG_*` su una cartella di prova):
+  ```
+  scaricatore-di-porto: yt-dlp installed in the app data dir at
+    …/com.scarikatorediporto.app/tools/yt-dlp/yt-dlp
+  ```
+  e la **copia in app data risponde**: `yt-dlp --version` → `2026.08.19`.
+  Viene creata anche la cartella temporanea privata (spec §4.9).
+* Dimensioni misurate (`report-bundle-sizes.mjs`): binario applicativo **4,81 MiB**
+  (obiettivo spec §1 ≤ 15 MB ✅), `.deb` **41,36 MiB**, `.rpm` **41,36 MiB**,
+  AppImage **147,27 MiB** (escluso dal budget).
+
+### Not verified / stubbed
+
+* **Solo Linux x64.** Tutto il resto — Windows, macOS arm64 e universale, Tier 2 —
+  aspetta la CI. In particolare `lipo` per il `qjs` universale è eseguito solo
+  su runner macOS e qui non è mai girato.
+* **`yt-dlp -U` non è mai stato eseguito contro il vero yt-dlp**: l'aggiornatore
+  è provato solo con il falso tool multi-call. Il `-U` vero riscrive il proprio
+  file mentre è in esecuzione, e questo è esattamente il caso che tocca la copia
+  in app data: va provato a mano.
+* **Nessun download è mai arrivato dalla rete dall'app**, perché nel manifesto
+  non c'è ancora nessuna entry installabile (D34, D41). Il downloader è provato
+  contro un server in loopback che serve corpo, resume, checksum sbagliato, 404 e
+  connessione interrotta.
+* **La pagina Strumenti e la procedura non sono state guardate con gli occhi.**
+  `svelte-check` e `npm run build` passano, l'app parte, ma nessuno ha guardato
+  la tabella con un tool mancante.
+* **`quarantine_repair` su macOS non è eseguibile qui.** È best-effort, solo
+  macOS, solo per i file in app data, e dopo una sonda già fallita.
+* La catena `download → extract → install` non è stata esercitata end-to-end con
+  un archivio reale: i test costruiscono archivi sintetici per non avere una
+  dipendenza di rete in una suite che deve essere offline.
+
+### Spec items marked "verify" that I checked
+
+* **Nomi degli asset GitHub** → presi dalle API GitHub, non dalla memoria
+  (D32). yt-dlp `2026.08.19`: `yt-dlp_linux`, `yt-dlp_linux_aarch64`,
+  `yt-dlp.exe`, `yt-dlp_macos`. QuickJS-NG `v0.17.0`: `qjs-linux-x86_64`,
+  `qjs-linux-aarch64`, `qjs-windows-x86_64.exe`, `qjs-darwin-arm64`,
+  `qjs-darwin-x86_64`. **Il nome è cambiato rispetto alle versioni precedenti
+  della spec**: non esiste più `qjs-darwin` generico.
+* **checksum qjs** → calcolati al primo download e messi nel manifesto, perché
+  QuickJS-NG **non pubblica** checksum.
+* **licenze** → yt-dlp **Unlicense**, QuickJS-NG **MIT**, lette dai file LICENSE.
+* **`externalBin`** → letto in `tauri-utils/src/config.rs` (suffisso
+  `<nome>-<triple>[.exe]`, percorsi relativi a `tauri.conf.json`) e in
+  `tauri-bundler` (`copy_binaries` toglie `-<target>`; destinazione
+  `Contents/MacOS`, `/usr/bin`, `$INSTDIR`, squashfs dell'AppImage).
+* **flag di yt-dlp** → `-U, --update` e `--update-to [CHANNEL]@[TAG]` letti nel
+  `--help` del binario scaricato.
+* **flag di versione** → `ffmpeg -version` (non `--version`), verificato su un
+  `ffmpeg` vero; banner reale `ffmpeg version n9.0.2 …` (D36).
+* **banner reali** → `2026.08.19` (yt-dlp), `0.17.0` (qjs),
+  `ffmpeg version n9.0.2 …` (ffmpeg), tutti riprodotti come stringhe di test.
+* **feature di reqwest** → `rustls-tls` esiste solo sulla linea 0.12, e in 0.13
+  usa **ring**, non aws-lc-rs (D35).
+* **`minVersion` di yt-dlp** → **non** verificato al livello della singola
+  release: si è potuto verificare solo che la release `2025.11.12` annuncia
+  «an external JavaScript runtime is now required». `TODO(verify)` in M1 (D42).
+* **label dei runner** → quelle della M0-B sono state riverificate e non sono
+  cambiate; nessuna nuova etichetta è stata introdotta qui.
+
+### Bugs trovati e corretti dai test (otto)
+
+Ognuno è stato verificato **revertendo la correzione** e rilanciando il test che
+la copre: senza il fix tutti e otto diventano rossi, per la ragione giusta.
+Non è una verifica banale — un test che copre un fix ma resta verde anche senza
+di esso non copre niente.
+
+1. Un aggiornamento **fallito** veniva riportato come riuscito quando il testo non
+   conteneva "up to date" (D44).
+2. Il retry interno del downloader riusava l'offset **di prima del loop**, quindi
+   ripeteva la stessa richiesta invece di riprendere.
+3. `Transport::loopback_http()` accettava `http://127.0.0.1.evil.com` e
+   `http://127.0.0.1@evil.com` (D37).
+4. Il guard di estrazione non rifiutava la barra rovesciata su Linux, dove è un
+   nome innocuo ma sulla stessa app su Windows è un traversal (D38).
+5. In un build di sviluppo la lookup **non trovava** i tool inclusi, perché
+   `tauri dev` non copia nulla e il file conserva il suffisso `-<triple>` (D39).
+6. Il parser delle versioni leggeva "versione sconosciuta" per ogni `ffmpeg` 7 o
+   successivo, per via del prefisso `n` (D36).
+7. **`ETXTBSY`**: Linux rispondeva "yt-dlp non c'è" perché la copia appena
+   scritta era ancora "busy" (D47). È l'unico dei sette che avrebbe colpito
+   l'utente finale con una diagnosi sbagliata.
+8. **`scripts/fetch_bundled_tools.mjs`** produceva `qjs.exe-x86_64-pc-windows-msvc.exe`:
+   `destinationPath` riceveva `executableName` (che su Windows è già `qjs.exe`)
+   invece del nome del tool, e il bundler non avrebbe trovato nulla. Trovato dal
+   test JS `uses the tool name, not the asset name`. Da solo avrebbe fatto fallire
+   **solo** la build Windows, con un errore (`externalBin`) che non nomina il
+   file: il tipo di difetto che si scopre al primo utente Windows.
+
+I primi sette sono nel backend, l'ottavo è nello script di build: nessuno dei due
+era visibile a `clippy` né a `cargo build`, e nessuno sarebbe emerso senza
+eseguire i test.
+
+A questi si aggiunge il caso che la validazione del manifesto ha **rifiutato la
+mia stessa prima stesura** (deno dichiarato "pinned" senza versione), che è il
+miglior argomento a favore di avere la regola scritta prima dei dati.
+
+**Il #7 ha una prova debole rispetto agli altri.** Il test che copre il ritento
+verifica l'helper (`errno == 26`), non il comportamento sotto carico: `ETXTBSY`
+non è riproducibile a comando. La prova vera è stata empirica e statistica —
+prima del fix la suite falliva 1 volta su 3, dopo 14 run su 14 verdi. Va tenuto a
+mente se un giorno quel test torna rosso: il sospetto è il filesystem, non la
+logica.
+
+### Needs a human — AGENTS.md §10.5
+
+1. **`docs/SPIKES.md` S1**: firmare e notarizzare su macOS **con dentro**
+   `yt-dlp_macos` e `qjs`. Se non passa, la spec ha già deciso il fallback
+   (scaricare yt-dlp al primo avvio su macOS): va applicato, non deciso.
+2. **S2**: l'installer firmato su una macchina Windows pulita con Defender
+   acceso. Nessuno ha ancora installato un binario prodotto dalla CI.
+3. **S3**: il costo di avvio di `yt-dlp` one-file contro la variante spacchettata.
+   Il metodo è pronto; il numero no.
+4. **S4**: il budget dell'installer. I numeri ci sono (41,4 MiB), la soglia no.
+5. **S5**: cancellare un download vero e guardare l'elenco dei processi. È la
+   prima occasione in cui l'albero è `yt-dlp → ffmpeg → runtime JavaScript`.
+6. **Guardare la pagina Strumenti** con l'app aperta: una riga "non trovato", una
+   riga "troppo vecchio", il pulsante "Usa il mio percorso", la procedura
+   iniziale.
+7. **Provare `-U` sul vero yt-dlp**, che riscrive il proprio file mentre gira.
+
+### Next step
+
+**M1**, con il precondition che questa fase si chiuda con la CI verde sulle tre
+piattaforme. Il primopezzo di M1 che tocca M0-C è `services/jsruntime.rs`: i
+flag `--no-js-runtimes --js-runtimes quickjs:<path>` vanno verificati con
+`--help` sul binario fissato, e lì si chiude anche il `TODO(verify)` su
+`minVersion` (D42).
+
+## 2026-10-13 — M0-C / Cinque test che sapevano una sola risposta
+
+La prima run di `m0-tools` sulla CI: `check` verde dopo D48, ma rossi
+`process tests (windows-x64)` e `bundle (windows-x64)`. Il log: 5 test falliti,
+tutti sulla gestione dei path. **Non un bug di produzione: i test erano scritti
+solo per l'host su cui li avevo scritti.** Dettagli e prove in D49.
+
+- **Done**
+  - `well_known_dirs` separata in `well_known_dirs_for(home, windows,
+    user_profile, local_app_data)`: entrambi i rami sono ora eseguibili da una
+    sola macchina, come già faceva `override_candidate`.
+  - Il ramo Windows composto come testo: `Path::join` prende il separatore
+    dell'host e restituiva `C:\Users\tester/.deno\bin`.
+  - Test riscritti perché chiedano di *questa* macchina: nuovi helper `host_dir`
+    e `host_exe` in `services::tools`, path nativi anche in `state.rs` e in
+    `tests/settings_ipc.rs`.
+  - Aggiunte le asserzioni che prima non esistevano: la lista Unix non deve
+    contenere `WinGet`, quella Windows deve essere esattamente le due directory
+    nell'ordine di spec §5.2, e con un ambiente vuoto la lista Windows è vuota.
+- **Verified by running**
+  - `cargo fmt --all -- --check` → OK; `cargo clippy --all-targets -- -D warnings`
+    → OK; `cargo test --no-fail-fast` → **179 verdi** (133 lib + 3 bundled_tools
+    + 9 download + 15 process_tree + 6 settings_ipc + 13 tools).
+  - `npm run check` → 0 errori, 0 warning; `npm test` → **77 verdi**;
+    `npm run check:tools` → manifest OK.
+  - **Revert-check**: invertendo l'ordine delle due directory Windows il test
+    va rosso con `left: […WinGet\Links, ….deno\bin]` / `right: […\.deno\bin,
+    …WinGet\Links]`; ripristinato torna verde. Il test custodisce davvero.
+  - Risposte di `std` verificate dalla sorgente (Rust 1.95.0,
+    `library/std/src/sys/path/windows.rs`): `is_absolute = has_root &&
+    prefix().is_some()`, quindi `C:\opt\bin1` assoluta, `/opt/mine/qjs` **no**;
+    `extension()` usa `rsplit_file_at_dot`, quindi `qjs.exe` → `Some("exe")` e
+    l'override non viene ricomposto. Non dalla memoria.
+- **Not verified / stubbed**
+  - **I cinque test non sono stati eseguiti su Windows.** Il giudice è il runner
+    Windows della CI. Le ragioni sono verificate dalla sorgente di std, ma
+    "verificato" e "sarà verde" restano due cose diverse.
+  - `cargo check --all-targets --target x86_64-pc-windows-msvc` non gira qui:
+    si ferma su `ring` (`failed to find tool "lib.exe"`). Nessun `mingw-w64`
+    disponibile e wine non è utilizzabile senza un linker. Quindi nemmeno la
+    compilazione dei test per Windows è stata controllata da questa macchina.
+  - Ancora non diagnosticato: `bundle (macos-universal)`. Ipotesi aperta, nessun
+    log.
+- **Spec items marked "verify" che I checked**
+  - `Path::is_absolute` su Windows → verificato dalla sorgente std (citata sopra).
+  - Nient'altro in questa sessione.
+- **Decisions/deviations**
+  - D49: i test non sono stati indeboliti, sono stati riscritti; e la funzione
+    è stata resa dipendente dai soli suoi argomenti perché altrimenti il ramo
+    Windows verrebbe asserito solo dal runner che già falliva.
+  - D48 (sessione precedente) restava il vero autore del fallimento di `check`.
+- **Next step**
+  1. Committare e rilanciare il workflow: `process tests (windows-x64)` deve
+     andare verde, e con lui `bundle (windows-x64)` se la causa era una sola.
+  2. Il log di `bundle (macos-universal)`, che è un'altra storia e non l'ho
+     ancora guardato. Ipotesi: il passo `lipo -info` aggiunto in M0-C, mai
+     eseguito.
+  3. **Attenzione alla disciplina**: se dopo questa run che ha prodotto gli
+     artifact si aggiunge un commit, gli artifact non corrispondono più a
+     `main`. Rilanciare il workflow prima della merge.
+
+## 2026-10-13 — M0-C / Il bundle universale vuole tre nomi per tool
+
+`bundle (macos universal)` era rosso con
+`resource path 'binaries/yt-dlp-aarch64-apple-darwin' doesn't exist`, mentre
+Linux e macOS arm64 erano verdi. Dettagli e fonti in D50.
+
+- **Done**
+  - `fetch_bundled_tools.mjs --target universal-apple-darwin` produce ora **tre**
+    file per tool: i due per-architettura (che `build.rs` chiede, una volta per
+    ogni passaggio di cargo) e quello universale (che il bundler chiede alla
+    fine). Prima ne produceva uno.
+  - `UNIVERSAL_SLICES` e `lipoArchName` ricavati, non indovinati: le slice sono
+    un fatto di Tauri, `lipo` vuole `arm64` dove Rust dice `aarch64`.
+  - `yt-dlp` le due slice escono da `lipo -thin` sull'asset universale; `qjs`
+    sono i due asset nativi che il `lipo -create` gia' scaricava.
+  - Il ramo "gia' presente" scrive comunque le slice: altrimenti un secondo run
+    ritrovava l'universale, saltava tutto, e non scriveva mai i due file che il
+    build script sta per chiedere — lo stesso difetto, ma solo dalla seconda
+    volta.
+  - `validateManifest`: `builtFrom` deve elencare esattamente le slice che Tauri
+    assembla.
+  - La guardia `lipo` è centralizzata e gira **prima del primo byte**: prima
+    falliva dopo 37 MB scaricati, perché `yt-dlp` viene prima di `qjs` nella
+    lista e arrivava a `lipo` per primo.
+  - Passo di CI `lipo -info` (un file, mai eseguito) sostituito da `Every bundled
+    file is the architecture its name promises` (sei file, sei modi di fallire).
+  - **`scripts/ci-steps.test.mjs`, nuovo**: 7 test che eseguono quel passo con un
+    `lipo` finto che risponde in base al **contenuto** del file.
+- **Verified by running**
+  - `npm test` → **92 verdi** (erano 77: +8 fetch, +7 passo di CI).
+  - `npm run check:tools` → manifest OK; `npm run check:ci` → 9 blocchi `run: |`
+    validi; `cargo fmt --check` OK; `cargo clippy -D warnings` → 0 errori;
+    `cargo test` → 8 suite verdi; `npm run check` → 0 errori, 0 warning.
+  - **Il passo di CI, eseguito davvero** contro un `lipo` finto, in sei scenari:
+    caso buono (0), file per-arch mancante (1), universale mono-arch (1),
+    universale senza arm64 (1), slice che è un fat binary (1), slice
+    dell'architettura sbagliata (1). Tutti con l'esito atteso.
+  - **Due difetti trovati eseguendolo**, non leggendolo: `Non-fat file` contiene
+    `fat file` (il passo rifiutava i 6 file giusti), e un ramo morto tolto.
+  - **Revert-check**: `builtFrom` con una slice sola e con una terza slice → il
+    controllo del manifesto segnala entrambe le situazioni.
+  - Asset `yt-dlp_macos` verificato **su Linux**: magic `0xcafebabe`, `nfat_arch`
+    2, `x86_64` 73 808 B + `arm64` 37 047 744 B. È un vero fat binary, quindi
+    `lipo -thin` è applicabile.
+  - Da Linux, `--target universal-apple-darwin` → messaggio chiaro e **zero byte
+    scaricati** (cartella non creata).
+- **Not verified / stubbed**
+  - **`lipo -create`, `lipo -thin` e `tauri build` universale non sono mai
+    girati qui: non esistono su Linux.** Verificato su questa macchina: la logica
+    di fetch (nomi, checksum, ordinamento), il passo di CI contro il finto,
+    l'intestazione Mach-O dell'asset. Il resto lo vedrà il runner macOS.
+  - Nessun `.app` universale è stato costruito né aperto.
+- **Spec items marked "verify" che I checked**
+  - Quale nome chiede `build.rs` durante un build universale → `env::var("TARGET")`
+    in `tauri-build/src/lib.rs`, cioè per-architettura (citato in D50).
+  - Quale nome chiede il bundler → `self.target` in
+    `tauri-bundler/src/bundle/settings.rs`, cioè `universal-apple-darwin`.
+  - `yt-dlp_macos` è universale → letta l'intestazione Mach-O, vedi sopra.
+- **Decisions/deviations**
+  - D50: tre nomi per tool; `lipo -thin` per yt-dlp; `builtFrom` vincolato alle
+    slice di Tauri; passo di CI da uno a sei file, con due difetti trovati
+    eseguendolo.
+- **Next step**
+  1. Committare e rilanciare il workflow. `bundle (macos universal)` deve andare
+     verde; se fallisce, **il log sarà molto più utile di prima**: i sei file
+     sono controllati per nome e per contenuto prima che il bundle venga
+     impacchettato.
+  2. `process tests (windows-x64)` e `bundle (windows-x64)`: D49 li corregge ma
+     non sono mai stati eseguiti su Windows.
+  3. Poi il discorso di `cargo-xwin` + wine per compilare i test per Windows da
+     Linux, che è ancora aperto.
+
+## 2026-10-13 — M0-C / I test Windows su Linux, e il sesto bug di fila
+
+Mentre la CI girava: `cargo-xwin` + wine per eseguire la suite su Windows dalla
+macchina Linux. Dettagli in D51.
+
+- **Done**
+  - `cargo xwin check --all-targets` per `x86_64-pc-windows-msvc`: **verde**,
+    35 s. Chiuso il buco «i test non sono mai stati compilati per Windows».
+  - Verificato che il check **non è vacuo**: un errore di tipo dentro il modulo
+    di test lo fa fallire.
+  - `cargo xwin test --test process_tree`: **15/15 verdi sotto wine**, con
+    `cancelling_kills_the_child_and_the_grandchild`,
+    `dropping_a_running_tool_kills_the_tree` e
+    `the_app_exit_hook_kills_every_running_tool`. È spec §4, che avevo dichiarato
+    non verificabile.
+  - **Corretto un bug mio** in `well_known_dirs_for`: su Windows il ramo Unix
+    produceva `/home/tester\.deno\bin`. Il commento che prometteva «la risposta
+    dipende solo dagli argomenti» era falso per metà della funzione.
+  - Documentato nel codice perché esiste: su Windows `create_private_dir` non può
+    mettere 0700 e la privacy viene dalla app data dir. Da lì il 133 (Linux)
+    contro 132 (Windows), che è una differenza voluta e ora scritta.
+  - Corretta una mia supposizione: wine **fa** funzionare i Job Object.
+- **Verified by running**
+  - Linux: `cargo fmt --check` OK, `cargo clippy -D warnings` 0 errori,
+    `cargo test` 8 suite verdi, `npm test` **92 verdi**, `check:tools` OK.
+  - Windows via wine: `cargo xwin test --lib` → **132 verdi, 0 falliti**.
+  - Windows via wine: `cargo xwin test --test process_tree` → **15 verdi**.
+  - Confronto degli elenchi di test Linux/Windows: l'unica differenza è
+    `create_private_dir_uses_mode_0700`, escluso con `#[cfg(unix)]`.
+- **Not verified / stubbed**
+  - `npx tauri build` su Windows, l'installer e `bundled_tools`: non provati.
+    Wine non sostituisce un runner vero per l'impacchettamento.
+  - Il fix di `well_known_dirs_for` è stato verificato **sotto wine**, non sul
+    runner Windows della CI: se quel runner risponde diversamente, la CI resta
+    l'arbitro.
+- **Spec items marked "verify" che I checked**
+  - Job Object sotto wine: `CreateJobObjectW`, `AssignProcessToJobObject`,
+    `TerminateJobObject` e `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (via `Drop`)
+    funzionano. Misurati, non dedotti.
+  - Confronto sysroot wine `Z:\` ↔ `/`: i test che scrivono e leggono file
+    passano senza problemi di percorso.
+- **Decisions/deviations**
+  - D51: `cargo-xwin` + wine come seconda opinione, non come sostituto; e la
+    regola che vale più di tutto, cioè che quando proxy e test vero discordano
+    ha ragione il test vero.
+- **Next step**
+  1. La CI in corso **fallirà** su `well_known_locations_include_the_ones_the_
+     spec_lists` se il fix non è pushato. Serve un commit e un rilancio.
+  2. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
+  3. Script e prerequisite di `cargo-xwin` da mettere in `GUIDA_OPERATIVA.md`
+     (personale, fuori dal repository).
+
+## 2026-10-13 — M0-C / Un path scritto al posto dei contenuti
+
+Seconda run di `bundle (macos universal)`: il passo di CI ha trovato che
+`binaries/qjs-aarch64-apple-darwin` non è un Mach-O. Dettagli in D52.
+
+- **Done**
+  - `downloadSlice` restituisce `{ bytes, path }`: i due chiamanti dichiarano
+    quale serve. Prima restituiva solo `path` e quel path finiva **scritto come
+    contenuto** del file.
+  - Guardia in `install()`: un payload di tipo stringa viene rifiutato al
+    momento dell'errore, con quattro test.
+  - Il comportamento esiste **solo su macOS**: su Linux il ramo `lipo -thin`
+    funziona, quindi il codice sembrava corretto.
+- **Verified by running**
+  - Asset di qjs scaricati e letti su Linux: `qjs-darwin-arm64` e
+    `qjs-darwin-x86_64` sono Mach-O `MH_EXECUTE`, arm64 e x86_64. **Asset e
+    manifesto sono corretti** — la prima ipotesi (asset sbagliato) era falsa.
+  - `npm test` → **96 verdi** (erano 92: +4 sulla guardia).
+  - La guardia attiva davvero: passando un percorso, `install` fallisce con
+    `internal error: asked to write a string to …`.
+  - Linux: fmt OK, clippy 0 errori, 8 suite Rust verdi, `svelte-check` 0/0,
+    `check:tools` OK, `check:ci` 9 blocchi validi.
+  - Windows via wine: `cargo xwin test --lib` → **132/132**.
+- **Not verified / stubbed**
+  - **Il fetch universale vero e `tauri build --target universal-apple-darwin`
+    non sono mai stati eseguiti.** Non girano su Linux: `lipo`, `tauri build` e
+    la composizione del `.app` non esistono qui. La catena fino a `install` è
+    corretta per costruzione e per test; da lì in poi è la CI che deve dirlo.
+  - Per macOS **non esiste** un equivalente di `cargo-xwin`: la copertura
+    locale che ho per Windows non ce l'ho per macOS, ed è il limite reale di
+    questo approccio.
+  - Ancora da diagnosticare: i due job Windows. La suite completa sotto wine è
+    178/178, quindi la causa più probabile è il bug di D51, già corretto; ma
+    `bundle (windows-x64)` scarica i binari Windows da GitHub, cosa che qui non
+    posso verificare.
+- **Spec items marked "verify" che I checked**
+  - Gli asset macOS di QuickJS-NG sono Mach-O eseguibili: letta l'intestazione
+    su Linux, `filetype 2`, cpu `0x100000c` (arm64) e `0x1000007` (x86_64).
+- **Decisions/deviations**
+  - D52: `{ bytes, path }` esplicito più guardia in `install()`, perché in
+    JavaScript il tipo sbagliato è silenzioso e il sintomo arriva due passi dopo
+    in un messaggio che non nomina la causa.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. Servono comunque le righe `FAILED` dei due job Windows: la suite sotto wine
+     è verde, ma «molto probabile» non è «verificato».
+  3. Dopo il verde: installare e provare i pacchetti, poi merge e tag.
+
+### Addendum alla voce D51 — cosa `cargo-xwin` NON può fare
+
+Verificato tentando di eseguire `tests/bundled_tools.rs` per Windows sotto
+wine, con i binari Windows scaricati al posto giusto:
+
+```
+refusing to spawn the relative tool path
+/home/arturo/Documenti/ScaricatoreDiPorto/src-tauri\binaries\qjs-x86_64-pc-windows-msvc.exe
+```
+
+Il codice del test **e' corretto**: usa `Path::join`, non la concatenazione di
+stringhe. Il path e' misto perche' `CARGO_MANIFEST_DIR` e' un path Unix (la
+ compilazione e' stata fatta qui) e `Path::join` su Windows aggiunge `\`.
+Su un runner Windows vero `CARGO_MANIFEST_DIR` e' `D:\a\...` e il risultato e'
+valido. Quindi `bundled_tools` **non e' eseguibile sotto wine**: non per un difetto,
+perche' l'ambiente non e' rappresentabile.
+
+Da notare che `process.rs` ha rifiutato quel path e ha avuto ragione:
+`/home/...\binaries\qjs.exe` su Windows non e' assoluto (nessuna lettera di
+unita'), quindi il rifiuto di spec 4.8 e' il comportamento giusto. La guardia ha
+respinto un path genuinamente malformato.
+
+**La sostanza del test e' comunque verificata a mano**, eseguendo i binari
+Windows fuori dalla suite: il fetch per `x86_64-pc-windows-msvc` funziona da
+Linux (checksum di yt-dlp verificato contro `SHA2-256SUMS`, quello di qjs contro
+il manifesto), entrambi sono PE32+ `machine 0x8664`, `yt-dlp.exe --version` ->
+`2026.08.19`, `qjs.exe --version` -> `0.17.0`, e `qjs.exe` esegue uno script
+reale. Cioe' tutto quello che `bundled_tools` afferma, verificato con un metodo
+diverso.
+
+**Quello che `cargo-xwin` non copre, in tre righe:**
+
+* `bundled_tools` — il path di compilazione non e' rappresentabile sotto wine;
+* `tauri build` e l'impacchettamento su Windows — restano al runner vero;
+* il comportamento su macOS — non esiste un equivalente, e D52 lo ha mostrato:
+  quel difetto era invisibile su Linux perche' esiste solo su macOS.
+
+## 2026-10-13 — M0-C / `.exe` dopo il triple
+
+Terzo e ultimo rosso. `bundle (windows-x64)` falliva su
+`yt-dlp: the bundled binary did not answer --version`. Dettagli in D53.
+
+- **Done**
+  - Nuova `fetched_name(tool, triple)`: `<tool>-<triple>` con `.exe` **dopo** il
+    triple. `candidates()` la usa per il candidato di sviluppo.
+  - `executable_name` (nome nell'app installata, `yt-dlp.exe`) e `fetched_name`
+    (nome in `binaries/`, `yt-dlp-<triple>.exe`) sono tenute distinte a verbale:
+    erano la stessa cosa scritta in due modi, e solo uno dei due giusto.
+  - Il test del candidato con triple riscritto: tre triple Tier 1 più
+    `universal-apple-darwin`, nomi esatti scritti a lettere, e una guardia che
+    vieta `.exe-` in un nome.
+- **Verified by running**
+  - **Revert-check**: con il codice vecchio il test rosso e stampa
+    `/app/yt-dlp.exe-x86_64-pc-windows-msvc` come candidato; ripristinato, verde.
+  - Linux: fmt OK, clippy 0 errori, 8 suite verdi, `npm test` **96 verdi**,
+    `svelte-check` 0/0, `check:tools` OK, `check:ci` 9 blocchi validi.
+  - Windows via wine: `cargo xwin test --lib` → **132/132**.
+- **Not verified / stubbed**
+  - `bundled_tools` **non è eseguibile sotto wine** (addendum a D51:
+    `CARGO_MANIFEST_DIR` compilato su Linux + `Path::join` Windows = path misto,
+    giustamente rifiutato da spec 4.8). La sostanza è verificata a mano: fetch
+    Windows funzionante da Linux, checksum corretti, PE32+ x86_64,
+    `yt-dlp.exe --version` → `2026.08.19`, `qjs.exe --version` → `0.17.0`, qjs
+    esegue uno script.
+  - Il fetch universale vero e `tauri build` universale (D52): non girano su
+    Linux, resta la CI.
+- **Spec items marked "verify" che I checked**
+  - La convenzione del nome: `tauri_utils::external_binaries` costruisce
+    `{path}-{triple}{.exe su Windows}`; `fetch_bundled_tools.mjs` scrive
+    `<nome>-<triple>.exe`. Due fonti, stessa convenzione.
+- **Decisions/deviations**
+  - D53: `fetched_name` separato da `executable_name`; test del candidato
+    riscritto sulle quattro triple invece di una.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. **Da fare dopo il verde**: accendere `SDP_DEBUG_PROBE` nel passo di CI che
+     testa i tool, cosi' un fallimento dirà la causa e non solo la conclusione.
+     E' la seconda volta che un diagnostico esistente ma spento mi costa un
+     round-trip.
+  3. Dopo: installare e provare i pacchetti, poi merge e tag.
+
+## 2026-10-13 — M0-C / Il fallback puntava a qualcosa di rotto
+
+Ultimo rosso: `bundle (macos-arm64)`. HTTP 403 dalla API e 404 dall'alias
+`latest`. Dettagli in D54.
+
+- **Done**
+  - Risoluzione del tag in tre passi: API col token, API senza token, **redirect
+    della pagina release** (nessuna quota, nessun rate limit).
+  - L'alias `latest/download/` **eliminato**: rispondeva 404 tre volte su tre.
+  - `releaseUrl` e `checksumUrl` ora hanno il segnaposto `{tag}`: con `latest`
+    scritto dentro non c'era dove mettere il tag che il redirect fornisce.
+  - `GITHUB_TOKEN` nei due passi di fetch della CI (solo GitHub, mai stampato).
+  - `tagFromLocation()` rifiuta `.` e `..`: passavano ogni controllo sui
+    caratteri e finivano nell'URL come `/releases/download/../`.
+- **Verified by running**
+  - **Il fallback eseguito davvero**, con l'API disabilitata nel codice: ottiene
+    `2026.08.19` dal redirect, scarica l'URL col tag esplicito e verifica il
+    checksum `0f192b7ec147ab62…` — **identico** a quello del percorso con l'API.
+  - Percorso normale (con API) verificato per `aarch64-apple-darwin`.
+  - Misurati i due sintomi: alias `latest` 404 su 3 tentativi; URL col tag 206.
+  - Misurato il redirect: `curl -sI` restituisce 302 con
+    `location: …/releases/tag/2026.08.19`.
+  - `npm test` → **104 verdi** (erano 96: +8 sul fallback e sul tag).
+  - Linux: 8 suite Rust verdi, `svelte-check` 0/0, `check:tools` OK,
+    `check:ci` 9 blocchi validi.
+  - Un primo tentativo di verifica (proxy con `HTTPS_PROXY`) **non ha funzionato**
+    e non è stato contato: il `fetch` di Node non onora quella variabile.
+- **Not verified / stubbed**
+  - Il comportamento sotto carico reale della API (403 per IP condiviso) non è
+    riproducibile qui: si è verificato il ramo del fallback, non l'evento.
+  - Restano non eseguiti: fetch universale vero e `tauri build` universale.
+- **Spec items marked "verify" che I checked**
+  - Alias `latest/download/`: 404 tre volte su tre, contro 206 per l'URL col
+    tag esplicito sullo stesso asset.
+  - Header `Location` del redirect di `/releases/latest`: contiene il tag.
+- **Decisions/deviations**
+  - D54: tre strategie di risoluzione del tag in ordine, alias `latest` tolto,
+    `{tag}` esplicito nel manifesto, token in CI.
+- **Next step**
+  1. Committare, push, rilanciare il workflow.
+  2. **Da fare dopo il verde**: accendere `SDP_DEBUG_PROBE` nei passi che testano
+     i tool, cosi' un fallimento dirà la causa (D53).
+  3. Poi: installare e provare i pacchetti, merge, tag.
+
+## 2026-10-13 — M0-C / Run verde: due warning annotati, non corretti
+
+Run di `m0-tools` **verde su tutti e sette i job**, incluso `bundle (macos
+universal)`, che era l'unico passaggio della catena mai arrivato in fondo. I due
+warning che la run segnala sono annotati qui e **non è stato modificato niente**
+né nel codice né nella CI, per scelta esplicita.
+
+- **Warning 1 — Node.js 20 deprecato nelle GitHub Actions.**
+  `Node.js 20 is deprecated. The following actions target Node.js 20 but are
+  being forced to run on Node.js 24`.
+  Riguarda il **runtime delle azioni**, non il nostro Node: le azioni sono
+  scritte per girare su Node 20, i runner le forzano su Node 24. Oggi funziona
+  (la run è verde), quindi non è un problema attuale; è un problema **futuro e
+  datato**, nel momento in cui Node 20 sparisce dai runner.
+  Azioni coinvolte, dalle nostre dipendenze di workflow:
+
+  | azione | versione che usiamo |
+  | :-- | :-- |
+  | `actions/checkout` | `@v4` |
+  | `actions/setup-node` | `@v4` |
+  | `actions/upload-artifact` | `@v4` |
+  | `actions/download-artifact` | `@v4` |
+  | `Swatinem/rust-cache` | `@v2` (non segnalata: non e' `actions/*`) |
+
+  Riferimento: <https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/>
+  **Da verificare quando si decidera'**: quali versioni maggiori esistono e se
+  dichiarano Node 24. Non l'ho controllato adesso perche' la richiesta era di
+  annotare e non di agire.
+- **Warning 2 — `ubuntu-latest` passa a Ubuntu 26 il 19 ottobre 2026.**
+  `The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19,
+  2026.` Riferimento:
+  <https://github.com/actions/runner-images/issues/14748>
+  **Da oggi (2026-10-13) mancano 6 giorni.**
+
+  Chi e' esposto, dai `runs-on` del workflow:
+
+  | job | runner | esposto |
+  | :-- | :-- | :-- |
+  | `check` | `ubuntu-latest` | **si**, e gira a ogni push |
+  | `release` | `ubuntu-latest` | si |
+  | `process-tests`, `bundle` | matrice: `ubuntu-22.04`, `windows-2022`, `macos-latest` | no, il Linux e' pinnato a 22.04 |
+
+  Cioe' il lavoro che produce l'installer non e' esposto: il job `bundle` e' su
+  `ubuntu-22.04` di proposito, perche' e' la versione su cui il `.deb` e l'rpm
+  sono stati misurati. A cambiare e' `check`, che e' il job veloce: un'immagine
+  nuova con un GTK/WebKitGTK diverso e' esattamente il tipo di cosa che fa
+  fallire una build per motivi che non hanno a che fare con il codice.
+
+  **Quello che e' gia' stato fatto per questo**, e che vale la pena non
+  dimenticare: quando i pacchetti apt della CI sono stati scelti, sono stati
+  verificati uno per uno contro gli indici di `apt` ed esistono su **22.04, 24.04
+  e 26.04** (commento nella CI, riga 83). Quindi il rischio residuo non e'
+  «un pacchetto non c'e' piu'», e' «compila ma produce un binario diverso».
+
+- **Next step**
+  1. Installare e provare i pacchetti: e' il controllo che nessuna run puo' fare
+     al posto di una persona, ed e' quello che sblocca il tag `v0.1.0`.
+  2. Prima del 19 ottobre: decidere cosa fare del `ubuntu-latest` di `check`.
+     L'opzione con il minor costo e' fissarlo a `ubuntu-24.04` (o 22.04) come
+     gli altri job, cosi' la migrazione non arriva a sorpresa.
+  3. Separatamente: decidere se aggiornare le azioni `actions/*` per il runtime
+     Node 24.
+  4. Come da D53: accendere `SDP_DEBUG_PROBE` nei passi che testano i tool, cosi'
+     un fallimento futuro dirà la causa e non solo la conclusione.
+
+## 2026-10-13 — Ricerca sui due warning CI: nessuna modifica applicata
+
+Richiesta: verificare i due warning e mettere in documentazione come risolverli,
+**senza toccare il codice**. Così è fatto: questo voce è l'unica modifica.
+
+Tre scoperte, in ordine di gravità. **La prima non era nei warning.**
+
+### A. `ubuntu-22.04` è già in deprecazione — ed è il job che produce gli installer
+
+I warning parlavano di `ubuntu-latest`, che riguarda solo `check` e `release`.
+Seguendo la pista delle immagini scoperte, il job `bundle` gira su
+**`ubuntu-22.04`**, e quello è un problema diverso e più serio.
+
+`actions/runner-images` #14254, stato **aperto**, aperto il 2026-06-16:
+
+> GitHub Actions announcing the deprecation process for `ubuntu-22.04` and
+> `ubuntu-22.04-arm`. While the images are being deprecated, You may experience
+> longer queue times during peak usage hours. Deprecation will begin on
+> **September 17th, 2026** and the images will be fully unsupported by
+> **April 17th, 2027** for GitHub Actions and Azure DevOps.
+
+E la parte che conta:
+
+> To raise awareness of the upcoming removal, we will **temporarily fail jobs
+> using Ubuntu 22.04**. The brownouts are scheduled for the following dates:
+> March 23, March 30, April 6, April 13 (ognuno 14:00 UTC → 00:00 UTC del giorno dopo).
+
+Quindi: la deprecazione è iniziata **26 giorni fa**, i nostri build falliranno
+in quattro finestre a marzo–aprile 2027, e il 17 aprile 2027 **smettiano del
+tutto**. Il motivo: «GitHub Actions maintains the latest two stable versions of
+any given OS version», e ora quelle sono 24.04 e 26.04.
+
+**Cosa colpisce**, dai `runs-on` del workflow:
+
+| job | runner | esposto |
+| :-- | :-- | :-- |
+| `bundle` linux-x64 | `ubuntu-22.04` | **sì: `.deb`, `.rpm`, AppImage** |
+| `check` | `ubuntu-latest` | sì, ma non produce nulla di pubblicato |
+| `release` | `ubuntu-latest` | sì, ma solo raccoglie artifact |
+| `bundle` windows / macos | `windows-2022` / `macos-latest` | no |
+| `process-tests` | `windows-2022`, `macos-latest` | no (non ha una gamba Linux) |
+| `tier2` linux-arm64 | `ubuntu-24.04-arm` | no, 24.04 è supportata |
+
+**Nota sul perché 22.04 era la scelta giusta**, e va tenuto presente invece di
+dimenticarlo: il commento nella CI spiega che si compila sul sistema più vecchio
+supportato perché il `.deb` deve girare anche su distribuzioni più recenti
+(glibc e webkit2gtk linkati dinamicamente), e che è ciò che chiede spec §13.5 e
+§5.4 («oldest supported distro»). La scelta era corretta; è il mondo che si è
+mosso. La sostituzione naturale è `ubuntu-24.04`, facendo attenzione che
+**webkit2gtk su jammy è stato aggiornato solo per amd64/i386 (arm64 è ancora a
+2.36)** — ed è il motivo per cui `tier2` usa già `ubuntu-24.04-arm`. Passando a
+24.04 quella precauzione cade, e il `.deb` si allinea a 24.04/26.04.
+
+### B. Node 20 è già rimosso: era "futuro", è "già successo"
+
+La voce precedente diceva «oggi funziona, problema futuro». **È sbagliato, e la
+correzione è il punto di questa ricerca.**
+
+Dalla changelog (2025-09-19, con aggiornamenti fino al 25 agosto 2026):
+
+> Node20 will reach end-of-life (EOL) in April of 2026. … Beginning on June 16th,
+> 2026, runners will begin using Node24 by default. … This will only work until we
+> upgrade the runner and remove Node20 on **September 23rd, 2026**.
+
+E dalla notifica finale, «Node 20 is no longer available in GitHub Actions»
+(2026-09-23):
+
+> This is the final notification that Node 20 is no longer available on GitHub
+> Actions runners. Runners now use Node 24 for JavaScript actions. The temporary
+> `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` opt-out is no longer available.
+
+Quindi le nostre azioni che dichiarano `using: node20` girano **solo perché il
+runner le forza su Node 24**. Non è una configurazione supportata: è uno strato
+di compatibilità di cui GitHub non dichiara la durata. Il warning diceva
+«being forced to run on Node.js 24» — e va letto alla lettera: non è
+un'informazione, è un avviso.
+
+**Verificato, non ricordato: non esiste una patch nella serie v4.**
+
+| azione | ultima v4.x | `runs.using` | versione su Node 24 |
+| :-- | :-- | :-- | :-- |
+| `actions/checkout` | v4.4.0 | `node20` | v7.1.0 |
+| `actions/setup-node` | v4.4.0 | `node20` | v7.1.0 |
+| `actions/upload-artifact` | v4.6.2 | `node20` | v7.0.2 |
+| `actions/download-artifact` | v4.3.0 | `node20` | **v8.0.2** |
+
+Tre cose da non sbagliare quando si farà:
+
+1. **Le major non sono allineate.** `download-artifact` è a **v8**, le altre a
+   **v7**: un «alzo tutto a v7» lascia `download-artifact` indietro, e un «v8»
+   generale non esiste per le altre. Vanno aggiornate una per una.
+2. **`Swatinem/rust-cache@v2` non è travolta**: non è un'azione `actions/*` e il
+   warning non la cita. L'ultima è v2.9.2.
+3. **Il `node-version` del workflow è un'altra cosa.** `setup-node` prende il
+   Node con cui gira *il nostro* `npm`; il warning parla del runtime con cui gira
+   *l'azione stessa*. Sono due livelli distinti e non si risolvono insieme.
+4. **Node 24 non supporta macOS 13.4 e precedenti, né ARM32.** Non ci tocca
+   (`tier2` usa macos-15-intel), ma è una conseguenza da conoscere se un giorno
+   aggiungiamo una piattaforma più vecchia.
+
+### C. `ubuntu-latest` → Ubuntu 26.04: finestra, non data
+
+Dalla changelog 2026-09-17 e dall'issue #14748:
+
+- Ubuntu 26.04 è **generally available dal 17 settembre 2026** (x64 e arm64).
+- `ubuntu-latest` migrerà da 24.04 a 26.04 **gradualmente tra il 19 ottobre e il
+  19 novembre 2026**, quindi per un mese la nostra run potrebbe capitare sull'una
+  o sull'altra immagine. È la cosa peggiore di questa migrazione: non una data,
+  una **finestra**.
+- Per fissarsi: `runs-on: ubuntu-24.04`. Per provare prima: `ubuntu-26.04`.
+
+**I sette pacchetti apt della CI su Ubuntu 26.04 (resolute).** Tutti esistono.
+Questo il cuore della domanda, e le versioni a confronto con 24.04 (noble):
+
+| pacchetto | 24.04 (noble) | 26.04 (resolute) | delta |
+| :-- | :-- | :-- | :-- |
+| `libwebkit2gtk-4.1-dev` | 2.52.6 | 2.52.6 | **nessuno**: noble è aggiornato via security update |
+| `libayatana-appindicator3-dev` | 0.5.93-1build3 | 0.5.94-1build1 | minore |
+| `libxdo-dev` | 1:3.20160805.1-5build1 | 1:3.20160805.1-5.1build1 | minore |
+| `librsvg2-dev` | 2.58.0+dfsg-1ubuntu0.1 | 2.61.3+dfsg-3ubuntu0.1 | bump di minor |
+| `libssl-dev` | 3.0.13-0ubuntu3.16 (OpenSSL) | 3.5.5-1ubuntu3.7 | **major** — irrilevante per noi, vedi sotto |
+| `build-essential`, `curl`, `wget`, `file` | presenti | presenti | nessuno |
+
+Due note su quella tabella, che sono la differenza fra «i numeri» e «cosa
+significano»:
+
+* **webkit2gtk è identico**, ed è il pacchetto che conta: il binario si linka
+  dinamicamente a WebKitGTK e questa è la libreria che decide se il WebView si
+  comporta allo stesso modo. Il fatto che 24.04 e 26.04 abbiano la stessa versione
+  toglie il rischio più grosso.
+* **`libssl-dev` fa un salto major (3.0 → 3.5)**, ma spec §1 richiede `rustls`
+  esplicitamente e **nessun OpenSSL**, e di fatto non lo usiamo. Il pacchetto sta
+  nell'elenco perché è sulla pagina dei prerequisiti di Tauri, non perché una
+  nostra dipendenza lo linki. Vale la pena saperlo se un giorno qualcuno aggiunge
+  una dipendenza che usa `openssl-sys`.
+* Sulle immagini Rust è 1.98.1 su entrambe, ed è irrilevante: la CI installa il
+  proprio toolchain con `dtolnay/rust-toolchain@stable`.
+
+### D. Cosa NON ho verificato
+
+* **Non ho eseguito una build su Ubuntu 26.04.** Non posso: non ho un runner.
+  Quello che ho verificato è l'esistenza dei pacchetti e le loro versioni, non
+  che `tauri build` ci produca lo stesso binario. La differenza glibc/kernel
+  (6.17 → 7.0) non è misurabile da qui.
+* **Non ho applicato nessuna delle tre correzioni**, nemmeno quella ovvia:
+  è quanto richiesto.
+* Non ho guardato se **macOS 14** (già ritirato il 1° ottobre 2026, vedi i
+  "related posts") tocchi qualcuno dei nostri job: `macos-latest` oggi è macOS 26,
+  quindi no, ma `tier2` usa `macos-15-intel` e quello è un'altra storia.
+
+### E. Ordine di lavoro proposto, da applicare quando si decide
+
+Con le date dalla parte, l'ordine non è ovvio ma è determinato:
+
+1. **`check` e `release`: fissare `ubuntu-24.04`.** Costa una riga per job,
+   toglie la finestra di un mese in cui la run potrebbe cambiare sistema sotto i
+   piedi, e 24.04 ha strada davanti (fino all'arrivo della prossima LTS). Da fare
+   **entro il 19 ottobre**, cioè tra 6 giorni.
+2. **`bundle`: `ubuntu-22.04` → `ubuntu-24.04`.** Non urgente per data (aprile
+   2027) ma **urgente per conseguenza**: è l'unico job che produce gli installer,
+   e quando cade, non abbiamo più un modo di rilasciarli. Vanno rimisurati i
+   `.deb`/rpm (le dimensioni e il glibc minimo cambiano), e va aggiornato il
+   commento nella CI che motiva la scelta di 22.04, perché diventa falso.
+   Vanno anche riguardati i brownout: se rilasciamo in marzo–aprile 2027 su 22.04,
+   un build potrebbe fallire per cause esterne.
+3. **Le azioni a Node 24**, una per una e verificandole: checkout v7, setup-node
+   v7, upload-artifact v7, download-artifact v8. Da fare insieme al punto 1 o 2,
+   tanto nello stesso commit si toglie un giro di CI.
+4. **Controllo da fare comunque**: `npm run check:release` e le versioni nei tre
+   manifest restano allineati a `0.1.0` (verificato prima, invariato).
+
+Nessuna di queste è applicata. Le righe da cambiare sono poche e il rischio è
+basso, ma è una decisione tua: cambia l'immagine di build degli installer, e
+quella è una cosa che si misura, non si presume.
+
+## 2026-10-13 — M0-C / Allowlist invece di commenti (spec §13, §14)
+
+Risolti i due warning della CI, e reso difficile ricascarci. D55.
+
+- **Done**
+  - Immagini esplicite: `ubuntu-latest` → `ubuntu-24.04` (`check`, `release`),
+    `ubuntu-22.04` → `ubuntu-24.04` (gamba Linux di `bundle`),
+    `macos-latest` → `macos-26` (stessa immagine, etichetta che non migra).
+  - Azioni su Node 24: `checkout@v7`, `setup-node@v7`, `upload-artifact@v7`,
+    **`download-artifact@v8`**, `rust-cache@v2.9.2`.
+  - `dtolnay/rust-toolchain@stable` registrata come esenzione: è composite,
+    nessun runtime JS, tag mobile voluto.
+  - `scripts/check-ci-runners.mjs`: allowlist di immagini e azioni, con le
+    scadenze nei messaggi. Agganciata al job `check` come `npm run check:runners`.
+  - Commento in testa a `ci.yml` con il perché delle versioni; 3 commenti che
+    nominavano immagini vecchie riscritti (erano diventati falsi).
+- **Verified by running**
+  - `npm run check:runners` sui workflow verdi: «nessuna immagine fluttuante,
+    nessuna deprecata, tutte le azioni su Node 24».
+  - **Revert-check**: una riga indietro (`ubuntu-24.04` → `ubuntu-22.04`) fa
+    scattare la guardia con la scadenza del 17 aprile 2027 e i brownout.
+  - **Revert-check sul confine**: `download-artifact` da v7 a v6 fa cadere due
+    test. I test della guardia non sono vacui.
+  - `npm test` → **127 verdi** (erano 104: +32 sulla guardia e −5? no: +23 qui);
+    `check:ci` 9 blocchi validi; `check:tools` OK; 8 suite Rust; fmt; clippy 0.
+  - Confini Node 24 verificati tag per tag: checkout/setup-node da v5,
+    upload-artifact da v6, download-artifact da v7. Non simmetria, misure.
+- **Not verified / stubbed**
+  - **Nessuna build eseguita su Ubuntu 24.04.** Verificato che i pacchetti ci
+    sono e che l'etichetta è valida; non che `tauri build` produca lo stesso
+    binario.
+  - `bundle` da 22.04 a 24.04 **alza il glibc minimo del `.deb`**: le soglie e le
+    dimensioni misurate finora non valgono più. Da rimisurare.
+  - I 4 warning di Node 20 del job `release` su tag: verificati per lettura, non
+    su una run con tag.
+- **Spec items marked "verify" che I checked**
+  - Confini Node 24 per azione (tabella in D55), letti da `action.yml` a ogni tag.
+  - `ubuntu-24.04`, `macos-26`, `macos-15-intel`, `windows-2022`,
+    `windows-11-arm` sono etichette esistenti nella tabella dei runner.
+  - `dtolnay/rust-toolchain` è composite; `rust-cache` v2.9.2 è node24.
+- **Decisions/deviations**
+  - D55: allowlist e non denylist, controllo a ogni push, confini Node 24 non
+    simmetrici ma misurati, due esenzioni dichiarate (dtolnay, rust-cache).
+- **Next step**
+  1. Rilanciare la CI. La run deve essere verde e confermare che le immagini
+     nuove reggono: in particolare `bundle (linux-x64)`, il primo a costruire
+     davvero su 24.04.
+  2. **Rimisurare** `.deb`, `.rpm` e AppImage: dimensione e glibc minimo. Il
+     rapporto di `scripts/report-bundle-sizes.mjs` va confrontato con quello
+     precedente.
+  3. Poi l'ultima cosa rimasta da ieri: installare e provare i pacchetti, che
+     sblocca il tag `v0.1.0`.

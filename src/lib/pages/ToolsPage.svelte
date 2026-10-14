@@ -1,0 +1,369 @@
+<script lang="ts">
+  /**
+   * Settings → Tools (spec §11.8): one row per tool with its source, version,
+   * status and the actions that apply to it.
+   *
+   * The composable-download rule of spec §5.2.1 is what decides the actions: a
+   * tool that is missing must never be a dead end, so every available row
+   * carries at least "Use my own path", and the ones the app cannot install yet
+   * say so in words rather than showing a button that does nothing.
+   */
+  import FolderOpenIcon from "lucide-svelte/icons/folder-open";
+  import RefreshCwIcon from "lucide-svelte/icons/refresh-cw";
+  import WrenchIcon from "lucide-svelte/icons/wrench";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import SetupWizard from "$lib/components/SetupWizard.svelte";
+  import { canUpdate, canUseOwnPath, toolState, wizardToolNames } from "$lib/tools";
+  import { toolsStore } from "$lib/stores/tools.svelte";
+  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
+
+  let wizardOpen = $state(false);
+
+  /** Manifest order for the bundled tools, then everything else. */
+  const rows = $derived(
+    toolsStore.view.tools
+      .slice()
+      .sort(
+        (left, right) =>
+          wizardToolNames(toolsStore.view.tools).indexOf(left.name) -
+          wizardToolNames(toolsStore.view.tools).indexOf(right.name),
+      ),
+  );
+
+  async function chooseOwnPath(name: string): Promise<void> {
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      title: tt("tools.choosePath.title", { tool: name }),
+    });
+    // `open` returns null when the dialog is cancelled: that must not clear an
+    // override the user already has.
+    if (typeof picked === "string") {
+      await toolsStore.setToolPath(name, picked);
+    }
+  }
+</script>
+
+<section class="tools">
+  <header class="tools__header">
+    <h2 class="tools__title">{tt("tools.title")}</h2>
+    <button
+      type="button"
+      class="btn"
+      onclick={() => void toolsStore.refresh()}
+      disabled={toolsStore.loading}
+    >
+      <RefreshCwIcon size={16} aria-hidden="true" focusable="false" />
+      {tt("tools.refresh")}
+    </button>
+  </header>
+
+  {#if toolsStore.errorKey}
+    <p class="tools__error" role="alert">
+      {errorText(toolsStore.errorKey, toolsStore.errorDetail)}
+    </p>
+  {/if}
+
+  {#if toolsStore.lastUpdate}
+    <p class="tools__note" role="status">
+      {tt(toolsStore.lastUpdate.key, {
+        version: toolsStore.lastUpdate.version ?? tt("tools.version.unknown"),
+      })}
+      {#if toolsStore.lastUpdate.message}
+        <span class="tools__note-detail">{toolsStore.lastUpdate.message}</span>
+      {/if}
+      <button type="button" class="btn" onclick={() => toolsStore.dismissUpdate()}>
+        {tt("toast.dismiss")}
+      </button>
+    </p>
+  {/if}
+
+  <div class="card tools__table-wrap">
+    <table class="tools__table">
+      <caption class="visually-hidden">{tt("tools.table.caption")}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{tt("tools.column.tool")}</th>
+          <th scope="col">{tt("tools.column.source")}</th>
+          <th scope="col">{tt("tools.column.version")}</th>
+          <th scope="col">{tt("tools.column.status")}</th>
+          <th scope="col">{tt("tools.column.actions")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each rows as tool (tool.name)}
+          {@const state = toolState(tool)}
+          <tr>
+            <th scope="row" class="tools__name">
+              <span>{tool.name}</span>
+              {#if tool.bundled}<span class="tools__badge">{tt("tools.badge.bundled")}</span>{/if}
+              {#if tool.role}<span class="field__hint">{tool.role}</span>{/if}
+            </th>
+            <td>{tool.source ? tt(`tools.source.${tool.source}`) : "—"}</td>
+            <td>
+              {#if tool.version}
+                {tool.version}
+              {:else if tool.path}
+                <span class="field__hint">{tt("tools.version.unknown")}</span>
+              {:else}
+                —
+              {/if}
+            </td>
+            <td>
+              <!-- The state is in the text too, never colour alone (spec §11.9). -->
+              <span class="tools__status" data-state={state.state}>{tt(state.key)}</span>
+            </td>
+            <td class="tools__actions">
+              {#if canUpdate(tool)}
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={toolsStore.busy}
+                  onclick={() => void toolsStore.updateYtdlp()}
+                >
+                  {tt("tools.action.update")}
+                </button>
+              {/if}
+              <button
+                type="button"
+                class="btn"
+                disabled={toolsStore.busy}
+                onclick={() => void toolsStore.test(tool.name)}
+              >
+                {tt("tools.action.test")}
+              </button>
+              {#if canUseOwnPath(tool)}
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={toolsStore.busy}
+                  onclick={() => void chooseOwnPath(tool.name)}
+                >
+                  <FolderOpenIcon size={16} aria-hidden="true" focusable="false" />
+                  {tt("tools.action.ownPath")}
+                </button>
+              {/if}
+              {#if tool.source === "override"}
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={toolsStore.busy}
+                  onclick={() => void toolsStore.setToolPath(tool.name, null)}
+                >
+                  {tt("tools.action.clearPath")}
+                </button>
+              {/if}
+            </td>
+          </tr>
+          {#if tool.path}
+            <tr>
+              <td class="tools__detail" colspan="5">
+                <span class="tools__path">{tool.path}</span>
+                {#if tool.banner}
+                  <span class="field__hint">{tool.banner}</span>
+                {/if}
+              </td>
+            </tr>
+          {/if}
+        {/each}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="card tools__group" aria-labelledby="heading-channel">
+    <h3 class="tools__group-title" id="heading-channel">{tt("tools.channel.title")}</h3>
+    <div class="field">
+      <label class="field__label" for="ytdlp-channel">{tt("tools.channel.label")}</label>
+      <select
+        class="select"
+        id="ytdlp-channel"
+        value={settingsStore.settings.ytdlpChannel}
+        disabled={toolsStore.busy}
+        onchange={(event) =>
+          void toolsStore.setYtdlpChannel((event.currentTarget as HTMLSelectElement).value)}
+      >
+        <option value="stable">{tt("tools.channel.stable")}</option>
+        <option value="nightly">{tt("tools.channel.nightly")}</option>
+      </select>
+      <p class="field__hint">{tt("tools.channel.hint")}</p>
+    </div>
+  </section>
+
+  <section class="card tools__group" aria-labelledby="heading-paths">
+    <h3 class="tools__group-title" id="heading-paths">{tt("tools.paths.title")}</h3>
+    <dl class="tools__paths">
+      <dt>{tt("tools.paths.target")}</dt>
+      <dd>{toolsStore.view.triple || "—"}</dd>
+      <dt>{tt("tools.paths.tools")}</dt>
+      <dd>{toolsStore.view.toolsDir || "—"}</dd>
+      <dt>{tt("tools.paths.bundled")}</dt>
+      <dd>{toolsStore.view.bundledDir || "—"}</dd>
+      <dt>{tt("tools.paths.temp")}</dt>
+      <dd>{toolsStore.view.tempDir ?? tt("tools.paths.temp.unavailable")}</dd>
+    </dl>
+    <p class="field__hint">{tt("tools.paths.hint")}</p>
+  </section>
+
+  <section class="card tools__group" aria-labelledby="heading-wizard">
+    <h3 class="tools__group-title" id="heading-wizard">{tt("tools.wizard.title")}</h3>
+    <p class="field__hint">{tt("tools.wizard.hint")}</p>
+    <button type="button" class="btn" onclick={() => (wizardOpen = true)}>
+      <WrenchIcon size={16} aria-hidden="true" focusable="false" />
+      {tt("tools.wizard.open")}
+    </button>
+  </section>
+
+  {#if wizardOpen}
+    <SetupWizard
+      onclose={() => (wizardOpen = false)}
+      onfinish={async () => {
+        wizardOpen = false;
+        await toolsStore.completeSetup();
+      }}
+    />
+  {/if}
+</section>
+
+<style>
+  .tools {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .tools__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .tools__title {
+    font-size: 16px;
+  }
+
+  .tools__error {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-md);
+    color: var(--danger);
+    font-size: 13px;
+  }
+
+  .tools__note {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+  }
+
+  .tools__note-detail {
+    color: var(--text-muted);
+  }
+
+  .tools__table-wrap {
+    padding: 0;
+    overflow-x: auto;
+  }
+
+  .tools__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .tools__table th,
+  .tools__table td {
+    padding: var(--space-2) var(--space-3);
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tools__table thead th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+
+  .tools__name {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-weight: 600;
+  }
+
+  .tools__badge {
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .tools__status {
+    display: inline-block;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    border: 1px solid var(--border);
+  }
+
+  .tools__status[data-state="notInstalled"],
+  .tools__status[data-state="belowMinVersion"] {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  .tools__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .tools__detail {
+    background: var(--surface-2);
+  }
+
+  .tools__path {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    word-break: break-all;
+  }
+
+  .tools__group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+
+  .tools__group-title {
+    font-size: 14px;
+  }
+
+  .tools__paths {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .tools__paths dt {
+    color: var(--text-muted);
+  }
+
+  .tools__paths dd {
+    margin: 0;
+    font-family: var(--font-mono);
+    word-break: break-all;
+  }
+</style>

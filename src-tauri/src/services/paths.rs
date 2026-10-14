@@ -31,6 +31,24 @@ pub fn tools_dir(app: &AppHandle) -> io::Result<PathBuf> {
     Ok(dir.join("tools"))
 }
 
+/// The user's home directory, when the OS exposes one.
+///
+/// Used only to build the well-known tool locations of spec §5.2
+/// (`~/.deno/bin`, `~/.local/bin`). `None` simply drops those two entries
+/// rather than guessing a path.
+pub fn home_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    } else {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    }
+}
+
 /// Per-app private temp dir handed to child processes as `TMPDIR`/`TEMP`/`TMP`
 /// (spec §4.9). Created with mode `0700` on Unix because QuickJS writes EJS
 /// scripts there.
@@ -58,6 +76,17 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
 
 #[cfg(not(unix))]
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    // Windows has no 0700, so the mode cannot be set and asking for one would be
+    // a lie. What replaces it is *where* the directory is: every caller passes a
+    // path under the per-user app data dir, which already carries that user's
+    // ACL and is not visible to other accounts. Spec 4 item 9 asks for 0700 so
+    // that a QuickJS temp dir is private; on Windows that privacy comes from the
+    // parent, not from the leaf.
+    //
+    // Consequence worth knowing: the difference shows up in the test count.
+    // `create_private_dir_uses_mode_0700` is `#[cfg(unix)]`, so the suite is 133
+    // tests on Linux and 132 on Windows. That gap is deliberate, and it is
+    // asserted here rather than discovered later by counting.
     fs::create_dir_all(dir)
 }
 

@@ -37,15 +37,63 @@ env:
   # Errori di codice localizzati in inglese: i messaggi sono confrontati coi test.
   RUST_BACKTRACE: 1
 
+# ---------------------------------------------------------------------------
+# Perché ogni immagine e ogni azione è scritta con la versione esplicita
+# ---------------------------------------------------------------------------
+# Due lezioni costate una run CI ciascuna, il 13 ottobre 2026:
+#
+# 1. Le azioni dichiaravano Node 20. Node 20 è stato **rimosso** dai runner il
+#    23 settembre 2026, quindi giravano solo perché il runner le forza su
+#    Node 24: uno strato di compatibilità di cui GitHub non dichiara la durata.
+#    Il confine non è lo stesso major per tutte (checkout e setup-node da v5,
+#    upload-artifact da v6, download-artifact da v7), quindi "alzo tutto a v7"
+#    sarebbe stato sbagliato due volte.
+# 2. `ubuntu-latest` è un'etichetta che **migra da sola**: il 19 ottobre 2026 è
+#    passata a Ubuntu 26.04 in una finestra di un mese, e un file che ieri
+#    compilava su una base e oggi su un'altra non era cambiato di una riga.
+#
+# `scripts/check-ci-runners.mjs` fa rispettare entrambe: un'immagine che non
+# sia nella sua allowlist o un'azione non registrata fanno fallire il job
+# `check`. È il meccanismo con cui la prossima migrazione la decidiamo noi
+# invece di scoprirla.
+
+# ---------------------------------------------------------------------------
+# Perche' alcuni job azzerano `bundle.externalBin` (D48)
+# ---------------------------------------------------------------------------
+#
+# `tauri_build::build()` sta in build.rs, quindi gira a OGNI invocazione di
+# cargo — fmt, clippy, test, build: non solo a `tauri build`. Dichiarando
+# `bundle.externalBin` in tauri.conf.json, senza i binari presenti anche
+# `cargo check` muore con:
+#
+#     resource path `binaries/yt-dlp-x86_64-unknown-linux-gnu` doesn't exist
+#
+# Nei job che NON impacchettano (check, process-tests, tier2) `TAURI_CONFIG`
+# azzera externalBin: compilano senza rete e senza i 43 MB dei tool.
+# Nei job che IMPACCHETTANO (bundle, bundle-macos-universal) `TAURI_CONFIG` NON
+# e' impostato e i tool vengono scaricati davvero, eseguiti e solo allora
+# impacchettati.
+#
+# Non e' una scorciatoia per far passare la CI. Il percorso che produce
+# l'installer resta verificato per intero, anzi piu' di prima: i tool vengono
+# eseguiti prima di entrare nel pacchetto. Qui si sacrifica solo la
+# compilazione di un campo del config che quei job non usano — e si evita che
+# il job piu' frequente dipenda dalla rete, che oggi si e' dimostrata
+# inaffidabile (D33: l'alias `releases/latest` ha risposto 404 per minuti).
+
 jobs:
   # ---------------------------------------------------------------- check (1x)
   check:
     name: check (ubuntu, lint + test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Vedi il commento prima dei job: `tauri_build::build()` gira a ogni cargo,
+    # e questo job non impacchetta. Azzerare externalBin lo tiene offline.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -76,7 +124,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri -> target
 
@@ -105,7 +153,21 @@ jobs:
 
       - run: npm run build
 
-      # La versione vive in tre manifest indipendenti e finisce nel NOME dei file
+      # Offline validation of tools.manifest.json: schema, both bundled tools
+      # declared for this target, pinned checksums that look like checksums.
+      # Runs on EVERY push, costs about a second, and fails before anything is
+      # built if the manifest and the spec disagree.
+      - name: Validate the tools manifest
+        run: npm run check:tools
+
+      # Nessuna immagine fluttuante, nessuna in deprecazione, tutte le azioni su
+      # Node 24. Gira a ogni push e costa meno di un secondo: senza, la prossima
+      # migrazione di un runner la si scopre da un build rosso invece che da una
+      # riga rossa.
+      - name: Check the runner images and the actions
+        run: npm run check:runners
+
+      # The version lives in three manifest indipendenti e finisce nel NOME dei file
       # prodotti. Senza questo controllo si pubblicherebbe v0.2.0 contenente
       # "..._0.1.0_amd64.deb": binari sbagliati con etichetta sbagliata, e su una
       # release pubblicata non si corregge. Costa 10 secondi.
@@ -127,6 +189,11 @@ jobs:
     name: process tests (${{ matrix.label }})
     needs: check
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    # Compila senza externalBin: questo job prova il livello processi con i
+    # falsi tool, non impacchetta, e non deve dipendere dalla rete. Vedi il
+    # commento prima dei job.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     strategy:
       fail-fast: false
       matrix:
@@ -135,11 +202,11 @@ jobs:
           # su cui il processo di download deve funzionare davvero.
           - os: windows-2022
             label: windows-x64
-          - os: macos-latest
+          - os: macos-26
             label: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -154,11 +221,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri -> target
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -191,16 +258,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `ubuntu-22.04` (jammy) NON e' un residuo: si compila sul piu'
-          # vecchio sistema supportato cosi' che il .deb giri anche su
-          # distribuzioni piu' recenti (glibc/webkit-linkato dinamicamente).
-          # E' anche cio' che chiede spec §13.5 e spec §5.4 ("oldest supported
-          # distro"). Verificato: jammy amd64 ha webkit2gtk 2.50.4.
-          # Il lato "moderno" della finestra e' coperto dal job `check`, che gira
-          # su `ubuntu-latest`. Attenzione: su jammy il pacchetto webkit2gtk e'
-          # stato aggiornato solo per amd64/i386 (arm64 e' ancora a 2.36), quindi
-          # per arm64 il job `tier2` usa `ubuntu-24.04-arm` e non 22.04.
-          - os: ubuntu-22.04
+          # Immagine scelta a mano, e non una major dietro l'altra: spec §13.5 e
+          # §5.4 vogliono il .deb costruito sul piu' vecchio sistema supportato,
+          # cosi' gira anche su distribuzioni piu' recenti (glibc e webkit2gtk sono
+          # linkati dinamicamente). 24.04 e' la piu' vecchia delle due che GitHub
+          # mantiene insieme (24.04 e 26.04): 22.04 era in deprecazione dal
+          # 17 settembre 2026, con quattro brownout a marzo-aprile 2027 e
+          # dismissione il 17 aprile 2027 (actions/runner-images#14254). Passando
+          # a 24.04 il glibc minimo richiesto sale, quindi vanno rimisurati .deb,
+          # .rpm e AppImage: le soglie e le dimensioni di oggi non valgono piu'.
+          # Il lato "moderno" e' coperto da `check`, che gira su 24.04.
+          # Nota per chi torna indietro: su jammy webkit2gtk era stato
+          # aggiornato solo per amd64/i386 (arm64 era ancora a 2.36), ed e'
+          # il motivo per cui `tier2` usava `ubuntu-24.04-arm` e non 22.04.
+          # Con 24.04 quel problema cade.
+          - os: ubuntu-24.04
             label: linux-x64
           # Windows: `windows-latest` e' passato a Windows Server 2025 con
           # **Visual Studio 2026** (giugno 2026). Fissiamo `windows-2022` per due
@@ -211,16 +283,19 @@ jobs:
           # questa riga.
           - os: windows-2022
             label: windows-x64
-          # macOS: `macos-latest` = macOS 26 **arm64** (Apple Silicon), che e'
-          # il target Tier 1 della spec §1.1. Il binario universale sta nel job
-          # separato `bundle-macos-universal`.
-          - os: macos-latest
+          # macOS: `macos-26` e' l'arm64 (Apple Silicon), target Tier 1 della
+          # spec §1.1. E' la stessa immagine di `macos-latest`: la scriviamo
+          # esplicita perche' `-latest` migra da sola, e un runner che cambia
+          # senza che il file cambi e' il modo in cui ci si ritrova con un build
+          # diverso e nessun diff che lo spieghi. Il binario universale sta
+          # nel job separato `bundle-macos-universal`.
+          - os: macos-26
             label: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -241,7 +316,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri -> target
 
@@ -250,6 +325,33 @@ jobs:
       # NOTA: non si usa `cargo build --release` da solo. Tauri decide
       # "dev vs release" con la feature `custom-protocol`, e solo la CLI la
       # attiva: senza, l'app cercherebbe il frontend sul server di sviluppo.
+      #
+      # I tool inclusi (spec §5.2.1) arrivano da `fetch_bundled_tools.mjs`: senza
+      # questa chiave `bundle.externalBin` fallirebbe con un errore poco chiaro.
+      # Il triple viene derivato dal runner (rustc --print host-tuple), cosi' il
+      # bundle universale cerca `qjs-universal-apple-darwin` e non il binario
+      # nativo: il job universale imposta SDP_TARGET_TRIPLE.
+      - name: Fetch the bundled tools
+        # Il token e' di GitHub e va solo a api.github.com: serve a tirare su
+        # il rate limit (60 richieste/ora per IP senza autenticazione, e i
+        # runner ospitati da GitHub condividono intervalli di IP — il 2026-10-13
+        # `bundle (macos-arm64)` ha preso HTTP 403 per questo). Non viene mai
+        # stampato: `fetch_bundled_tools.mjs` lo mette solo nell'header
+        # `authorization` e non lo scrive in nessun messaggio (AGENTS.md 7).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run fetch:tools
+
+      - name: Report which tools are about to be bundled
+        run: ls -l src-tauri/binaries
+
+      # Spec §5.2.1: "with no internet, the bundled yt-dlp and qjs run
+      # (--version)". Qui la verifica avviene DAVVERO, sui binari appena
+      # scaricati e verificati, prima che finiscano nell'installer.
+      - name: Run the real bundled tools
+        working-directory: src-tauri
+        run: cargo test --test bundled_tools -- --nocapture
+
       - name: Build the bundle
         run: npx tauri build
 
@@ -278,7 +380,7 @@ jobs:
           done
 
       - name: Upload the bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scaricatore-di-porto-${{ matrix.label }}
           path: |
@@ -294,11 +396,11 @@ jobs:
     name: bundle (macos universal)
     needs: check
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
@@ -308,15 +410,80 @@ jobs:
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri -> target
 
       - run: npm ci
 
-      # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche',
+      # Il bundle universale cerca `qjs-universal-apple-darwin`, che solo un
+      # `lipo` sulle due slice native può produrre (spec §5.2.1): la variabile
+      # d'ambiente è il modo più semplice per dirlo allo script di fetch senza
+      # duplicare il resto del job.
+      - name: Fetch the bundled tools (universal)
+        env:
+          SDP_TARGET_TRIPLE: universal-apple-darwin
+          # vedi il commento sul token nel fetch del job `bundle`
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run fetch:tools
+
+      - name: Report which tools are about to be bundled
+        run: ls -l src-tauri/binaries
+
+      # Ogni file deve essere l'architettura che il SUO NOME promette, non solo
+      # "l'universale e' universale": un file che mente sul proprio nome produce
+      # un .app che parte su una CPU e non sull'altra, e la cosa migliore che
+      # possa capitare e' che fallisca qui invece che su un Intel al primo
+      # avvio. I due file per-archettonura servono al build script (che chiede
+      # i nomi per-arch, una volta per ogni slice); quello universale serve al
+      # bundler. Vedi D50.
+      - name: Every bundled file is the architecture its name promises
+        run: |
+          set -euo pipefail
+          check_fat() {
+            file="$1"; shift
+            if [ ! -f "$file" ]; then echo "::error::$file non esiste"; exit 1; fi
+            info="$(lipo -info "$file")"
+            echo "$info"
+            # Le due forme esatte, non "fat file": la riga di un file singolo
+            # e' "Non-fat file: ..." e contiene la sottostringa "fat file", quindi
+            # un controllo piu' largo accetterebbe - o peggio rifiuterebbe - il
+            # file sbagliato. Verificato qui con un lipo finto (D50).
+            case "$info" in
+              *"Architectures in the fat file"*) ;;
+              *) echo "::error::$file doveva essere un fat binary: $info"; exit 1 ;;
+            esac
+            for arch in "$@"; do
+              case " $info " in
+                *" $arch "*) ;;
+                *) echo "::error::$file non contiene $arch: $info"; exit 1 ;;
+              esac
+            done
+          }
+          check_single() {
+            file="$1"; want="$2"
+            if [ ! -f "$file" ]; then echo "::error::$file non esiste"; exit 1; fi
+            info="$(lipo -info "$file")"
+            echo "$info"
+            # Basta questo: un fat binary produce "Architectures in the fat
+            # file: ... are: ...", che non contiene mai "is architecture:", quindi
+            # una slice che e' in realta universale viene gia' respinta qui.
+            # Un secondo controllo "e' un fat file?" sarebbe un ramo che nessun
+            # test puo' raggiungere, cioe' un'affermazione che non puoi verificare.
+            case "$info" in
+              *"is architecture: $want") ;;
+              *) echo "::error::$file doveva essere solo $want: $info"; exit 1 ;;
+            esac
+          }
+          for tool in yt-dlp qjs; do
+            check_fat "src-tauri/binaries/$tool-universal-apple-darwin" x86_64 arm64
+            check_single "src-tauri/binaries/$tool-aarch64-apple-darwin" arm64
+            check_single "src-tauri/binaries/$tool-x86_64-apple-darwin" x86_64
+          done
+
+      # Spec §13.2 chiede il binario universale (arm64 + x86_64). Job separato perche'
       # se fallisce non deve bloccare il .app nativo arm64, che e' quello che
-      # serve al test manuale su Apple Silicon. `macos-latest` e' arm64: per la
+      # serve al test manuale su Apple Silicon. `macos-26` e' arm64: per la
       # slice Intel serve il target `x86_64-apple-darwin` (installato sopra) e il
       # lipo che fa Tauri. NON FIRMATO: la notarizzazione resta umana
       # (docs/SPIKES.md).
@@ -345,7 +512,7 @@ jobs:
           done
 
       - name: Upload the universal bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scaricatore-di-porto-macos-universal
           path: |
@@ -363,13 +530,13 @@ jobs:
     name: draft release
     needs: [check, process-tests, bundle, bundle-macos-universal]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Solo questo job puo' scrivere: il workflow globale resta in sola lettura.
     permissions:
       contents: write
     steps:
       - name: Collect every artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: scaricatore-di-porto-*
           path: assets

@@ -34,6 +34,32 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+# Provisioning (spec §5.2). Feature list is the one spec §1 line 49 fixes:
+# `default-features = false` + rustls, **no OpenSSL**, stream for the download
+# loop and json for the release metadata.
+# NOTE: those feature names only exist on the 0.12 line. reqwest 0.13 renamed
+# them (`rustls`, `native-tls`, …), so bumping the major without re-reading the
+# spec would silently drop TLS entirely.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "json",
+] }
+# Checksum verification of every downloaded tool (spec §5.2 "verify sha256").
+sha2 = "0.10"
+# Archive extraction with path-traversal protection (spec §5.2). All pure Rust:
+# flate2's `rust_backend` (miniz_oxide) and zip's `deflate-flate2-rs`, so there
+# is no C toolchain and no OpenSSL to link on any of the three OSes.
+# `zip` also pulls flate2; `tar` + `lzma-rs` cover `.tar.gz` and the `.tar.xz`
+# that BtbN publishes for Linux ffmpeg.
+# `default-features = false` matters: zip's default set includes `xz`, which
+# needs the C library liblzma, and `aes-crypto`/`zstd`, neither of which is
+# used here.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3"
+
 # Process layer (spec §4). Only the features actually used are enabled
 # (AGENTS.md §6 "tokio only with the features needed").
 #   process  -> spawn/wait on external tools
@@ -73,6 +99,9 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# The downloader tests compute the sha256 of the body they serve, so they
+# check the real implementation instead of restating a constant.
+sha2 = "0.10"
 # `test` gives us tauri::test::mock_* so the IPC handlers can be exercised
 # without a window (spec §15 "integration tests run offline on all 3 OSes").
 tauri = { version = "2.12", features = ["test"] }

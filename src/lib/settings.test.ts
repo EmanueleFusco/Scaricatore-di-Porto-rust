@@ -16,12 +16,36 @@ describe("normaliseSettings()", () => {
 
   it("keeps valid values", () => {
     const raw: Settings = {
-      schemaVersion: 1,
+      ...DEFAULT_SETTINGS,
+      schemaVersion: 2,
       language: "en",
       theme: "dark",
       defaultOutputDir: "/out",
+      toolPaths: { "yt-dlp": "/opt/mine/yt-dlp" },
+      ytdlpChannel: "nightly",
+      setupWizardCompleted: true,
     };
     expect(normaliseSettings(raw)).toEqual(raw);
+  });
+
+  it("drops a tool override that is not a usable path", () => {
+    // Mirrors the Rust-side normalise(): an override that is not a path would be
+    // refused by the process layer (spec §4.8), so showing it as if it worked is
+    // worse than not showing it.
+    expect(
+      normaliseSettings({
+        toolPaths: { "yt-dlp": "/opt/mine/yt-dlp", ffmpeg: "", "": "/x" },
+      }).toolPaths,
+    ).toEqual({ "yt-dlp": "/opt/mine/yt-dlp" });
+  });
+
+  it("falls back to the stable channel and to an unconfigured wizard", () => {
+    const out = normaliseSettings({
+      ytdlpChannel: "weekly" as never,
+      setupWizardCompleted: undefined,
+    });
+    expect(out.ytdlpChannel).toBe("stable");
+    expect(out.setupWizardCompleted).toBe(false);
   });
 
   it("replaces an unknown language or theme with the default", () => {

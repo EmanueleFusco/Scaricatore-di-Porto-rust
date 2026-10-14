@@ -1,0 +1,176 @@
+// Tests for the shell inside the CI steps.
+//
+// Why this file exists: on 2026-10-13 the `bundle (macos universal)` job failed
+// with
+//
+//     resource path `binaries/yt-dlp-aarch64-apple-darwin` doesn't exist
+//
+// because the build script of a universal pass asks for the per-architecture
+// names, and only the universal one was being fetched. The step written to
+// catch that class of mistake (`lipo -info` on one file) had never been run on
+// the machine that wrote it, and when it finally ran it turned out to contain
+// a bug of its own — a substring trap that is invisible to the eye.
+//
+// A shell step nobody executes is not a check. These tests execute it, on
+// Linux, on every push, against a fake `lipo` that reports what the *contents*
+// of a file are rather than what its name promises — which is the only way to
+// test the thing that matters: a file lying about its own name.
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const STEP_NAME = "Every bundled file is the architecture its name promises";
+
+/** The shell of one named step, taken from ci.yml exactly as the runner gets it. */
+function stepScript(name) {
+  const yaml = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+  const at = yaml.indexOf(`- name: ${name}`);
+  if (at === -1) throw new Error(`ci.yml has no step called "${name}"`);
+  const runAt = yaml.indexOf("run: |", at);
+  if (runAt === -1 || runAt > yaml.indexOf("- name:", at + 1)) {
+    throw new Error(`step "${name}" does not use a run: | block`);
+  }
+  const lines = yaml.slice(runAt + "run: |".length).split("\n").slice(1);
+  const indent = lines.find((l) => l.trim().length > 0).match(/^ */)[0].length;
+  const body = [];
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    if (line.match(/^ */)[0].length < indent) break;
+    body.push(line.slice(indent));
+  }
+  return body.join("\n");
+}
+
+/**
+ * A `lipo` whose answer comes from the first line of the file it is asked about,
+ * so a test can make a file whose name and contents disagree.
+ */
+const FAKE_LIPO = `#!/usr/bin/env bash
+first="$(head -1 "$2" 2>/dev/null)"
+case "$first" in
+  FAT\\ *)    echo "Architectures in the fat file: $2 are: \${first#FAT }" ;;
+  SINGLE\\ *) echo "Non-fat file: $2 is architecture: \${first#SINGLE }" ;;
+  *)         echo "lipo: $2: unhandled" >&2; exit 1 ;;
+esac
+`;
+
+let root;
+
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), "sdp-ci-step-"));
+  const bin = join(root, "bin");
+  const work = join(root, "work", "src-tauri", "binaries");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(work, { recursive: true });
+  writeFileSync(join(bin, "lipo"), FAKE_LIPO);
+  chmodSync(join(bin, "lipo"), 0o755);
+  writeFileSync(join(root, "step.sh"), stepScript(STEP_NAME));
+});
+
+afterAll(() => {
+  if (root) rmSync(root, { recursive: true, force: true });
+});
+
+/** Rebuild the six files a universal fetch produces, all telling the truth. */
+function truth() {
+  const dir = join(root, "work", "src-tauri", "binaries");
+  for (const tool of ["yt-dlp", "qjs"]) {
+    writeFileSync(join(dir, `${tool}-universal-apple-darwin`), "FAT x86_64 arm64\n");
+    writeFileSync(join(dir, `${tool}-aarch64-apple-darwin`), "SINGLE arm64\n");
+    writeFileSync(join(dir, `${tool}-x86_64-apple-darwin`), "SINGLE x86_64\n");
+  }
+  return dir;
+}
+
+/** Make one file say something else, or stop existing. */
+function fake(dir, file, content) {
+  if (content === null) rmSync(join(dir, file));
+  else writeFileSync(join(dir, file), `${content}\n`);
+}
+
+function run() {
+  const result = spawnSync("bash", [join(root, "step.sh")], {
+    cwd: join(root, "work"),
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}` },
+  });
+  return { code: result.status, output: `${result.stdout}${result.stderr}` };
+}
+
+// bash is the runner's shell on Linux and macOS; there is nothing to test on
+// Windows, and pretending otherwise would be the kind of green that means
+// nothing.
+describe.skipIf(process.platform === "win32")(
+  `the CI step "${STEP_NAME}"`,
+  () => {
+    it("passes when every file is what its name says", () => {
+      truth();
+      const { code, output } = run();
+      expect(output).not.toContain("::error::");
+      expect(code).toBe(0);
+    });
+
+    it("fails when a per-architecture file is missing", () => {
+      const dir = truth();
+      // The exact CI failure: the build script asked for this and it was not
+      // there. Without it in place, the job fails three steps later with a
+      // tauri-build error that says nothing about which of six files is wrong.
+      fake(dir, "yt-dlp-aarch64-apple-darwin", null);
+      const { code, output } = run();
+      expect(code).toBe(1);
+      expect(output).toContain("yt-dlp-aarch64-apple-darwin non esiste");
+    });
+
+    it("fails when the universal file is not universal", () => {
+      const dir = truth();
+      fake(dir, "qjs-universal-apple-darwin", "SINGLE arm64");
+      const { code, output } = run();
+      expect(code).toBe(1);
+      expect(output).toContain("qjs-universal-apple-darwin");
+    });
+
+    it("fails when the universal file lacks one of the two architectures", () => {
+      const dir = truth();
+      fake(dir, "yt-dlp-universal-apple-darwin", "FAT x86_64");
+      const { code, output } = run();
+      expect(code).toBe(1);
+      expect(output).toContain("non contiene arm64");
+    });
+
+    it("fails when a slice is really a fat binary", () => {
+      const dir = truth();
+      fake(dir, "yt-dlp-aarch64-apple-darwin", "FAT x86_64 arm64");
+      const { code, output } = run();
+      expect(code).toBe(1);
+      // Rejected by the `is architecture:` match, not by a second "is it fat?"
+      // check: `lipo -info` on a fat binary never prints `is architecture:`.
+      // That is why the step has no such second check — an unreachable branch
+      // is an assertion nobody can exercise.
+      expect(output).toContain("doveva essere solo arm64");
+    });
+
+    it("fails when a slice is the wrong architecture", () => {
+      const dir = truth();
+      fake(dir, "qjs-aarch64-apple-darwin", "SINGLE x86_64");
+      const { code, output } = run();
+      expect(code).toBe(1);
+      expect(output).toContain("doveva essere solo arm64");
+    });
+
+    it("does not mistake `Non-fat file` for a fat one", () => {
+      // The bug this whole file was written for, kept as a test: `Non-fat file:`
+      // contains the substring `fat file`, so the first version of the step
+      // rejected the very files it was supposed to accept, and it did so on the
+      // only run it ever had.
+      const dir = truth();
+      fake(dir, "qjs-x86_64-apple-darwin", "SINGLE x86_64");
+      const { code, output } = run();
+      expect(output).not.toContain("::error::");
+      expect(code).toBe(0);
+    });
+  },
+);
