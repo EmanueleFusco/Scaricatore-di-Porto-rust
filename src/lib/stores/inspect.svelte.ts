@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 import {
+  inspectDelay,
   MetadataCache,
   normaliseInspected,
   type Inspected,
@@ -18,8 +19,7 @@ import {
 } from "$lib/inspect";
 import type { BackendErrorInfo } from "$lib/settings";
 
-/** Spec §6.2: debounce 500 ms, as the original did. */
-export const INSPECT_DEBOUNCE_MS = 500;
+export { INSPECT_DEBOUNCE_MS } from "$lib/inspect";
 
 class InspectStore {
   /** What the user typed (not trimmed). */
@@ -32,6 +32,13 @@ class InspectStore {
   errorDetail = $state<string | null>(null);
   #cache = new MetadataCache();
   #timer: ReturnType<typeof setTimeout> | null = null;
+  /** One-shot: the next change comes from a paste, so it skips the debounce. */
+  #pasted = false;
+
+  /** Called from the input's `paste` event, just before the `input` one. */
+  markPaste(): void {
+    this.#pasted = true;
+  }
 
   /** Feed the URL input; starts the debounce. */
   setUrl(value: string): void {
@@ -43,6 +50,8 @@ class InspectStore {
     this.latestRequest += 1;
     const requestId = this.latestRequest;
     const url = value.trim();
+    const delay = inspectDelay(this.#pasted);
+    this.#pasted = false;
 
     if (url === "") {
       // The box was cleared: cancel what the backend is doing and empty the
@@ -74,7 +83,7 @@ class InspectStore {
     this.#timer = setTimeout(() => {
       this.#timer = null;
       void this.#run(requestId, url);
-    }, INSPECT_DEBOUNCE_MS);
+    }, delay);
   }
 
   /** The Clear button: empty everything, including the cache (spec §2.9). */

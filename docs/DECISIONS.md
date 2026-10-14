@@ -2027,3 +2027,44 @@ intermittenza. Il cambiamento è una deviazione da spec §5.3.7, che chiedeva di
 passare la lista dell'originale: la spec invita a verificare ciò che invecchia,
 e questa lista era invecchiata.
 
+
+### D75 — La risoluzione dei tool si ricorda per la sessione
+
+**Il problema, misurato.** Ogni ispezione e ogni download chiamavano
+`resolve_job_tools`, che *esegue* `--version` su yt-dlp, qjs, Deno e ffmpeg per
+verificare che i candidati rispondano (spec §5.2). Il binario yt-dlp ufficiale è
+un pacchetto PyInstaller one-file che **si spacchetta a ogni avvio**: misurato
+qui, `yt-dlp --version` costa **0,46 s** (qjs ~0 s, ffmpeg 0,036 s). Erano
+~0,5 s di attesa aggiunti a **ogni** incolla di link, e di più su Windows, dove
+all'unpacking si somma l'antivirus.
+
+**La soluzione.** `AppState` tiene una mappa `(tool, percorso di override) →
+ResolvedTool` per la sessione. Si memorizzano **solo i successi**: un tool
+mancante è economico da ricontrollare (esistenza dei file, non esecuzione) e
+mettere in cache la sua assenza sopravviverebbe all'installazione che la risolve.
+La chiave contiene l'override, quindi "Usa il mio percorso" è una mancata
+corrispondenza automatica; i comandi che possono cambiare un binario
+(`tools_set_path`, `tools_update_ytdlp`, `tools_install`) azzerano la cache, e
+`tools_status`/`tools_test` la azzerano perché **sono** la superficie di
+verifica: quello che mostrano è la verità del momento, non deve invecchiare per
+colpa di una scorciatoia.
+
+**Verificato da un test, non da un cronometro.** `m1_ipc.rs` risolve i tool
+finti, poi **cancella i binari dal disco**: la seconda risoluzione deve
+comunque rispondere (solo la cache può), e dopo `clear_tool_cache()` deve
+fallire. Un test di velocità sarebbe stato instabile; questo dimostra la
+proprietà che conta.
+
+### D76 — Il debounce resta 500 ms per la digitazione, sparisce per l'incolla
+
+Valutato, non cambiato di default: **500 ms mentre si digita** restano. Servono
+esattamente a non lanciare un processo yt-dlp (0,46 s) e una richiesta di rete a
+ogni tasto, sono quello che fa l'originale e quello che spec §6.2 e §2.9
+prescrivono. Toglierli sarebbe un peggioramento mascherato da reattività.
+
+**Un incolla però è un evento unico**, non digitazione: dopo il `paste` non
+arriva altro, e i 500 ms sono latenza pura. Ora l'input ascolta `paste` e in quel
+caso parte subito (`inspectDelay(true) === 0`). È una deviazione piccola e
+deliberata dalla parità con l'originale, che debounceva anche l'incolla perché
+aveva un solo percorso di input; qui l'incolla è l'interazione dominante
+(spec §2.3), e con la cache di D75 il tempo che resta è tutto estrazione.

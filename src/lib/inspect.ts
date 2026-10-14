@@ -67,6 +67,21 @@ export interface InspectView {
   inspected: Inspected;
 }
 
+/** Spec §6.2: debounce 500 ms on the URL input, as the original did. */
+export const INSPECT_DEBOUNCE_MS = 500;
+
+/**
+ * How long to wait before inspecting (D76).
+ *
+ * Typing keeps the 500 ms: without it every keystroke would launch a yt-dlp
+ * process (0.46 s for the binary alone) and a network request. A **paste** is
+ * one atomic event, not typing — nothing else is coming — so waiting there is
+ * pure latency and the inspection starts at once.
+ */
+export function inspectDelay(pasted: boolean): number {
+  return pasted ? 0 : INSPECT_DEBOUNCE_MS;
+}
+
 const PLAYLIST_KINDS: readonly PlaylistKind[] = ["playlist", "channel", "mix", "other"];
 
 function asString(value: unknown): string {

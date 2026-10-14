@@ -27,37 +27,19 @@ pub struct JobTools {
 ///
 /// yt-dlp is mandatory: without it there is no inspection and no download, and
 /// the error says exactly that. The other three are optional at this level.
+///
+/// Every resolution goes through the session cache (D75): probing yt-dlp costs
+/// a full launch of the PyInstaller one-file binary (0.46 s measured on Linux,
+/// more on Windows), and it used to happen four times per paste. The cache is
+/// keyed by the override, and the commands that can change a binary clear it.
 pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResult<JobTools> {
-    let context = state.tools();
-    let triple = context.triple();
-    let temp = context.temp_dir();
-
-    let lookup = context.lookup(settings, manifest::YTDLP);
-    let ytdlp = tools::resolve(manifest::YTDLP, &lookup, triple, temp)
+    let ytdlp = resolve_cached(state, settings, manifest::YTDLP)
         .await
         .ok_or_else(|| not_found(manifest::YTDLP))?;
 
-    let qjs = tools::resolve(
-        manifest::QJS,
-        &context.lookup(settings, manifest::QJS),
-        triple,
-        temp,
-    )
-    .await;
-    let deno = tools::resolve(
-        manifest::DENO,
-        &context.lookup(settings, manifest::DENO),
-        triple,
-        temp,
-    )
-    .await;
-    let ffmpeg = tools::resolve(
-        tools::FFMPEG,
-        &context.lookup(settings, tools::FFMPEG),
-        triple,
-        temp,
-    )
-    .await;
+    let qjs = resolve_cached(state, settings, manifest::QJS).await;
+    let deno = resolve_cached(state, settings, manifest::DENO).await;
+    let ffmpeg = resolve_cached(state, settings, tools::FFMPEG).await;
 
     let runtimes = Runtimes {
         mode: settings.js_runtime_mode,
@@ -76,8 +58,25 @@ pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResu
         ytdlp,
         ffmpeg: ffmpeg.map(|tool| tool.path),
         runtimes,
-        private_temp: context.temp_dir().map(std::path::Path::to_path_buf),
+        private_temp: state.tools().temp_dir().map(std::path::Path::to_path_buf),
     })
+}
+
+/// `tools::resolve`, unless this session already knows the answer.
+async fn resolve_cached(state: &AppState, settings: &Settings, tool: &str) -> Option<ResolvedTool> {
+    let override_path = settings
+        .tool_override(tool)
+        .map(std::path::Path::to_path_buf);
+    if let Some(resolved) = state.cached_tool(tool, override_path.as_deref()) {
+        return Some(resolved);
+    }
+    let context = state.tools();
+    let lookup = context.lookup(settings, tool);
+    let resolved = tools::resolve(tool, &lookup, context.triple(), context.temp_dir()).await;
+    if let Some(resolved) = &resolved {
+        state.cache_tool(tool, override_path.as_deref(), resolved);
+    }
+    resolved
 }
 
 fn not_found(tool: &str) -> ErrorInfo {

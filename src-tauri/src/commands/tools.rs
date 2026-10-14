@@ -68,6 +68,9 @@ pub async fn tools_status(state: State<'_, AppState>) -> AppResult<ToolsView> {
             .await,
         );
     }
+    // This command probes every tool for real: whatever it found is the truth
+    // of this moment, and any remembered probe may be older.
+    state.clear_tool_cache();
     Ok(ToolsView {
         tools: rows,
         triple: context.triple().to_owned(),
@@ -84,6 +87,8 @@ pub async fn tools_test(state: State<'_, AppState>, tool: String) -> AppResult<T
     let context = state.tools();
     let settings = state.settings();
     let lookup = context.lookup(&settings, &tool);
+    // A real probe again: drop what the session remembered.
+    state.clear_tool_cache();
     Ok(tools::status_of(
         context.manifest(),
         &tool,
@@ -125,6 +130,8 @@ pub fn tools_set_path(
         }
     }
     state.save_settings(settings).app_result()?;
+    // The override just changed: a remembered probe answers the wrong question.
+    state.clear_tool_cache();
     Ok(())
 }
 
@@ -173,9 +180,12 @@ pub async fn tools_update_ytdlp(state: State<'_, AppState>) -> AppResult<UpdateO
         }
     };
 
-    tools::update_ytdlp(&target, settings.ytdlp_channel, temp_dir)
+    let outcome = tools::update_ytdlp(&target, settings.ytdlp_channel, temp_dir)
         .await
-        .app_result()
+        .app_result()?;
+    // The file on disk changed; the version in the cache would be stale.
+    state.clear_tool_cache();
+    Ok(outcome)
 }
 
 /// Choose the yt-dlp release channel (spec §5.5, §11.8).
@@ -255,6 +265,8 @@ pub async fn tools_install<R: tauri::Runtime>(
     .await;
     state.finish_install();
     installed.map_err(|err| err.to_error_info())?;
+    // A tool just appeared where the lookup was not looking before.
+    state.clear_tool_cache();
 
     // Report the row as the Tools page would show it after a refresh.
     let settings = state.settings();

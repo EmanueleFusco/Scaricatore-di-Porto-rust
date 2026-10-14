@@ -1977,11 +1977,16 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     parziali, ritenta una volta (Deno o stesso runtime) e, se resta degradato,
     **fallisce** con un messaggio chiaro invece di salvare il file sbagliato. Un
     *merge* più basso resta un esito legittimo, con i due numeri nel payload.
+  - **Risoluzione dei tool in cache per la sessione** (D75): risparmia il probe
+    da 0,46 s di yt-dlp a ogni incolla; invalidata da override, aggiornamento,
+    installazione e dalla verifica esplicita della pagina Strumenti. Provata da
+    un test che cancella i binari dal disco dopo la prima risoluzione.
+  - **Debounce**: 500 ms restano per la digitazione, salta per l'incolla (D76).
 - **Verified by running**
-  - `cargo test`: **284** test verdi in totale (208 lib, 3 bundled_tools,
-    9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
+  - `cargo test`: **285** test verdi in totale (208 lib, 3 bundled_tools,
+    9 download, 8 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
     22 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
-    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **161**
+    `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **162**
     test (`npm test`), `npm run check` a 0 errori.
   - **IPC completo con il tool finto**: `inspect_url` e `download_start`
     attraverso i comandi veri, con `ToolContext` che punta al fake — il job

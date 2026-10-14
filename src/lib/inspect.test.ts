@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CACHE_LIMIT,
+  INSPECT_DEBOUNCE_MS,
   MetadataCache,
   defaultResolution,
+  inspectDelay,
   isDeterminate,
   normaliseInspected,
   resolutionOptions,
@@ -122,6 +124,13 @@ describe("resolution options (spec §6.2, §2.9)", () => {
   it("preselects the highest, else Best", () => {
     expect(defaultResolution(video({ heights: [720, 1080] }))).toBe("1080");
     expect(defaultResolution(video({ heights: [] }))).toBe("best");
+  });
+});
+
+describe("inspectDelay() (spec §6.2, D76)", () => {
+  it("keeps 500 ms while typing and starts at once after a paste", () => {
+    expect(inspectDelay(false)).toBe(INSPECT_DEBOUNCE_MS);
+    expect(inspectDelay(true)).toBe(0);
   });
 });
 

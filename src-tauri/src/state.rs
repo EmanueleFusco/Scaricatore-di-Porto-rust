@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult, ErrorCode, ErrorInfo};
 use crate::services::jsruntime::{self, JsRuntimeMode};
 use crate::services::manifest::{self, ToolsManifest};
 use crate::services::paths;
-use crate::services::tools::{self, Lookup};
+use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
@@ -312,6 +312,12 @@ pub struct AppState {
     /// The on-demand install in flight, so the provisioning UI can cancel it
     /// (spec §5.2: "UI shows … progress, Cancel").
     install: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// Resolved tools from this session (D75): probing yt-dlp means launching
+    /// a 40 MB PyInstaller one-file binary, which measured **0.46 s** here, on
+    /// every single inspect and download. Keyed by tool and override path;
+    /// positive results only (a missing tool is cheap to re-check and caching
+    /// its absence would outlive the install that fixes it).
+    tool_cache: Mutex<std::collections::HashMap<String, crate::services::tools::ResolvedTool>>,
 }
 
 /// A running download, as the temporary UI knows it.
@@ -365,6 +371,7 @@ impl AppState {
             inspection: Mutex::new(None),
             job: Mutex::new(None),
             install: Mutex::new(None),
+            tool_cache: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -472,6 +479,41 @@ impl AppState {
             Ok(guard) => guard.is_some(),
             Err(poisoned) => poisoned.into_inner().is_some(),
         }
+    }
+
+    /// A tool resolved earlier in this session, if the override is unchanged.
+    ///
+    /// The key carries the override path, so changing "Use my own path" is an
+    /// automatic miss; the commands that replace a binary clear the cache
+    /// explicitly (see [`AppState::clear_tool_cache`]).
+    pub fn cached_tool(&self, tool: &str, override_path: Option<&Path>) -> Option<ResolvedTool> {
+        let key = tool_cache_key(tool, override_path);
+        match self.tool_cache.lock() {
+            Ok(guard) => guard.get(&key).cloned(),
+            Err(poisoned) => poisoned.into_inner().get(&key).cloned(),
+        }
+    }
+
+    /// Remember a **successful** probe for the rest of the session.
+    pub fn cache_tool(&self, tool: &str, override_path: Option<&Path>, resolved: &ResolvedTool) {
+        let key = tool_cache_key(tool, override_path);
+        let mut slot = match self.tool_cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.insert(key, resolved.clone());
+    }
+
+    /// Forget every remembered probe. Called whenever a binary can have
+    /// changed: an update, an on-demand install, a new override, and the
+    /// Tools page's own re-check (which probes for real and is the surface the
+    /// user trusts).
+    pub fn clear_tool_cache(&self) {
+        let mut slot = match self.tool_cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.clear();
     }
 
     /// Register an on-demand install, returning the token that cancels it
@@ -664,6 +706,15 @@ impl ToolContext {
             well_known_dirs: tools::well_known_dirs(paths::home_dir().as_deref()),
         }
     }
+}
+
+/// Key of the tool-resolution cache: the tool plus the override path it was
+/// resolved with, so two different overrides never share an entry.
+fn tool_cache_key(tool: &str, override_path: Option<&Path>) -> String {
+    let override_part = override_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    format!("{tool}|{override_part}")
 }
 
 /// Payload of the `settings_get` command.

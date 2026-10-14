@@ -234,6 +234,46 @@ fn cancelling_an_unknown_job_is_false_not_an_error() {
 }
 
 #[test]
+fn the_tool_resolution_is_cached_for_the_session_and_cleared_on_purpose() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_with_fakes_in(dir.path());
+    let state = app.state::<AppState>();
+    let settings = state.settings();
+
+    // First resolution probes the fake for real (it runs `--version`).
+    let tools = tauri::async_runtime::block_on(
+        scaricatore_di_porto_lib::commands::env::resolve_job_tools(&state, &settings),
+    )
+    .expect("the fake tools resolve");
+    let ytdlp_path = tools.ytdlp.path.clone();
+    assert!(ytdlp_path.is_file());
+
+    // Take the binaries away: a second resolution can only answer from the
+    // cache, and that is the point — the 0.46 s probe must not repeat on every
+    // paste (D75).
+    let bundled = dir.path().join("bundled");
+    for entry in std::fs::read_dir(&bundled).expect("bundled dir") {
+        let path = entry.expect("entry").path();
+        std::fs::remove_file(path).expect("remove the fake");
+    }
+    let tools = tauri::async_runtime::block_on(
+        scaricatore_di_porto_lib::commands::env::resolve_job_tools(&state, &settings),
+    )
+    .expect("the cached answer is still there");
+    assert_eq!(tools.ytdlp.path, ytdlp_path);
+
+    // An explicit clear (what a tool change does) forces a real probe again.
+    state.clear_tool_cache();
+    let outcome = tauri::async_runtime::block_on(
+        scaricatore_di_porto_lib::commands::env::resolve_job_tools(&state, &settings),
+    );
+    assert!(
+        outcome.is_err(),
+        "with the binaries gone and the cache cleared, yt-dlp cannot be found"
+    );
+}
+
+#[test]
 fn dismissing_the_deno_offer_is_persisted() {
     let dir = TempDir::new().expect("temp dir");
     let app = app_with_settings_in(dir.path());

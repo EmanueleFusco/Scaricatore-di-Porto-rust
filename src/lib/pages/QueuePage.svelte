@@ -124,6 +124,7 @@
           value={inspectStore.url}
           disabled={running}
           oninput={(event) => inspectStore.setUrl((event.currentTarget as HTMLInputElement).value)}
+          onpaste={() => inspectStore.markPaste()}
         />
         <button
           type="button"
