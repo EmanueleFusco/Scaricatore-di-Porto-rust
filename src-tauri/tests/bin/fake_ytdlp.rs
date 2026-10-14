@@ -169,14 +169,34 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
     }
 
     // A degraded extraction: the separate streams are missing, so yt-dlp's own
-    // fallback chain lands on the muxed 360p format. QuickJS "has" it, Deno
-    // does not — which is exactly the symptom the runner must notice.
+    // fallback chain lands on the **muxed** 360p format (no `+` in the id).
+    // QuickJS "has" it, Deno does not — which is exactly the symptom the runner
+    // must notice.
     if url.contains("degraded-download") {
-        let height = if runtime == "deno" { 1080 } else { 360 };
-        let vcodec = if runtime == "deno" { "vp9" } else { "avc1" };
-        println!("SDP_FORMAT|137+140|{height}|{vcodec}|mp4a.40.2");
-        emit_download_line("downloading", 2048, 4096, vcodec);
-        emit_download_line("finished", 4096, 4096, vcodec);
+        if runtime == "deno" {
+            println!("SDP_FORMAT|137+140|1080|vp9|mp4a.40.2");
+            emit_download_line("downloading", 2048, 4096, "vp9");
+            emit_download_line("finished", 4096, 4096, "vp9");
+        } else {
+            println!("SDP_FORMAT|18|360|avc1|mp4a.40.2");
+            emit_download_line("downloading", 2048, 4096, "avc1");
+            emit_download_line("finished", 4096, 4096, "avc1");
+        }
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join("Fake title [fakeid].mkv");
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
+
+    // A **merge** at a lower height than requested: the separate streams were
+    // found, so the video simply has no higher resolution. Not a degraded
+    // extraction, and no retry is worth making.
+    if url.contains("merged-lower") {
+        println!("SDP_FORMAT|137+140|720|avc1|mp4a.40.2");
+        emit_download_line("downloading", 2048, 4096, "avc1");
+        emit_download_line("finished", 4096, 4096, "avc1");
         let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");

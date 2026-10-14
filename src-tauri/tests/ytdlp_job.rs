@@ -391,6 +391,44 @@ async fn a_degraded_download_without_deno_reports_what_it_got() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_result_at_a_lower_height_is_not_retried() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, true, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    // The fake merges two streams (id `137+140`) but only at 720p: the streams
+    // were found, so the video simply has no 1080p. Retrying would download the
+    // same thing again; the honest answer is "done, 720p".
+    let outcome = job::run_job(
+        &env,
+        &fixture.request("https://youtu.be/merged-lower"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+
+    let JobOutcome::Done {
+        runtime,
+        requested_height,
+        actual_height,
+        ..
+    } = outcome
+    else {
+        panic!("expected success, got {outcome:?}");
+    };
+    assert_eq!(
+        runtime,
+        RuntimeKind::QuickJs,
+        "no runtime swap was warranted"
+    );
+    assert_eq!(requested_height, Some(1080));
+    assert_eq!(actual_height, Some(720));
+    assert_eq!(fixture.log_lines().len(), 1, "one attempt only");
+    assert!(memory.get().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_format_failure_retries_once_without_the_selector() {
     let fixture = fixture();
     let memory = fixture.memory();

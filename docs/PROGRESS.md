@@ -1955,9 +1955,9 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
     il risultato porta `requestedHeight`/`actualHeight` e la UI lo dichiara.
     Dettagli e limiti in D71.
 - **Verified by running**
-  - `cargo test`: **273** test verdi in totale (202 lib, 3 bundled_tools,
+  - `cargo test`: **275** test verdi in totale (204 lib, 3 bundled_tools,
     9 download, 7 m1_ipc, 16 process_tree, 6 settings_ipc, 13 tools,
-    17 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
+    18 ytdlp_job), più 3 `#[ignore]` (i test veri, vedi sotto);
     `cargo clippy -D warnings` e `cargo fmt --check` puliti. Frontend: **157**
     test (`npm test`), `npm run check` a 0 errori.
   - **IPC completo con il tool finto**: `inspect_url` e `download_start`

@@ -1886,13 +1886,18 @@ c'è, il job finisce **con i due numeri nel payload** (`requestedHeight`,
 `actualHeight`) e la UI lo dice: "ha salvato 360p anche se ne avevi chiesti
 1440p". Niente più sorprese silenziose.
 
-Due limiti dichiarati:
-* un'altezza inferiore **può essere legittima** (il video non ha quella
-  risoluzione). Per questo non è un errore ma un ritentativo una volta; se anche
-  il secondo tentativo è più basso, il risultato è comunque `done` con i numeri
-  in chiaro.
-* la regola non guarda l'audio only (`height = NA`) né `Best` (nessuna altezza
-  richiesta).
+**Non basta "più bassa del richiesto".** Un'altezza inferiore può essere
+legittima: il video non ha quella risoluzione, e ritentare scaricherebbe di
+nuovo la stessa cosa. Il discriminante è il formato scelto:
+
+* `137+140` (con `+`) = un **merge**: i flussi separati c'erano, quindi
+  l'altezza più bassa è una proprietà del video. Nessun ritentativo; nel
+  payload restano i due numeri e la UI avvisa.
+* `18` (senza `+`) = un **muxed**, cioè il ripiego `b[height<=N]`: è il sintomo
+  dell'estrazione ridotta. Rimosso il file sbagliato, un ritentativo con Deno.
+
+Senza riga `SDP_FORMAT` si sceglie la strada cauta (ritentare). La regola non
+guarda l'audio only (`height = NA`) né `Best` (nessuna altezza richiesta).
 
 ### D72 — Il footer di stato dice la verità, e non ripete la pagina
 

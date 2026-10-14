@@ -538,6 +538,30 @@ pub fn is_degraded_resolution(requested: Option<u32>, actual: Option<u32>) -> bo
     }
 }
 
+/// The *degraded-extraction* signature: a lower height **and** a muxed
+/// selection.
+///
+/// A merged id (`278+251`) proves the separate video and audio streams were
+/// found in that run, so a lower height there is a property of the video (the
+/// requested one simply does not exist) and re-running would change nothing. A
+/// muxed id (`18`) at a lower height is yt-dlp's own fallback chain landing on
+/// the 360p format because the separate streams were missing — the case worth
+/// one retry with the other runtime (spec §5.3.2).
+///
+/// `format_id` is `None` when the template did not print one: treat it as the
+/// degraded case, because guessing "everything is fine" is the failure this
+/// exists to prevent.
+pub fn is_degraded_selection(
+    requested: Option<u32>,
+    actual: Option<u32>,
+    format_id: Option<&str>,
+) -> bool {
+    if !is_degraded_resolution(requested, actual) {
+        return false;
+    }
+    format_id.is_none_or(|id| !id.contains('+'))
+}
+
 /// A stable token the frontend translates; no concatenated sentences
 /// (spec §11.9). `merging` is the "Merging…" case of spec §8.3.
 pub fn postprocessor_label(name: &str) -> &'static str {
@@ -1377,6 +1401,30 @@ mod tests {
         assert!(!is_degraded_resolution(None, Some(360)));
         assert!(!is_degraded_resolution(Some(1440), None));
         assert!(!is_degraded_resolution(None, None));
+    }
+
+    #[test]
+    fn the_degraded_signature_needs_a_muxed_selection() {
+        // The user's case: muxed 360p when 1440p was asked for.
+        assert!(is_degraded_selection(Some(1440), Some(360), Some("18")));
+        // A real merge at a lower height: the video has no higher resolution,
+        // so a retry would download the same file again.
+        assert!(!is_degraded_selection(
+            Some(1440),
+            Some(720),
+            Some("137+140")
+        ));
+        // Same as above, and the heights match: nothing at all.
+        assert!(!is_degraded_selection(
+            Some(720),
+            Some(720),
+            Some("137+140")
+        ));
+        assert!(!is_degraded_selection(Some(720), Some(720), Some("18")));
+        // No format line: unknown, but the mismatch is real, so be cautious.
+        assert!(is_degraded_selection(Some(1440), Some(360), None));
+        // No requested height (Best, audio): never a degradation.
+        assert!(!is_degraded_selection(None, Some(360), Some("18")));
     }
 
     #[test]

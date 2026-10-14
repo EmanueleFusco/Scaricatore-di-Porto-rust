@@ -131,6 +131,7 @@ pub async fn run_job(
             AttemptOutcome::Finished {
                 file,
                 actual_height,
+                format_id,
             } => {
                 let requested_height = ytdlp::requested_height(&request.spec.quality);
                 // A result lower than asked for, on a fresh runtime, is the
@@ -140,7 +141,11 @@ pub async fn run_job(
                 // The runtime swap is the same one-shot fallback of
                 // spec §5.3.2; the wrong-quality file is removed first, so the
                 // next attempt cannot resume from it.
-                let degraded = ytdlp::is_degraded_resolution(requested_height, actual_height);
+                let degraded = ytdlp::is_degraded_selection(
+                    requested_height,
+                    actual_height,
+                    format_id.as_deref(),
+                );
                 if degraded && env.runtimes.may_fallback_to_deno(runtime, fell_back) {
                     let _ = std::fs::remove_file(&file);
                     runtime = jsruntime::RuntimeKind::Deno;
@@ -226,6 +231,8 @@ enum AttemptOutcome {
         file: PathBuf,
         /// The selected height from `SDP_FORMAT`, when the template printed one.
         actual_height: Option<u32>,
+        /// The selected format id (`278+251` merged, `18` muxed).
+        format_id: Option<String>,
     },
     Failed(YtdlpError),
     /// The challenge watchdog fired: the runtime gets replaced, not the user
@@ -269,6 +276,7 @@ async fn run_attempt(
         tracker: Mutex::new(ProgressTracker::new(request.spec.needs_merge())),
         files: Mutex::new(Vec::new()),
         heights: Mutex::new(Vec::new()),
+        format_ids: Mutex::new(Vec::new()),
         // The challenge is solved once the first download line appears; see the
         // watchdog below.
         challenge_pending: Arc::new(AtomicBool::new(runtime == jsruntime::RuntimeKind::QuickJs)),
@@ -347,6 +355,7 @@ async fn run_attempt(
         Some(file) if file.is_file() => AttemptOutcome::Finished {
             file,
             actual_height: attempt.actual_height(),
+            format_id: attempt.selected_format_id(),
         },
         Some(file) => AttemptOutcome::Failed(YtdlpError::new(
             YtdlpErrorCode::Unknown,
@@ -368,6 +377,9 @@ struct AttemptShared {
     files: Mutex<Vec<PathBuf>>,
     /// Heights of the formats yt-dlp said it selected (`SDP_FORMAT`).
     heights: Mutex<Vec<u32>>,
+    /// Format ids of the same lines; `+` means a merge (see
+    /// [`ytdlp::is_degraded_selection`]).
+    format_ids: Mutex<Vec<String>>,
     challenge_pending: Arc<AtomicBool>,
     emitter: Emitter,
 }
@@ -382,7 +394,10 @@ impl AttemptShared {
         }
         if let Some(format) = ytdlp::parse_format_line(line) {
             // A format line with no height is the audio stream of an audio-only
-            // job: nothing to compare.
+            // job: nothing to compare there, but the id still says "muxed".
+            if let Ok(mut ids) = self.format_ids.lock() {
+                ids.push(format.format_id.clone());
+            }
             if let Some(height) = format.height
                 && let Ok(mut heights) = self.heights.lock()
             {
@@ -431,6 +446,14 @@ impl AttemptShared {
         match self.heights.lock() {
             Ok(heights) => heights.iter().copied().max(),
             Err(poisoned) => poisoned.into_inner().iter().copied().max(),
+        }
+    }
+
+    /// The format id of the last `SDP_FORMAT` line seen.
+    fn selected_format_id(&self) -> Option<String> {
+        match self.format_ids.lock() {
+            Ok(ids) => ids.last().cloned(),
+            Err(poisoned) => poisoned.into_inner().last().cloned(),
         }
     }
 }
