@@ -4,9 +4,10 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::error::{AppResult, ErrorCode, ErrorInfo};
+use crate::services::inspect::SelfTestReport;
 use crate::services::manifest;
 use crate::services::tools::{self, ToolSource, ToolStatus, UpdateOutcome};
 use crate::state::{AppState, IntoAppResult, YtdlpChannel};
@@ -205,20 +206,99 @@ pub fn tools_complete_setup(state: State<'_, AppState>) -> AppResult<()> {
     Ok(())
 }
 
-/// Install a tool on demand (spec §5.2, §5.2.1).
+/// Install a tool on demand (spec §5.2, §5.2.1, §5.3.2).
 ///
-/// Nothing in the manifest can be installed yet: `yt-dlp` ships in the installer
-/// and `qjs` is pinned but bundled too, so there is nothing to fetch. Rather
-/// than a button that silently does nothing, this returns an explicit,
-/// localisable refusal naming the reason (spec §1.1: "a silent failure or a
-/// hard crash is not acceptable"). ffmpeg arrives in M4 together with the
-/// licence and size decisions spec §5 attaches to it.
+/// Deno is the one installable tool of M1: it is never bundled, and it is
+/// downloaded only when the user presses the button after a fallback needed it.
+/// ffmpeg stays "later" for the same reason as in M0-C: it is an M4 decision
+/// with licence and size consequences, and a button that silently does nothing
+/// would be worse than the words.
 #[tauri::command]
-pub async fn tools_install(_state: State<'_, AppState>, tool: String) -> AppResult<ToolStatus> {
-    Err(refuse(format!(
-        "{tool} cannot be installed by the app yet: the only on-demand downloads \
-         (ffmpeg, the Whisper sidecar, the models) come with later phases."
-    )))
+pub async fn tools_install(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    tool: String,
+) -> AppResult<ToolStatus> {
+    let name = tool.trim().to_ascii_lowercase();
+    if name != manifest::DENO {
+        return Err(refuse(format!(
+            "{name} cannot be installed by the app yet: Deno is the only on-demand \
+             install of M1; ffmpeg, the Whisper sidecar and the models come with \
+             later phases."
+        )));
+    }
+
+    let context = state.tools();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events = app.clone();
+    let tool_name = name.clone();
+    // `tool:progress` (spec §3): the download callback is synchronous, so the
+    // event is emitted from the same thread that is reading the body.
+    let on_progress = move |progress: crate::services::download::DownloadProgress| {
+        let _ = events.emit(
+            "tool:progress",
+            ToolProgressEvent {
+                tool: tool_name.clone(),
+                received: progress.received,
+                total: progress.total,
+            },
+        );
+    };
+
+    tools::install_deno(
+        context.manifest(),
+        context.triple(),
+        context.tools_dir(),
+        &token,
+        on_progress,
+    )
+    .await
+    .map_err(|err| err.to_error_info())?;
+
+    // Report the row as the Tools page would show it after a refresh.
+    let settings = state.settings();
+    let lookup = context.lookup(&settings, &name);
+    Ok(tools::status_of(
+        context.manifest(),
+        &name,
+        &lookup,
+        context.triple(),
+        context.temp_dir(),
+    )
+    .await)
+}
+
+/// The `tool:progress` payload (spec §3).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolProgressEvent {
+    pub tool: String,
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+/// "Test YouTube extraction" (spec §5.3.6): a known public video through
+/// `-J`, reporting the runtime used and the elapsed time.
+#[tauri::command]
+pub async fn tools_self_test(state: State<'_, AppState>) -> AppResult<SelfTestReport> {
+    let settings = state.settings();
+    let tools = crate::commands::env::resolve_job_tools(&state, &settings).await?;
+    let environment = crate::services::inspect::InspectEnvironment {
+        ytdlp: tools.ytdlp.path,
+        cookies: crate::services::ytdlp::cookie_source(
+            settings.cookies_from_browser.as_deref(),
+            settings.cookies_file.as_deref(),
+            crate::services::ytdlp::CfgOs::current(),
+        ),
+        runtimes: tools.runtimes,
+        memory: state.runtime_memory().clone(),
+        private_temp: tools.private_temp,
+    };
+    Ok(crate::services::inspect::self_test(
+        &environment,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await)
 }
 
 fn lookup_candidates(lookup: &tools::Lookup, triple: &str) -> usize {

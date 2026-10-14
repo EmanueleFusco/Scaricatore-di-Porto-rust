@@ -5,17 +5,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult, ErrorCode, ErrorInfo};
+use crate::services::jsruntime::{self, JsRuntimeMode};
 use crate::services::manifest::{self, ToolsManifest};
 use crate::services::paths;
 use crate::services::tools::{self, Lookup};
+use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 /// Which releases the yt-dlp updater may install (spec §5.5, §11.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -139,6 +141,18 @@ pub struct Settings {
     /// re-openable from Settings → Tools"). Kept separate from the tools
     /// themselves so the app can show the wizard again on request.
     pub setup_wizard_completed: bool,
+    /// QuickJS → Deno strategy (spec §5.3.3): *Auto* | *QuickJS only* | *Deno only*.
+    #[serde(deserialize_with = "jsruntime::de_runtime_mode")]
+    pub js_runtime_mode: JsRuntimeMode,
+    /// Spec §8.6: `--cookies-from-browser`. Filtered to the names that exist on
+    /// this OS at normalisation time, so a settings file moved between systems
+    /// cannot ask for Safari on Windows.
+    pub cookies_from_browser: Option<String>,
+    /// Spec §6.3.3: a Netscape cookies file. The more robust alternative.
+    pub cookies_file: Option<PathBuf>,
+    /// Spec §5.3.2: the Deno download offer was declined. Remembered so the app
+    /// asks once, not on every failed download.
+    pub deno_offer_dismissed: bool,
 }
 
 impl Default for Settings {
@@ -151,6 +165,10 @@ impl Default for Settings {
             tool_paths: BTreeMap::new(),
             ytdlp_channel: YtdlpChannel::default(),
             setup_wizard_completed: false,
+            js_runtime_mode: JsRuntimeMode::default(),
+            cookies_from_browser: None,
+            cookies_file: None,
+            deno_offer_dismissed: false,
         }
     }
 }
@@ -171,6 +189,22 @@ impl Settings {
         // `spawn` refuses relative paths.
         self.tool_paths
             .retain(|name, path| !name.trim().is_empty() && path.is_absolute());
+
+        // Cookies: a browser this OS does not have is dropped (spec §8.6), and
+        // an empty path means "not set".
+        if let Some(name) = &self.cookies_from_browser {
+            let normalized = name.trim().to_ascii_lowercase();
+            self.cookies_from_browser = if ytdlp::is_known_browser(&normalized, CfgOs::current()) {
+                Some(normalized)
+            } else {
+                None
+            };
+        }
+        if let Some(file) = &self.cookies_file
+            && file.as_os_str().is_empty()
+        {
+            self.cookies_file = None;
+        }
     }
 
     /// The user's override for `tool`, if any.
@@ -256,6 +290,20 @@ pub struct AppState {
     settings_path: PathBuf,
     recovery: Option<Recovery>,
     tools: ToolContext,
+    /// QuickJS→Deno memory (spec §5.3.3). Shared with the inspect and job
+    /// services; writes are best effort.
+    runtime_memory: Arc<jsruntime::RuntimeMemoryStore>,
+    /// The one inspection in flight, so a new URL cancels the previous one
+    /// (spec §6.2 "cancel the previous inspection when the URL changes").
+    inspection: Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
+    /// The one download job of M1 (the queue arrives in M2).
+    job: Mutex<Option<ActiveJob>>,
+}
+
+/// A running download, as the temporary UI knows it.
+pub struct ActiveJob {
+    pub id: String,
+    pub token: tokio_util::sync::CancellationToken,
 }
 
 impl AppState {
@@ -296,13 +344,105 @@ impl AppState {
             settings: RwLock::new(outcome.settings),
             settings_path: path,
             recovery: outcome.recovery,
+            runtime_memory: Arc::new(jsruntime::RuntimeMemoryStore::load(
+                tools.runtime_memory_path(),
+            )),
             tools,
+            inspection: Mutex::new(None),
+            job: Mutex::new(None),
         })
     }
 
     /// Where the tool layer reads its directories from.
     pub fn tools(&self) -> &ToolContext {
         &self.tools
+    }
+
+    /// The remembered runtime decision (spec §5.3.3).
+    pub fn runtime_memory(&self) -> &Arc<jsruntime::RuntimeMemoryStore> {
+        &self.runtime_memory
+    }
+
+    /// Register a new inspection and cancel the previous one.
+    pub fn start_inspection(&self, request_id: u64) -> tokio_util::sync::CancellationToken {
+        let token = tokio_util::sync::CancellationToken::new();
+        let previous = {
+            let mut slot = match self.inspection.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            slot.replace((request_id, token.clone()))
+        };
+        if let Some((_, previous_token)) = previous {
+            previous_token.cancel();
+        }
+        token
+    }
+
+    /// Cancel the inspection with this id, if it is still the current one.
+    pub fn finish_inspection(&self, request_id: u64) {
+        let mut slot = match self.inspection.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if slot.as_ref().is_some_and(|(id, _)| *id == request_id) {
+            *slot = None;
+        }
+    }
+
+    /// Register the running job, cancelling whatever was registered before
+    /// (M1 runs one job at a time; the UI disables Start while one runs).
+    pub fn start_job(&self, id: String) -> tokio_util::sync::CancellationToken {
+        let token = tokio_util::sync::CancellationToken::new();
+        let previous = {
+            let mut slot = match self.job.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            slot.replace(ActiveJob {
+                id,
+                token: token.clone(),
+            })
+        };
+        if let Some(previous) = previous {
+            previous.token.cancel();
+        }
+        token
+    }
+
+    /// Cancel the job with this id. Returns `false` when it is not the one
+    /// running (already finished, or a stale id from the UI).
+    pub fn cancel_job(&self, id: &str) -> bool {
+        let slot = match self.job.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match slot.as_ref() {
+            Some(job) if job.id == id => {
+                job.token.cancel();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The job finished (or failed): forget it if it is still the current one.
+    pub fn finish_job(&self, id: &str) {
+        let mut slot = match self.job.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if slot.as_ref().is_some_and(|job| job.id == id) {
+            *slot = None;
+        }
+    }
+
+    /// Is a job currently registered?
+    pub fn job_running(&self) -> bool {
+        match self.job.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        }
     }
 
     /// In-memory snapshot; never blocks on `.await` because it is a sync call.
@@ -357,6 +497,7 @@ pub struct ToolContext {
     tools_dir: PathBuf,
     bundled_dir: PathBuf,
     temp_dir: Option<PathBuf>,
+    data_dir: PathBuf,
 }
 
 impl ToolContext {
@@ -365,7 +506,8 @@ impl ToolContext {
         let manifest =
             ToolsManifest::embedded().map_err(|err| AppError::Unsupported(err.to_string()))?;
         let triple = manifest::current_target_triple().map_err(AppError::Unsupported)?;
-        let tools_dir = paths::tools_dir(app)?;
+        let data_dir = paths::app_data_dir(app)?;
+        let tools_dir = data_dir.join("tools");
         // The bundled directory is where the executable lives; if that cannot be
         // determined the app still works, it simply has no bundled baseline and
         // the Tools page says so.
@@ -377,6 +519,7 @@ impl ToolContext {
             tools_dir,
             bundled_dir,
             temp_dir,
+            data_dir,
         })
     }
 
@@ -392,6 +535,7 @@ impl ToolContext {
             tools_dir: root.join("tools"),
             bundled_dir: root.join("bundled"),
             temp_dir: None,
+            data_dir: root,
         }
     }
 
@@ -403,6 +547,7 @@ impl ToolContext {
             tools_dir: root.join("tools"),
             bundled_dir: root.join("bundled"),
             temp_dir: Some(root.join("tmp")),
+            data_dir: root.to_path_buf(),
         }
     }
 
@@ -416,6 +561,16 @@ impl ToolContext {
 
     pub fn tools_dir(&self) -> &Path {
         &self.tools_dir
+    }
+
+    /// The app's writable data directory (parent of `tools_dir`).
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Where the QuickJS→Deno decision is remembered (spec §5.3.3).
+    pub fn runtime_memory_path(&self) -> PathBuf {
+        self.data_dir.join(jsruntime::RUNTIME_MEMORY_FILE)
     }
 
     pub fn bundled_dir(&self) -> &Path {
@@ -582,6 +737,49 @@ mod tests {
         assert_eq!(loaded.settings.ytdlp_channel, YtdlpChannel::Stable);
         assert!(!loaded.settings.setup_wizard_completed);
         assert!(loaded.settings.tool_paths.is_empty());
+    }
+
+    #[test]
+    fn the_m1_fields_default_to_auto_and_no_cookies() {
+        let s = Settings::default();
+        assert_eq!(s.js_runtime_mode, JsRuntimeMode::Auto);
+        assert!(s.cookies_from_browser.is_none());
+        assert!(s.cookies_file.is_none());
+        assert!(!s.deno_offer_dismissed);
+    }
+
+    #[test]
+    fn an_unknown_runtime_mode_in_the_file_degrades_to_auto() {
+        let parsed: Settings = serde_json::from_str(r#"{"jsRuntimeMode":"bun"}"#).expect("parse");
+        assert_eq!(parsed.js_runtime_mode, JsRuntimeMode::Auto);
+        let parsed: Settings = serde_json::from_str(r#"{"jsRuntimeMode":"deno"}"#).expect("parse");
+        assert_eq!(parsed.js_runtime_mode, JsRuntimeMode::DenoOnly);
+    }
+
+    #[test]
+    fn a_browser_that_does_not_exist_on_this_os_is_dropped_at_normalisation() {
+        let mut s = Settings {
+            cookies_from_browser: Some("  SAFARI ".to_owned()),
+            cookies_file: Some(PathBuf::new()),
+            ..Settings::default()
+        };
+        s.normalise();
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(s.cookies_from_browser.as_deref(), Some("safari"));
+        } else {
+            assert_eq!(s.cookies_from_browser, None);
+        }
+        assert_eq!(s.cookies_file, None, "an empty path means not set");
+
+        let mut s = Settings {
+            cookies_from_browser: Some("Firefox".to_owned()),
+            cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
+            ..Settings::default()
+        };
+        s.normalise();
+        assert_eq!(s.cookies_from_browser.as_deref(), Some("firefox"));
+        assert!(s.cookies_file.is_some());
     }
 
     #[test]

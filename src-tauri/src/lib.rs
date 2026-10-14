@@ -44,18 +44,42 @@ pub fn run() {
             // `-U` can replace. Best effort: without it the app still works on
             // the bundled binary.
             commands::tools::bootstrap_first_run(state.tools());
+            // Spec §4.10: no queue exists yet and single-instance guarantees
+            // this is the only process, so every `.sdp-tmp-*` directory under
+            // the output folder is debris from a crash. Only the prefix is
+            // touched.
+            let output_dir = state
+                .settings()
+                .default_output_dir
+                .clone()
+                .or_else(|| crate::services::paths::default_output_dir(&handle));
+            if let Some(dir) = output_dir {
+                let removed = crate::services::job::cleanup_stale_temp_dirs(&dir);
+                if removed > 0 {
+                    eprintln!(
+                        "scaricatore-di-porto: removed {removed} stale temp director{} under {}",
+                        if removed == 1 { "y" } else { "ies" },
+                        dir.display()
+                    );
+                }
+            }
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings::settings_get,
             commands::settings::settings_save,
+            commands::inspect::inspect_url,
+            commands::download::download_start,
+            commands::download::download_cancel,
+            commands::download::download_dismiss_deno_offer,
             commands::tools::tools_status,
             commands::tools::tools_test,
             commands::tools::tools_set_path,
             commands::tools::tools_set_ytdlp_channel,
             commands::tools::tools_update_ytdlp,
             commands::tools::tools_install,
+            commands::tools::tools_self_test,
             commands::tools::tools_complete_setup,
         ])
         .build(tauri::generate_context!());

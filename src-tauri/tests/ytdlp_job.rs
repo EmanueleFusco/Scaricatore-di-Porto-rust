@@ -168,6 +168,14 @@ fn collecting_sink() -> (job::ProgressSink, Arc<Mutex<Vec<String>>>) {
     (sink, labels)
 }
 
+/// Unwrap an inspection that was expected to finish.
+fn inspected(outcome: inspect::InspectOutcome) -> Box<Inspected> {
+    match outcome {
+        inspect::InspectOutcome::Inspected { inspected, .. } => inspected,
+        inspect::InspectOutcome::Cancelled => panic!("the inspection was cancelled"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Process liveness (same shape as process_tree.rs: only this part is per-OS)
 // ---------------------------------------------------------------------------
@@ -517,9 +525,7 @@ async fn an_inspection_parses_a_video_and_filters_storyboards() {
     let env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
 
     let outcome = inspect::inspect(&env, "https://youtu.be/good", CancellationToken::new()).await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     let Inspected::Video(video) = &*inspected else {
         panic!("expected a video, got {inspected:?}");
     };
@@ -542,9 +548,7 @@ async fn a_playlist_url_returns_the_stub() {
         CancellationToken::new(),
     )
     .await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     let Inspected::Playlist(playlist) = &*inspected else {
         panic!("expected a playlist, got {inspected:?}");
     };
@@ -560,9 +564,7 @@ async fn an_auth_failure_is_classified_with_the_cookies_hint() {
 
     let outcome =
         inspect::inspect(&env, "https://youtu.be/auth-fail", CancellationToken::new()).await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     let Inspected::Error(info) = &*inspected else {
         panic!("expected an error, got {inspected:?}");
     };
@@ -578,9 +580,7 @@ async fn a_degraded_extraction_falls_back_to_deno_and_remembers_it() {
 
     let outcome =
         inspect::inspect(&env, "https://youtu.be/degraded", CancellationToken::new()).await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     let Inspected::Video(video) = &*inspected else {
         panic!("expected a video, got {inspected:?}");
     };
@@ -607,9 +607,7 @@ async fn a_challenge_failure_in_inspection_falls_back_to_deno() {
 
     let outcome =
         inspect::inspect(&env, "https://youtu.be/challenge", CancellationToken::new()).await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     assert!(
         matches!(&*inspected, Inspected::Video(_)),
         "got {inspected:?}"
@@ -646,9 +644,7 @@ async fn garbage_from_the_tool_is_an_error_not_a_panic() {
 
     let outcome =
         inspect::inspect(&env, "https://youtu.be/garbage", CancellationToken::new()).await;
-    let inspect::InspectOutcome::Inspected(inspected) = outcome else {
-        panic!("cancelled");
-    };
+    let inspected = inspected(outcome);
     assert!(
         matches!(&*inspected, Inspected::Error(_)),
         "got {inspected:?}"

@@ -517,8 +517,89 @@ pub fn inspect_args(
 /// What an inspection returned.
 #[derive(Debug)]
 pub enum InspectOutcome {
-    Inspected(Box<Inspected>),
+    Inspected {
+        inspected: Box<Inspected>,
+        /// Which runtime produced it (spec §15 item 3: the UI must show it).
+        runtime: RuntimeKind,
+        elapsed_ms: u64,
+    },
     Cancelled,
+}
+
+/// The one public video the self-test uses (spec §5.3.6).
+///
+/// "Me at the zoo", the first YouTube video, published 2005: chosen for
+/// stability, verified live with the pinned yt-dlp and the bundled qjs on
+/// 2026-10-14 (the previous candidate, `BaW_jenozKc`, answers "This video is
+/// unavailable" today — a known-good id is not known-good for ever, which is
+/// why the check reports elapsed time and formats instead of trusting a name).
+pub const SELF_TEST_URL: &str = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+
+/// The result of a "Test YouTube extraction" run (spec §5.3.6).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfTestReport {
+    pub ok: bool,
+    /// `quickjs` | `deno`, when an inspection ran at all.
+    pub runtime: Option<String>,
+    pub elapsed_ms: u64,
+    pub formats: usize,
+    pub heights: Vec<u32>,
+    pub error: Option<ErrorInfo>,
+}
+
+/// Run the self-test: a known public video through `-J`, reporting the runtime
+/// and the elapsed time (spec §5.3.6). The fallback applies exactly as in a
+/// real inspection, so the report describes the strategy the app would use.
+pub async fn self_test(env: &InspectEnvironment, token: CancellationToken) -> SelfTestReport {
+    match inspect(env, SELF_TEST_URL, token).await {
+        InspectOutcome::Cancelled => SelfTestReport {
+            ok: false,
+            runtime: None,
+            elapsed_ms: 0,
+            formats: 0,
+            heights: Vec::new(),
+            error: Some(ErrorInfo {
+                code: "CANCELLED".to_owned(),
+                message_key: "error.cancelled".to_owned(),
+                detail: None,
+            }),
+        },
+        InspectOutcome::Inspected {
+            inspected,
+            runtime,
+            elapsed_ms,
+        } => match &*inspected {
+            Inspected::Video(video) => SelfTestReport {
+                ok: true,
+                runtime: Some(runtime.as_str().to_owned()),
+                elapsed_ms,
+                formats: video.formats.len(),
+                heights: video.heights.clone(),
+                error: None,
+            },
+            Inspected::Playlist(_) => SelfTestReport {
+                ok: false,
+                runtime: Some(runtime.as_str().to_owned()),
+                elapsed_ms,
+                formats: 0,
+                heights: Vec::new(),
+                error: Some(ErrorInfo {
+                    code: YtdlpErrorCode::Unsupported.as_str().to_owned(),
+                    message_key: YtdlpErrorCode::Unsupported.message_key().to_owned(),
+                    detail: Some("the self-test URL resolved to a playlist".to_owned()),
+                }),
+            },
+            Inspected::Error(info) => SelfTestReport {
+                ok: false,
+                runtime: Some(runtime.as_str().to_owned()),
+                elapsed_ms,
+                formats: 0,
+                heights: Vec::new(),
+                error: Some(info.clone()),
+            },
+        },
+    }
 }
 
 /// Inspect `url`, including the one-shot QuickJS→Deno fallback of spec §5.3.2.
@@ -535,9 +616,12 @@ pub async fn inspect(
     let now = jsruntime::now_unix();
     let mut runtime = env.runtimes.start(env.memory.get().as_ref(), now);
     let mut fell_back = false;
+    let mut elapsed_ms = 0_u64;
 
     loop {
+        let started = std::time::Instant::now();
         let outcome = run_once(env, url, runtime, token.clone()).await;
+        elapsed_ms += u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match outcome {
             RunOutcome::Cancelled => return InspectOutcome::Cancelled,
             RunOutcome::Inspected(inspected) => {
@@ -553,7 +637,11 @@ pub async fn inspect(
                 if fell_back {
                     remember_deno(env, now);
                 }
-                return InspectOutcome::Inspected(inspected);
+                return InspectOutcome::Inspected {
+                    inspected,
+                    runtime,
+                    elapsed_ms,
+                };
             }
             RunOutcome::Failed(error) => {
                 if error.code == YtdlpErrorCode::YtChallenge
@@ -563,9 +651,11 @@ pub async fn inspect(
                     fell_back = true;
                     continue;
                 }
-                return InspectOutcome::Inspected(Box::new(Inspected::Error(
-                    error.to_error_info(),
-                )));
+                return InspectOutcome::Inspected {
+                    inspected: Box::new(Inspected::Error(error.to_error_info())),
+                    runtime,
+                    elapsed_ms,
+                };
             }
         }
     }
