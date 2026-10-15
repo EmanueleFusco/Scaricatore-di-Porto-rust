@@ -2739,3 +2739,42 @@ came from reading the code with those tests in hand.
   1. Push, re-run `ci` on `main`: `check` green on the three systems.
   2. Then the tag `v0.1.0` (the version is 0.1.0 in all three manifests) for the
      draft release.
+
+## 2026-10-15 — M2 / the CI failed the same test a third time, and the fix was to move the assertion
+- **Done**
+  - The `check` job on `main` failed `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`
+    again, with a **new** symptom: the marker proved a tool was running, but the
+    read found `queued` — i.e. it was looking at the *other* item. Same class as
+    D94, third occurrence, and the lesson is D112: the "the file says
+    `downloading` while the tool runs" invariant already has a deterministic
+    owner that passed in both failing runs
+    (`engine::tests::the_file_says_an_item_is_running_before_the_tool_is_spawned`,
+    no scheduler, no clock), so the integration test dropped its mid-run read
+    instead of stretching the margin a third time.
+  - What the integration test keeps is what only it can prove: the fake reports
+    while it is alive (marker named after the URL, `.fake-started-<url tail>`,
+    written by `veryslow-<ms>`), the app is closed **while a tool runs**, the
+    next launch parks the item, and a Resume finishes it. The `veryslow` window
+    is 4 s and now only has to survive the microseconds between the marker and
+    the shutdown.
+  - `read_state_on_disk` and `wait_for_path` went with the read;
+    `wait_for_fake_start` replaced them.
+- **Verified by running**
+  - `cargo test --test queue_engine`: 22 green, 25,02 s;
+  - **under a simulated CI load** (`taskset -c 0,1,2` with CPU hogs): the test
+    3/3 green (4,4 s each) and the whole binary 22/22 green;
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+    `cargo test`: **415 green**, 3 ignored; `npm test`: **207 green**;
+    `npm run check`: 0 errors, 0 warnings.
+- **Not verified / stubbed**
+  - **The GitHub runner**, as always: the proof is the next `ci` run on `main`.
+  - **I could not reproduce the `queued` value locally**, not with 3 cores and
+    CPU hogs, and I have no verified explanation for it. Rather than build a
+    third fix on a hypothesis, the assertion that produced it is gone — which is
+    D112's point.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D112.
+- **Next step**
+  1. Push, re-run `ci` on `main`: `check` green on the three systems.
+  2. Then the tag `v0.1.0` (the version is 0.1.0 in all three manifests) for the
+     draft release.

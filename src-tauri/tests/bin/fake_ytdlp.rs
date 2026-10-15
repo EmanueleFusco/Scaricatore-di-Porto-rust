@@ -311,16 +311,15 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         sleep_forever();
     }
     // A download that is slow on a **clock** rather than on progress, for the
-    // test that has to read the queue file **while the tool runs**.
+    // test that has to close the app while a tool is really running.
     //
-    // The tool announces itself with a marker in the output folder and then
-    // sleeps: the test waits for the marker instead of hoping the tool is still
-    // alive when it gets around to reading. A margin alone does not work — the
-    // CI starved a poller past an 8 s one and read the file after the run had
-    // finished — while a marker cannot be missed: the app writes the state to
-    // disk *before* spawning us (D91), so any read taken while this process is
-    // alive says `downloading`. `veryslow-<ms>` is how long it then sleeps, and
-    // that is now only about how long the test wants to keep the window open.
+    // The tool announces itself with a marker in the output folder — named
+    // after the URL it is downloading — and then sleeps: the test waits for the
+    // marker instead of hoping the tool is still alive when it gets around to
+    // shutting the app down. A margin alone does not work: the CI starved a
+    // poller past an 8 s one and read the queue file after the run had
+    // finished. `veryslow-<ms>` is how long it then sleeps, which is only how
+    // long the window between the marker and the shutdown stays open.
     if url.contains("veryslow") {
         let millis = url
             .split("veryslow-")
@@ -336,7 +335,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         println!("SDP_FORMAT|137+140|1080|vp9|opus");
         let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
-        let _ = std::fs::write(home.join(".fake-veryslow-started"), b"");
+        let _ = std::fs::write(home.join(format!(".fake-started-{}", safe_name(url))), b"");
         // Twenty steps, so the progress line grows like a real download and
         // the watchdog of spec §5.3.2 has something to watch.
         let steps: u64 = 20;

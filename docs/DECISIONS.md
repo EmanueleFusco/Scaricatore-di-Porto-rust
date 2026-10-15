@@ -2975,3 +2975,29 @@ What the artifacts should weigh now: `.deb` 42 MB, `.rpm` 42 MB, `.AppImage`
 148 MB (the spec expects the AppImage to be the heavy one: it embeds WebKitGTK
 and the size targets do not apply to it), macOS universal ≈ `.dmg` + `.app.zip`,
 Windows ≈ the NSIS `.exe`.
+
+### D112 — An invariant is asserted once, in the test that can make it deterministic
+
+Two `ci` runs failed `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`
+on the same assertion — "the file on disk says `downloading` while the tool
+runs" — first with a 3 s margin, then with an 8 s one, and finally with a marker
+that proved a tool was running but not **which** of the two items it was (the
+next read then found `queued`, i.e. it was looking at the wrong item). A test
+that reads the disk in the middle of a run is racing the machine: no margin
+fixes that, and a marker that does not name its item does not either.
+
+The invariant is not lost, because it already had a better owner:
+`services::queue::engine::tests::the_file_says_an_item_is_running_before_the_tool_is_spawned`
+asserts exactly it — it calls `start_item` and reads the file with no scheduler
+and no clock in between — and it passed in **both** of those CI runs. The
+integration test now keeps only what it can prove deterministically: the fake
+reports while it is alive (a marker named after the URL,
+`.fake-started-<url tail>`), the app is closed **while a tool runs**, and the
+next launch parks the item and lets a Resume finish it — which is also the half
+a user actually meets.
+
+The rule this leaves behind: when an assertion turns out to need a margin, the
+question is not "how big a margin" but "which test can assert this without
+one". Then the margin goes away instead of growing. (`read_state_on_disk` went
+with the read: with the assertion gone it had no users, and dead test helpers
+are still dead code.)

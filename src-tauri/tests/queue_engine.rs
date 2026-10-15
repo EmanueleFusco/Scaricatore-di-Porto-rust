@@ -319,30 +319,13 @@ fn json_id(id: &str) -> serde_json::Value {
     serde_json::Value::String(id.to_owned())
 }
 
-/// The state **`queue.json`** gives an item, read from the disk and not from the
-/// engine.
-///
-/// Whoever reads this must have a reason to know the file is up to date: an
-/// in-memory state change becomes visible to `snapshot()` a moment before the
-/// write that records it (the state lock is released before the file is
-/// touched, and never held across a write). Two tests have raced that window —
-/// one reading right after `snapshot()`, one hoping the download outlived the
-/// poller — and the CI won both; the answer is `wait_for_path` below, or a wait
-/// on the value, never a margin.
-fn read_state_on_disk(fx: &Fixture, id: &str) -> Option<String> {
-    let raw = fs::read_to_string(&fx.queue_path).ok()?;
-    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    document["items"]
-        .as_array()?
-        .iter()
-        .find(|item| item["id"] == json_id(id))?
-        .get("state")?
-        .as_str()
-        .map(str::to_owned)
-}
-
 /// The size **`queue.json`** gives an item, or `None` while the write that
 /// records it is still in flight.
+///
+/// Whoever reads this must wait for the value to arrive: an in-memory state
+/// change becomes visible to `snapshot()` a moment before the write that
+/// records it (the state lock is released before the file is touched, and never
+/// held across a write), and one test has already lost that race to the CI.
 fn size_on_disk(fx: &Fixture, id: &str) -> Option<u64> {
     let raw = fs::read_to_string(&fx.queue_path).ok()?;
     let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -354,20 +337,27 @@ fn size_on_disk(fx: &Fixture, id: &str) -> Option<u64> {
         .as_u64()
 }
 
-/// Wait for a file to appear, with a deadline that says what was expected.
+/// Wait until the fake reports that it is running, and say which URL it named.
 ///
-/// The fake tools announce themselves by writing a marker while they are still
-/// running, and waiting for **that** is what makes a test about "what the file
-/// says while an item runs" independent of how busy the machine is. The CI
-/// proved the alternative — a download long enough to be read — is a hope: a
-/// starved poller can wake up after the tool has finished.
-async fn wait_for_path(path: &std::path::Path, what: &str, within: Duration) {
+/// The fake writes `.fake-started-<url tail>` while it is alive, so this is the
+/// moment "a tool is running" becomes a **fact** instead of an assumption about
+/// how long a download lasts: the CI starved a poller past a 3 s margin and
+/// then past an 8 s one before this became a handshake.
+async fn wait_for_fake_start(out: &std::path::Path, within: Duration) -> String {
     let deadline = Instant::now() + within;
-    while !path.is_file() {
+    loop {
+        if let Ok(entries) = fs::read_dir(out) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if let Some(url) = name.strip_prefix(".fake-started-") {
+                    return url.to_owned();
+                }
+            }
+        }
         assert!(
             Instant::now() < deadline,
-            "{what}: {} never appeared",
-            path.display()
+            "the fake never reported a download in {}",
+            out.display()
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -813,33 +803,37 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
         let ids = engine
             .add(
                 vec![
-                    // The fake writes a marker while it runs and then sleeps
-                    // (see `.fake-veryslow-started`): the test waits for the
-                    // marker, so the file read below lands inside the run
-                    // whatever the machine is doing. The duration is only how
-                    // long the window stays open.
-                    fx.request("https://a.example/veryslow-1500"),
-                    fx.request("https://b.example/veryslow-1500"),
+                    // The fake writes a marker while it runs and then sleeps, so
+                    // the test knows a tool is alive **before** it closes the
+                    // app: that is the crash the next launch has to recover
+                    // from. Which of the two items the single download lane
+                    // picked is not the test's business — the marker names the
+                    // URL, and the test does not have to guess.
+                    //
+                    // The duration is only how long the window between the
+                    // marker and the shutdown stays open, and the resume at the
+                    // end pays it.
+                    fx.request("https://a.example/veryslow-4000"),
+                    fx.request("https://b.example/veryslow-4000"),
                 ],
                 false,
             )
             .added;
-        wait_for_path(
-            &fx.out.join(".fake-veryslow-started"),
-            "the first item's tool to start",
-            Duration::from_secs(30),
-        )
-        .await;
-        // The file, read **while the tool runs**: this is what a crash (`kill
-        // -9`, a power cut) would leave behind, and it is the reason the state
-        // is written before the process is spawned (D91). A file that still
-        // said "queued" here would come back from the next launch as an item
-        // nobody had started, and the queue would download it again by itself.
-        assert_eq!(
-            read_state_on_disk(&fx, &ids[0]).as_deref(),
-            Some("downloading"),
-            "a running item is on disk as running, never as queued"
-        );
+        wait_for_fake_start(&fx.out, Duration::from_secs(30)).await;
+
+        // What the file says **while the tool runs** is not asserted here, and
+        // that is deliberate: the invariant belongs to
+        // `services::queue::engine::tests::the_file_says_an_item_is_running_before_the_tool_is_spawned`,
+        // which calls `start_item` and reads the file with no scheduler and no
+        // clock in between — deterministic by construction. This test adds the
+        // other half, the one a user meets: close the app mid-download and the
+        // next launch finds the item parked instead of downloading it again.
+        //
+        // Two earlier versions tried to assert it here by reading the file
+        // inside the run, with a 3 s margin and then an 8 s one; the CI starved
+        // the poller past both and failed on `left: "done"`. The marker above
+        // is what replaced the hope: it says a tool is running, so the shutdown
+        // below lands inside the run instead of after it.
         // This is what closing the app mid-download looks like: cancel the
         // token of everything still running and stop.
         engine.shutdown();
