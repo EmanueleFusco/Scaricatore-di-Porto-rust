@@ -39,6 +39,63 @@
   "queue.degraded.hint": "This list may be missing resolutions: the extraction was degraded in this run (the JavaScript challenge failed). Try again — or install Deno in Settings → Tools.",
   "queue.retry": "Try again",
 
+  "queue.add.label": "Links to download",
+  "queue.add.placeholder": "Paste one or more links, one per line",
+  "queue.add.drop": "Drop a .txt file of links here",
+  "queue.add.hint": "One link per line. You can paste several at once: they are checked and added together.",
+  "queue.add.button": "Add to queue",
+  "queue.add.ready": "{count} links ready",
+  "queue.add.ready.one": "{count} link ready",
+  "queue.add.none": "Nothing to add",
+  "queue.add.inspecting": "Checking…",
+  "queue.add.retry": "Check again",
+  "queue.add.remove": "Remove from the list",
+  "queue.add.quality": "Quality",
+  "queue.add.quality.best": "Best available",
+  "queue.add.quality.max": "Up to {height}p",
+  "queue.add.quality.audio": "Audio only (.opus)",
+  "queue.add.duplicate.title": "Already in the queue",
+  "queue.add.duplicate.body": "{count} of these links are already queued with the same options.",
+  "queue.add.duplicate.confirm": "Add anyway",
+  "queue.add.duplicate.cancel": "Leave it",
+  "queue.add.site": "Site",
+
+  "queue.list.empty.supported": "Supported sites",
+  "queue.list.pauseAll": "Pause all",
+  "queue.list.resumeAll": "Resume all",
+  "queue.list.clearFinished": "Clear finished",
+  "queue.list.retryFailed": "Retry failed",
+  "queue.list.actions": "Queue actions",
+  "queue.list.moveTop": "Move to top",
+  "queue.list.copyLink": "Copy link",
+  "queue.list.openPage": "Open page in browser",
+  "queue.list.reveal": "Show in folder",
+  "queue.list.openFile": "Open file",
+  "queue.list.expand": "Details",
+  "queue.list.collapse": "Hide details",
+  "queue.list.count": "{visible} of {total}",
+
+  "queue.item.options": "Options",
+  "queue.item.output": "File",
+  "queue.item.log": "Last messages",
+  "queue.item.error": "Error",
+  "queue.item.runtime": "Runtime: {runtime}",
+  "queue.item.retrying": "Automatic retry {attempt}/2 shortly",
+  "queue.item.resumed": "Resumed after a restart",
+
+  "queue.state.queued": "Queued",
+  "queue.state.inspecting": "Checking",
+  "queue.state.downloading": "Downloading",
+  "queue.state.postProcessing": "Processing",
+  "queue.state.encoding": "Encoding",
+  "queue.state.transcribing": "Transcribing",
+  "queue.state.summarizing": "Summarizing",
+  "queue.state.done": "Done",
+  "queue.state.failed": "Failed",
+  "queue.state.cancelled": "Cancelled",
+  "queue.state.paused": "Paused",
+  "queue.state.interrupted": "Interrupted",
+
   "job.stage.preparing": "Preparing",
 
   "job.stage.downloading": "Downloading",
@@ -80,6 +137,18 @@
   "footer.toolsPending": "Tools need attention",
   "footer.percent": "{value}%",
 
+  "footer.running": "{count} running",
+  "footer.running.one": "{count} running",
+
+  "footer.queued": "{count} queued",
+  "footer.queued.one": "{count} queued",
+
+  "footer.pausedAll": "Queue paused",
+
+  "footer.speed": "{value} Mbit/s",
+
+  "footer.nothing": "The queue is empty",
+
   "settings.title": "Settings",
   "settings.general": "General",
   "settings.language": "Language",
@@ -100,6 +169,14 @@
   "settings.section.tools": "Tools",
   "settings.language.resolved": "In use: {lang}",
   "settings.downloads.comingSoon": "Download settings arrive with the queue (M2).",
+
+  "settings.downloads.parallel": "Parallel downloads",
+  "settings.downloads.parallel.hint": "How many downloads at once (1 to 4). Two is the default: beyond that the network and the CPU struggle.",
+  "settings.downloads.perHost": "Max per site",
+  "settings.downloads.perHost.hint": "How many downloads at once from the same site. Two keeps you from looking like a bot.",
+
+  "settings.general.pasteAnywhere": "Add links pasted anywhere",
+  "settings.general.pasteAnywhere.hint": "Paste links anywhere in the window, not only in the box. Opt-in.",
   "settings.tab.general": "General",
   "settings.tab.tools": "Tools",
   "settings.tab.network": "Network & Accounts",
@@ -231,6 +308,22 @@
   "toast.settingsRecovered": "The settings file was unreadable: it was moved to {path} and the defaults are being used.",
 
   "toast.dismiss": "Dismiss",
+
+  "toast.added": "{count} items added to the queue.",
+  "toast.added.one": "{count} item added to the queue.",
+
+  "toast.queueIdle.title": "Queue finished",
+  "toast.queueIdle.body": "{count} downloads finished.",
+
+  "toast.queueIdleWithErrors": "Queue finished with errors.",
+
+  "toast.queueRetrying": "Automatic retry {count}/2 after a network error.",
+
+  "toast.queueRecovered": "The queue file was unreadable: it was kept as .bak and the queue starts empty.",
+
+  "toast.queueInterrupted": "{count} items were running when the app closed: you can resume them.",
+
+  "toast.queueCleared": "{count} finished items removed from the queue.",
 
   "error.io": "I/O error",
   "error.json": "Invalid data format",

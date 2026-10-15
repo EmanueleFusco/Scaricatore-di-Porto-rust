@@ -4,7 +4,7 @@
 //! [`ErrorInfo`], so the UI can localise it with `message_key` and still show
 //! the raw `detail` in "Copy details" (spec §8.5).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Machine-readable, stable error codes. These end up in the frontend, so
 /// never rename one without also updating the i18n dictionaries.
@@ -46,7 +46,10 @@ impl ErrorCode {
 }
 
 /// Wire format for every error returned to the frontend (spec §3).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Deserialize` as well as `Serialize`: a queue item keeps its last error in
+/// `queue.json` (spec §7.4), so the shape has to survive a round trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorInfo {
     pub code: String,

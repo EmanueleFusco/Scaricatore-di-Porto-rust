@@ -786,6 +786,33 @@ impl YtdlpErrorCode {
         }
     }
 
+    /// The inverse of [`YtdlpErrorCode::as_str`].
+    ///
+    /// The wire and the persisted queue carry the code as a string (it travels
+    /// to the frontend and comes back inside `queue.json`), so reading one back
+    /// has to be total. An unknown string is `UNKNOWN`: a code from a newer
+    /// build is treated as "nobody recognised this", which is the same thing
+    /// the classifier does with a stderr line it cannot place.
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "FFMPEG_MISSING" => Self::FfmpegMissing,
+            "YT_CHALLENGE" => Self::YtChallenge,
+            "AUTH" => Self::Auth,
+            "UNAVAILABLE" => Self::Unavailable,
+            "GEO" => Self::Geo,
+            "FORMAT" => Self::Format,
+            "UNSUPPORTED" => Self::Unsupported,
+            "DRM" => Self::Drm,
+            "ANTIBOT" => Self::Antibot,
+            "COOKIES" => Self::Cookies,
+            "DISK_FULL" => Self::DiskFull,
+            "NETWORK" => Self::Network,
+            "EXTRACT" => Self::Extract,
+            "DENO_MISSING" => Self::DenoMissing,
+            _ => Self::Unknown,
+        }
+    }
+
     /// Key into the `error.ytdlp.*` namespace of the i18n dictionaries.
     pub const fn message_key(self) -> &'static str {
         match self {

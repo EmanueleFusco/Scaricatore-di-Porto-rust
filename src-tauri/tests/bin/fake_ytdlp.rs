@@ -87,11 +87,65 @@ fn own_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn log(line: &str) {
-    let path = own_dir().join("fake-ytdlp.log");
+/// Append one line, in **one** write.
+///
+/// The queue tests run several of these processes at the same time, all into
+/// the same file: `writeln!` can split a line into several `write` calls, and
+/// two processes then interleave their bytes into records like
+/// `…slow-aend 1792053948733`. A single `write_all` of a buffer ending in a
+/// newline is one `write(2)` on an `O_APPEND` descriptor, which the kernel
+/// applies atomically — the log stays parseable when four downloads overlap.
+fn append_line(name: &str, line: &str) {
+    let path = own_dir().join(name);
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
+        let mut buffer = String::with_capacity(line.len() + 1);
+        buffer.push_str(line);
+        buffer.push('\n');
+        let _ = file.write_all(buffer.as_bytes());
     }
+}
+
+fn log(line: &str) {
+    append_line("fake-ytdlp.log", line);
+}
+
+/// The M2 queue tests need to know **when** a download started and ended, to
+/// measure how many really ran at the same time. It goes in its own file: the
+/// M1 tests assert on the line count and the order of `fake-ytdlp.log`, and
+/// they must not see extra lines.
+fn runs_log(line: &str) {
+    append_line("fake-ytdlp-runs.log", line);
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0)
+}
+
+/// How long a "slow" download pretends to take, overridable so a test can
+/// trade duration for precision.
+fn sleep_millis() -> u64 {
+    std::env::var("FAKE_YTDLP_SLEEP_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(400)
+}
+
+/// A counter of its own, so the M1 scenarios that count invocations are not
+/// disturbed by the M2 ones.
+fn counter(name: &str, bump: bool) -> u32 {
+    let path = own_dir().join(format!("fake-ytdlp.{name}"));
+    let previous = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let next = if bump { previous + 1 } else { previous };
+    if bump {
+        let _ = std::fs::write(path, next.to_string());
+    }
+    next
 }
 
 fn write_pid() {
@@ -185,6 +239,29 @@ fn inspect_url(url: &str, runtime: &str) -> i32 {
 }
 
 fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
+    // Every download announces its start and its end, so a test can measure
+    // how many really overlapped (spec §7.2). "slow" and the network scenarios
+    // come first: they are the ones the queue tests drive.
+    runs_log(&format!("start {} {}", now_millis(), url));
+    let code = download_body(args, url, runtime);
+    runs_log(&format!("end {} {}", now_millis(), url));
+    code
+}
+
+fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
+    // A transient network failure that heals on the second attempt: the queue's
+    // automatic retry (spec §7.3) must notice, wait and try again.
+    if url.contains("netfail-once") && counter("netfail-once", true) <= 1 {
+        eprintln!(
+            "ERROR: unable to download webpage: <urlopen error [Errno -3] Temporary failure in \
+             name resolution>"
+        );
+        return 1;
+    }
+    if url.contains("netfail-always") {
+        eprintln!("ERROR: The read operation timed out");
+        return 1;
+    }
     if url.contains("error-auth") {
         eprintln!(
             "ERROR: [youtube] x: Private video. Sign in if you've been granted access to this video"
@@ -257,6 +334,26 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
         return 0;
     }
 
+    // A download that takes measurable time, for the queue's parallelism tests:
+    // it emits progress, waits, and finishes. The wait is what makes two
+    // downloads overlap for long enough to be observed.
+    if url.contains("slow") {
+        let total = sleep_millis() * 4;
+        println!("SDP_FORMAT|137+140|1080|vp9|opus");
+        for step in 1..4 {
+            emit_download_line("downloading", step * (total / 4), total, "vp9");
+            thread::sleep(Duration::from_millis(sleep_millis()));
+        }
+        emit_download_line("downloading", total, total, "vp9");
+        eprintln!("SDP_PP|started|Merger");
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join(safe_name(url));
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
+
     // A normal two-stream download with a merge.
     println!("SDP_FORMAT|137+140|1080|avc1|mp4a.40.2");
     emit_download_line("downloading", 2048, 4096, "vp9");
@@ -290,6 +387,26 @@ fn emit_download_line(status: &str, downloaded: u64, total: u64, vcodec: &str) {
     println!("SDP_DL|{status}|{downloaded}|{total}|NA|1048576.0|3|{vcodec}");
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
+}
+
+/// A file name from the URL's last path segment, so ten items of one test do
+/// not write to the same output.
+fn safe_name(url: &str) -> String {
+    let tail = url
+        .split(['/', '?', '#'])
+        .rfind(|part| !part.is_empty())
+        .unwrap_or("fake");
+    let cleaned: String = tail
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("Fake {cleaned} [fakeid].mkv")
 }
 
 fn paths_value(args: &[String], prefix: &str) -> Option<PathBuf> {

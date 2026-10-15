@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult, ErrorCode, ErrorInfo};
 use crate::services::jsruntime::{self, JsRuntimeMode};
 use crate::services::manifest::{self, ToolsManifest};
+use crate::services::notify::{self, LanguageHolder};
 use crate::services::paths;
+use crate::services::queue::engine::QueueEngine;
 use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 /// Which releases the yt-dlp updater may install (spec §5.5, §11.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -157,6 +159,16 @@ pub struct Settings {
     /// field"). `None` — the default — lets yt-dlp use its own client list,
     /// which is the maintained one (D74).
     pub youtube_player_clients: Option<String>,
+    /// Spec §7.2, §11.8: parallel downloads, 1–4, default 2.
+    pub parallel_downloads: u8,
+    /// Spec §6.4, §11.8: max concurrent items **per host**, default 2, to
+    /// reduce throttling and bot detection.
+    pub per_host_cap: u8,
+    /// Spec §7.7, §11.8: system notification when the queue becomes idle.
+    /// Off by default: a notification that always fires is one nobody reads.
+    pub notify_on_idle: bool,
+    /// Spec §11.3, §11.8: "Add links pasted into the window", opt-in.
+    pub paste_links_anywhere: bool,
 }
 
 impl Default for Settings {
@@ -174,6 +186,10 @@ impl Default for Settings {
             cookies_file: None,
             deno_offer_dismissed: false,
             youtube_player_clients: None,
+            parallel_downloads: crate::services::queue::model::DEFAULT_PARALLEL_DOWNLOADS as u8,
+            per_host_cap: crate::services::queue::model::DEFAULT_PER_HOST_CAP as u8,
+            notify_on_idle: false,
+            paste_links_anywhere: false,
         }
     }
 }
@@ -211,6 +227,12 @@ impl Settings {
             self.cookies_file = None;
         }
 
+        // Spec §7.2, §6.4: the lanes and the host cap are bounded. Zero would
+        // deadlock the queue (nothing can ever start) and a huge number would
+        // defeat the point of having lanes at all.
+        self.parallel_downloads = self.parallel_downloads.clamp(1, 4);
+        self.per_host_cap = self.per_host_cap.clamp(1, 8);
+
         // The expert override passes through yt-dlp's own flag: only client
         // names, variants, commas and exclusions survive.
         if let Some(raw) = &self.youtube_player_clients {
@@ -221,6 +243,17 @@ impl Settings {
     /// The user's override for `tool`, if any.
     pub fn tool_override(&self, tool: &str) -> Option<&Path> {
         self.tool_paths.get(tool).map(PathBuf::as_path)
+    }
+
+    /// The lane capacities in force (spec §7.2, §6.4).
+    pub fn lane_config(&self) -> crate::services::queue::model::LaneConfig {
+        crate::services::queue::model::LaneConfig {
+            download: usize::from(self.parallel_downloads),
+            encode: crate::services::queue::model::DEFAULT_ENCODE_LANE,
+            transcribe: crate::services::queue::model::DEFAULT_TRANSCRIBE_LANE,
+            per_host_cap: usize::from(self.per_host_cap),
+        }
+        .clamped()
     }
 
     pub fn to_json(&self) -> Result<String, AppError> {
@@ -318,6 +351,13 @@ pub struct AppState {
     /// positive results only (a missing tool is cheap to re-check and caching
     /// its absence would outlive the install that fixes it).
     tool_cache: Mutex<std::collections::HashMap<String, crate::services::tools::ResolvedTool>>,
+    /// The queue engine of spec §7, registered by `setup` after the queue file
+    /// has been opened. `None` only in the tests that build a bare `AppState`.
+    queue: Mutex<Option<QueueEngine>>,
+    /// The effective UI language, for the one place the backend needs it: the
+    /// system notification of spec §7.7. The webview pushes it as soon as it
+    /// has resolved it (spec §11.9).
+    ui_lang: LanguageHolder,
 }
 
 /// A running download, as the temporary UI knows it.
@@ -372,12 +412,49 @@ impl AppState {
             job: Mutex::new(None),
             install: Mutex::new(None),
             tool_cache: Mutex::new(std::collections::HashMap::new()),
+            queue: Mutex::new(None),
+            ui_lang: LanguageHolder::new(notify::Lang::from_environment()),
         })
     }
 
     /// Where the tool layer reads its directories from.
     pub fn tools(&self) -> &ToolContext {
         &self.tools
+    }
+
+    /// Register the queue engine (spec §7). Called once, by `setup`, after the
+    /// queue file has been opened.
+    pub fn set_queue(&self, queue: QueueEngine) {
+        let mut slot = match self.queue.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = Some(queue);
+    }
+
+    /// The queue engine, if the app has one.
+    pub fn queue(&self) -> Option<QueueEngine> {
+        match self.queue.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// The queue engine, or the error a command returns when there is none —
+    /// which only happens in a test that never registered one.
+    pub fn require_queue(&self) -> AppResult<QueueEngine> {
+        self.queue().ok_or_else(|| {
+            ErrorInfo::new(
+                ErrorCode::Unsupported,
+                "the queue engine is not registered (spec §7): this build cannot run a queue",
+            )
+        })
+    }
+
+    /// The language the webview has resolved (spec §11.9), for the one place
+    /// the backend needs to speak: the system notification.
+    pub fn ui_lang(&self) -> &LanguageHolder {
+        &self.ui_lang
     }
 
     /// The remembered runtime decision (spec §5.3.3).
@@ -575,16 +652,25 @@ impl AppState {
         settings.normalise();
         Settings::save(&self.settings_path, &settings)?;
 
-        match self.settings.write() {
+        let stored = match self.settings.write() {
             Ok(mut guard) => {
                 *guard = settings.clone();
-                Ok(settings)
+                settings
             }
             Err(poisoned) => {
                 *poisoned.into_inner() = settings.clone();
-                Ok(settings)
+                settings
             }
+        };
+
+        // The queue reads its capacities and its notification setting from here,
+        // so a change in Settings takes effect on the next scheduling pass
+        // without a restart (spec §7.2, §7.7).
+        if let Some(queue) = self.queue() {
+            let lanes = stored.lane_config();
+            queue.configure(lanes, stored.notify_on_idle);
         }
+        Ok(stored)
     }
 
     pub fn recovery(&self) -> Option<&Recovery> {

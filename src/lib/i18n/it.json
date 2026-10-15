@@ -39,6 +39,63 @@
   "queue.degraded.hint": "Questa lista potrebbe non avere tutte le risoluzioni: in questa lettura l'estrazione era ridotta (la challenge JavaScript non è riuscita). Riprova — o installa Deno in Impostazioni → Strumenti.",
   "queue.retry": "Riprova",
 
+  "queue.add.label": "Link da scaricare",
+  "queue.add.placeholder": "Incolla uno o più link, uno per riga",
+  "queue.add.drop": "Trascina qui un file .txt di link",
+  "queue.add.hint": "Un link per riga. Puoi incollarne più di uno insieme: vengono controllati e aggiunti in un colpo solo.",
+  "queue.add.button": "Aggiungi alla coda",
+  "queue.add.ready": "{count} link pronti",
+  "queue.add.ready.one": "{count} link pronto",
+  "queue.add.none": "Nessun link da aggiungere",
+  "queue.add.inspecting": "Controllo…",
+  "queue.add.retry": "Ricontrolla",
+  "queue.add.remove": "Togli dalla lista",
+  "queue.add.quality": "Qualità",
+  "queue.add.quality.best": "Migliore disponibile",
+  "queue.add.quality.max": "Massimo {height}p",
+  "queue.add.quality.audio": "Solo audio (.opus)",
+  "queue.add.duplicate.title": "Già in coda",
+  "queue.add.duplicate.body": "{count} di questi link sono già in coda con le stesse opzioni.",
+  "queue.add.duplicate.confirm": "Aggiungi comunque",
+  "queue.add.duplicate.cancel": "Lascia come sta",
+  "queue.add.site": "Sito",
+
+  "queue.list.empty.supported": "Siti supportati",
+  "queue.list.pauseAll": "Sospendi tutto",
+  "queue.list.resumeAll": "Riprendi tutto",
+  "queue.list.clearFinished": "Rimuovi i finiti",
+  "queue.list.retryFailed": "Riprova i falliti",
+  "queue.list.actions": "Azioni sulla coda",
+  "queue.list.moveTop": "Sposta in cima",
+  "queue.list.copyLink": "Copia il link",
+  "queue.list.openPage": "Apri la pagina nel browser",
+  "queue.list.reveal": "Mostra nella cartella",
+  "queue.list.openFile": "Apri il file",
+  "queue.list.expand": "Dettagli",
+  "queue.list.collapse": "Chiudi i dettagli",
+  "queue.list.count": "{visible} di {total}",
+
+  "queue.item.options": "Opzioni",
+  "queue.item.output": "File",
+  "queue.item.log": "Ultimi messaggi",
+  "queue.item.error": "Errore",
+  "queue.item.runtime": "Runtime: {runtime}",
+  "queue.item.retrying": "Riprovo {attempt}/2 tra poco",
+  "queue.item.resumed": "Ripreso dopo un riavvio",
+
+  "queue.state.queued": "In coda",
+  "queue.state.inspecting": "Controllo",
+  "queue.state.downloading": "Download",
+  "queue.state.postProcessing": "Elaborazione",
+  "queue.state.encoding": "Codifica",
+  "queue.state.transcribing": "Trascrizione",
+  "queue.state.summarizing": "Riassunto",
+  "queue.state.done": "Fatto",
+  "queue.state.failed": "Fallito",
+  "queue.state.cancelled": "Annullato",
+  "queue.state.paused": "Sospeso",
+  "queue.state.interrupted": "Interrotto",
+
   "job.stage.preparing": "Preparazione",
 
   "job.stage.downloading": "Download",
@@ -80,6 +137,18 @@
   "footer.toolsPending": "Strumenti da controllare",
   "footer.percent": "{value}%",
 
+  "footer.running": "{count} in esecuzione",
+  "footer.running.one": "{count} in esecuzione",
+
+  "footer.queued": "{count} in coda",
+  "footer.queued.one": "{count} in coda",
+
+  "footer.pausedAll": "Coda sospesa",
+
+  "footer.speed": "{value} Mbit/s",
+
+  "footer.nothing": "La coda è vuota",
+
   "settings.title": "Impostazioni",
   "settings.general": "Generali",
   "settings.language": "Lingua",
@@ -100,6 +169,14 @@
   "settings.section.tools": "Strumenti",
   "settings.language.resolved": "In uso: {lang}",
   "settings.downloads.comingSoon": "Le impostazioni dei download arrivano con la coda (M2).",
+
+  "settings.downloads.parallel": "Download in parallelo",
+  "settings.downloads.parallel.hint": "Quanti download contemporaneamente (da 1 a 4). Due è il default: oltre, la rete e la CPU fanno fatica.",
+  "settings.downloads.perHost": "Massimo per sito",
+  "settings.downloads.perHost.hint": "Quanti download insieme dallo stesso sito. Due evita di farsi bloccare come se fossero bot.",
+
+  "settings.general.pasteAnywhere": "Aggiungi i link incollati ovunque",
+  "settings.general.pasteAnywhere.hint": "Incolla i link nella finestra, anche fuori dalla casella. Facoltativo.",
   "settings.tab.general": "Generali",
   "settings.tab.tools": "Strumenti",
   "settings.tab.network": "Rete e account",
@@ -231,6 +308,22 @@
   "toast.settingsRecovered": "Il file delle impostazioni era illeggibile: è stato spostato in {path} e sono state usate le impostazioni predefinite.",
 
   "toast.dismiss": "Chiudi",
+
+  "toast.added": "{count} voci aggiunte alla coda.",
+  "toast.added.one": "{count} voce aggiunta alla coda.",
+
+  "toast.queueIdle.title": "Coda completata",
+  "toast.queueIdle.body": "{count} download finiti.",
+
+  "toast.queueIdleWithErrors": "Coda completata con errori.",
+
+  "toast.queueRetrying": "Riprovo automatico {count}/2 dopo un errore di rete.",
+
+  "toast.queueRecovered": "Il file della coda era illeggibile: è stato messo da parte come .bak e la coda riparte vuota.",
+
+  "toast.queueInterrupted": "{count} voci erano in corso quando l'app si è chiusa: puoi riprenderle.",
+
+  "toast.queueCleared": "{count} voci finite rimosse dalla coda.",
 
   "error.io": "Errore di I/O",
   "error.json": "Formato dati non valido",

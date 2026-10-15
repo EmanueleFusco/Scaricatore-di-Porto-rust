@@ -612,10 +612,12 @@ pub fn cleanup_job_dir(dir: &Path) {
 
 /// Remove stale `.sdp-tmp-*` directories under an output folder (spec §4.10).
 ///
-/// At startup no job is running (single instance, nothing queued yet), so every
-/// prefixed directory is a leftover from a crash. Anything not carrying the
-/// prefix is never touched: the output folder is the user's.
-pub fn cleanup_stale_temp_dirs(output_dir: &Path) -> usize {
+/// `owned` holds the item ids the queue still owns (queued, running, paused,
+/// interrupted): spec §4.10 says to remove "only those belonging to no
+/// queued/interrupted item", and spec §7.4 wants an interrupted item to resume
+/// from its `.part` files — which live inside its temp directory. Anything not
+/// carrying the prefix is never touched: the output folder is the user's.
+pub fn cleanup_stale_temp_dirs(output_dir: &Path, owned: &[String]) -> usize {
     let Ok(entries) = fs::read_dir(output_dir) else {
         return 0;
     };
@@ -625,8 +627,13 @@ pub fn cleanup_stale_temp_dirs(output_dir: &Path) -> usize {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if name.starts_with(ITEM_TEMP_PREFIX) && path.is_dir() && fs::remove_dir_all(&path).is_ok()
-        {
+        let Some(id) = name.strip_prefix(ITEM_TEMP_PREFIX) else {
+            continue;
+        };
+        if owned.iter().any(|owned| owned == id) {
+            continue;
+        }
+        if path.is_dir() && fs::remove_dir_all(&path).is_ok() {
             removed += 1;
         }
     }
@@ -639,7 +646,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn cleanup_removes_only_prefixed_directories() {
+    fn cleanup_removes_only_prefixed_directories_that_nobody_owns() {
         let dir = TempDir::new().expect("temp dir");
         let keep = dir.path().join("finished-video.mp4");
         fs::write(&keep, b"x").expect("write");
@@ -647,10 +654,14 @@ mod tests {
         fs::create_dir(dir.path().join(".sdp-tmp-b")).expect("mkdir");
         fs::create_dir(dir.path().join("something-else")).expect("mkdir");
 
-        let removed = cleanup_stale_temp_dirs(dir.path());
-        assert_eq!(removed, 2);
+        // `b` belongs to an interrupted item, so it must survive (spec §7.4).
+        let removed = cleanup_stale_temp_dirs(dir.path(), &["b".to_owned()]);
+        assert_eq!(removed, 1);
         assert!(!dir.path().join(".sdp-tmp-a").exists());
-        assert!(!dir.path().join(".sdp-tmp-b").exists());
+        assert!(
+            dir.path().join(".sdp-tmp-b").exists(),
+            "an interrupted item resumes from its own temp dir"
+        );
         assert!(dir.path().join("something-else").exists());
         assert!(keep.exists(), "finished outputs are never touched");
     }
@@ -658,7 +669,7 @@ mod tests {
     #[test]
     fn cleanup_of_a_missing_directory_is_a_no_op() {
         let dir = TempDir::new().expect("temp dir");
-        assert_eq!(cleanup_stale_temp_dirs(&dir.path().join("nope")), 0);
+        assert_eq!(cleanup_stale_temp_dirs(&dir.path().join("nope"), &[]), 0);
         cleanup_job_dir(&dir.path().join("nope"));
     }
 
