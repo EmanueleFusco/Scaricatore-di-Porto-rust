@@ -1,28 +1,28 @@
+<!--
+  The toast area (spec §11.7).
+
+  Two sources: the settings/queue recovery messages and the `toast` that rides
+  on a `queue:update` event (an automatic retry, "the queue went idle with
+  errors"). Transient information goes here, persistent problems go inline on
+  the item — that is the split §11.7 asks for.
+-->
 <script lang="ts">
-  /**
-   * Transient banner (spec §11.7: toasts for transient info, inline banners
-   * for persistent problems). Currently only the settings-recovery notice
-   * exists; the queue will emit more.
-   */
-  import { settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { t } from "$lib/i18n";
+  import { activeLang, tt } from "$lib/stores/settings.svelte";
+  import { queueStore } from "$lib/stores/queue.svelte";
 
-  let dismissed = $state(false);
+  const toast = $derived(queueStore.toast);
+  const text = $derived(toast === null ? "" : t(activeLang(), toast.messageKey, toast.params));
 
-  const recovery = $derived(settingsStore.recovery);
-  const errorKey = $derived(settingsStore.errorKey);
+  function dismiss(): void {
+    queueStore.dismissToast();
+  }
 </script>
 
-{#if !dismissed && recovery}
-  <div class="toast" role="status" aria-live="polite">
-    <p class="toast__text">{tt("toast.settingsRecovered", { path: recovery.backupPath ?? "" })}</p>
-    <button type="button" class="toast__close" onclick={() => (dismissed = true)}>
-      {tt("toast.dismiss")}
-    </button>
-  </div>
-{:else if !dismissed && errorKey}
-  <div class="toast toast--error" role="alert">
-    <p class="toast__text">{tt(errorKey)}</p>
-    <button type="button" class="toast__close" onclick={() => (dismissed = true)}>
+{#if toast !== null}
+  <div class="toast" role="status">
+    <span class="toast__text">{text}</span>
+    <button type="button" class="btn btn--small" onclick={dismiss}>
       {tt("toast.dismiss")}
     </button>
   </div>
@@ -30,35 +30,30 @@
 
 <style>
   .toast {
+    position: fixed;
+    right: var(--space-4);
+    bottom: var(--space-6);
+    z-index: 20;
     display: flex;
-    align-items: center;
     gap: var(--space-3);
-    margin: var(--space-3) var(--space-4) 0;
+    align-items: center;
+    max-width: 420px;
     padding: var(--space-3);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: var(--radius-md);
-    background: var(--surface-2);
+    background: var(--surface);
     box-shadow: var(--shadow-2);
-  }
-
-  /* Error state is carried by the border style and the alert role, not colour. */
-  .toast--error {
-    border-style: dashed;
-    border-color: var(--danger);
-    background: var(--danger-surface);
+    font-size: 13px;
   }
 
   .toast__text {
-    flex: 1 1 auto;
+    overflow-wrap: anywhere;
   }
 
-  .toast__close {
-    flex: 0 0 auto;
-    min-height: var(--control-height);
-    padding: 0 var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    cursor: pointer;
+  .btn--small {
+    height: 28px;
+    padding: 0 var(--space-2);
+    font-size: 12px;
+    white-space: nowrap;
   }
 </style>

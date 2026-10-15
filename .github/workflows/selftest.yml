@@ -1,28 +1,28 @@
-# "Test YouTube extraction" reale su Linux, Windows e macOS (spec §5.3.6,
+# Real "Test YouTube extraction" on Linux, Windows and macOS (spec §5.3.6,
 # §13.5d: "run the real tool self-test in a nightly job").
 #
-# SOLO AVVIO MANUALE, e il motivo e' la quota: questo repository e' privato e
-# ogni run tocca la rete, YouTube e ffmpeg di sistema. Un run sui tre sistemi
-# costa circa 45 minuti di quota (Linux 1x, Windows 2x, macOS 10x) e puo'
-# fallire per cause che non sono nostre (YouTube che cambia, un video rimosso).
-# Renderlo notturno e' una decisione del proprietario, non un default: qui si
-# avvia a mano quando si vuole la risposta vera.
+# MANUAL DISPATCH ONLY, and the reason is the quota: this repository is private
+# and every run touches the network, YouTube and the system ffmpeg. One run
+# across the three systems costs about 45 minutes of quota (Linux 1x, Windows
+# 2x, macOS 10x) and can fail for reasons that are not ours (YouTube changing,
+# a video being removed). Making it nightly is the owner's decision, not a
+# default: this is started by hand when the real answer is wanted.
 #
-# Cosa verifica, e perche' non basta la suite normale: il fake yt-dlp di
-# `tests/ytdlp_job.rs` prova la *nostra* logica; questo job prova che i flag,
-# il runtime QuickJS incluso e il merge con ffmpeg funzionano davvero, sui tre
-# sistemi, con il binario vero.
+# What it verifies, and why the normal suite is not enough: the fake yt-dlp of
+# `tests/ytdlp_job.rs` proves *our* logic; this job proves that the flags, the
+# bundled QuickJS runtime and the merge with ffmpeg really work, on the three
+# systems, with the real binary.
 #
-# I test sono `#[ignore]` anche localmente (AGENTS.md §6: nessun test della
-# suite normale dipende da YouTube vivo); qui si invocano esplicitamente.
+# The tests are `#[ignore]` locally too (AGENTS.md §6: no test in the normal
+# suite depends on live YouTube); here they are invoked explicitly.
 
 name: Self-test
 
 on:
   workflow_dispatch:
 
-# Niente `cancel-in-progress`: un self-test in corso ha gia' pagato il suo
-# costo, e due run simultanee non si danno fastidio.
+# No `cancel-in-progress`: a running self-test has already paid its cost, and two
+# simultaneous runs do not get in each other's way.
 concurrency:
   group: selftest-${{ github.ref }}
 
@@ -32,17 +32,18 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Come nel job `check`: questo job non impacchetta, e `tauri_build::build()`
-  # gira a ogni cargo (D48). I tool inclusi vengono comunque scaricati per il
-  # self-test, ma senza externalBin il compile non dipende da loro.
+  # As in the `check` job: this job does not bundle, and `tauri_build::build()`
+  # runs on every cargo invocation (D48). The bundled tools are downloaded for
+  # the self-test anyway, but without externalBin the compile does not depend on
+  # them.
   TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
 
 jobs:
   selftest:
     name: self-test (${{ matrix.target }})
     strategy:
-      # Un sistema che fallisce non deve nascondere gli altri due: il senso di
-      # girare su tre piattaforme e' sapere *quale* differisce.
+      # One failing system must not hide the other two: the point of running on
+      # three platforms is knowing *which* one differs.
       fail-fast: false
       matrix:
         include:
@@ -69,10 +70,10 @@ jobs:
 
       - run: npm ci
 
-      # ffmpeg di sistema: il download a 144p deve unire due stream e l'audio
-      # only deve produrre Opus (spec §5.2.1). Senza, il job fallisce con
-      # FFMPEG_MISSING — che e' a sua volta una risposta, ma non quella che si
-      # vuole misurare qui.
+      # System ffmpeg: the 144p download has to merge two streams and the
+      # audio-only path has to produce Opus (spec §5.2.1). Without it the job
+      # fails with FFMPEG_MISSING — which is an answer too, but not the one this
+      # job exists to measure.
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -80,16 +81,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
-        # `choco` e' preinstallato sui runner Windows; --no-progress tiene il log
-        # leggibile e -y evita prompt che non esistono.
+        # `choco` is preinstalled on the Windows runners; --no-progress keeps the
+        # log readable and -y avoids prompts that do not exist.
         run: choco install ffmpeg -y --no-progress
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg
 
-      # I tool inclusi: yt-dlp (dal release piu' recente) e qjs (pinnato). Il
-      # token serve solo al rate limit della API GitHub (D54) e non viene mai
-      # stampato.
+      # The bundled tools: yt-dlp (from the newest release) and qjs (pinned).
+      # The token is only for the GitHub API rate limit (D54) and is never
+      # printed.
       - name: Fetch the bundled tools
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

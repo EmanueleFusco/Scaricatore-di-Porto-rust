@@ -61,6 +61,15 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
+# --- Test artefacts ---
+# The fake tools (`src-tauri/tests/bin/`) write their media file where the app
+# tells them to. They refuse to run without `--paths home:` precisely because a
+# probe used to fall through to "download" and leave one of these in the folder
+# cargo was run from; this is the safety net under that fix, not the fix.
+/src-tauri/*.mkv
+/src-tauri/*.opus
+/src-tauri/fake-ytdlp*
+
 # --- Log e diagnostica ---
 *.log
 # Dump di crash (WebKitGTK su Linux scrive core.<pid>)

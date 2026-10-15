@@ -2068,3 +2068,817 @@ caso parte subito (`inspectDelay(true) === 0`). È una deviazione piccola e
 deliberata dalla parità con l'originale, che debounceva anche l'incolla perché
 aveva un solo percorso di input; qui l'incolla è l'interazione dominante
 (spec §2.3), e con la cache di D75 il tempo che resta è tutto estrazione.
+
+### D77 — The Italian text still to translate, and how to do it (recorded, not done)
+
+The language rule at the top of `AGENTS.md` (2026-10-14) makes English mandatory
+for everything published, and says the historical Italian part is translated in
+one deliberate, separate task. **The owner asked for the inventory to be
+recorded and left for later**, so this is the list; nothing here has been
+translated.
+
+**Inventory** (counts are matching lines, found 2026-10-14 with a word-list
+grep over `git ls-files`):
+
+| file | what is Italian inside | lines |
+| :-- | :-- | --: |
+| `docs/DECISIONS.md` | the whole file, D1–D76 | 664 |
+| `docs/PROGRESS.md` | the whole file, every step block | 484 |
+| `.github/workflows/ci.yml` | header comments, step names, comments inside `run:` blocks | 123 |
+| `docs/SPIKES.md` | the whole file (human checklists) | 50 |
+| `scripts/check-ci-runners.mjs` | comments and console messages | 46 |
+| `scripts/check-ci-runners.test.mjs` | test names (`describe`/`it`) and assertions on those messages | 32 |
+| `scripts/report-bundle-sizes.mjs` | comments and console messages | 24 |
+| `.github/workflows/tier2.yml` | comments and step names | 15 |
+| `scripts/run.mjs` | comments and console messages | 12 |
+| `scripts/check-ci-syntax.mjs` | comments and console messages | 12 |
+| `.gitignore` | comments only | 10 |
+| `src-tauri/windows-app-manifest.xml` | comments only | 9 |
+| `scripts/fetch_bundled_tools.mjs` | comments and console messages | 7 |
+| `scripts/check-release-version.mjs` | comments and console messages | 5 |
+| `scripts/ci-steps.test.mjs` | assertions on `check-ci-syntax.mjs` messages | 2 |
+
+**Traps, i.e. why this cannot be a search-and-replace:**
+
+* **Two pairs must change together.** `scripts/check-ci-runners.test.mjs`
+  asserts the Italian messages printed by `scripts/check-ci-runners.mjs`, and
+  `scripts/ci-steps.test.mjs` asserts those of `scripts/check-ci-syntax.mjs`
+  (e.g. `expect(output).toContain("doveva essere solo arm64")`). Translating one
+  side alone turns a green suite red.
+* **The two documents are read by every session.** They are append-only logs of
+  what happened; the translation must not change a single fact, number or
+  conclusion while changing the language.
+* **`docs/PROGRESS.md` and `docs/DECISIONS.md` are currently bilingual**: the
+  rule took effect on 2026-10-14, so entries after D77 are English and the
+  earlier ones Italian until this task runs.
+
+**Correctly Italian and never to be translated** (excluded on purpose):
+
+* `src/lib/i18n/it.json` — product strings, the rule itself lists them as never
+  translated;
+* `docs/RUST_PORT_GUIDELINES.md` — read-only specification, in English already;
+* `src-tauri/src/services/paths.rs:286` — a test fixture string (`"Perché no"`)
+  that exists to prove accented text survives sanitising;
+* binaries (`src-tauri/icons/icon.icns` and friends) — grep matches bytes.
+
+**The six commit messages already pushed** (`3a01559`…`29ddd09`, subjects in
+Italian) stay as they are. Rewriting them means a force-push on a branch that is
+already published, and the rule is about what we publish from now on: a
+rewritten history is a larger problem than a few Italian subjects. New commits
+are English (`c24f0c6`, `9e0be32`).
+
+**How to do the pass when it is done** (the rule's own conditions, made
+concrete):
+
+1. one commit per group — `.github/` + `scripts/` first (small, and they are the
+   files agents edit most), then `docs/SPIKES.md`, then the two logs;
+2. prose only: no code, no behaviour, no number, no conclusion changed;
+3. run `npm run check:ci`, `npm run check:runners`, `npm test`, `cargo test`
+   after each group — those are exactly the checks that catch trap #1;
+4. say in `PROGRESS.md` that the pass happened, with the commit range.
+
+### D78 — `docs/PROJECT_REPORT.md` is listed by AGENTS.md but does not exist
+
+Found while building the D77 inventory: `AGENTS.md` §1 lists
+`docs/PROJECT_REPORT.md` as a read-only source of truth, but the file is neither
+in the repository nor on disk (`git ls-files docs/` lists only `DECISIONS.md`,
+`PROGRESS.md`, `RUST_PORT_GUIDELINES.md`, `SPIKES.md`).
+
+Two possible explanations, and I cannot choose: it was never added, or it is kept
+out of the repository on purpose. What is certain is that a pointer to a missing
+file costs every session that follows it, so the table row now says it is not
+part of this repository, and this decision records why. If the file exists
+somewhere, adding it back is a one-line change to that row.
+
+---
+
+## M2 (English from here on, per the language rule)
+
+### D79 — The queue notification is a plugin, and here is what it costs
+
+Spec §7.7 calls the "system notification when the queue becomes idle"
+**optional**, and spec §14 row M2 lists "notifications" among the phase's
+deliverables. Both are true, so the feature exists — behind a setting that is
+**off by default**, because a notification that always fires is one nobody reads.
+
+`tauri-plugin-notification` 2.4 is therefore a new dependency, and AGENTS.md
+asks for the reason and the binary-size impact. Measured on this machine, same
+release profile, back to back:
+
+| build | app binary |
+| :-- | --: |
+| without the plugin | **6,71 MiB** |
+| with the plugin | **6,88 MiB** |
+
+**+0,17 MiB**, against a budget of 15 MB (spec §1) and a binary that grew from
+4,70 MiB in M0-C to 6,88 MiB now. The gap between those two numbers is the queue
+engine, not the plugin: the whole M2 backend, the persisted model and the
+scheduler, for 2 MiB.
+
+Two things about the dependency that are worth knowing:
+
+* **Pinned to 2.4 on purpose.** `cargo add` picks the newest release whose
+  `rust-version` fits this package's `rust-version = 1.85`, which is 2.4.0; the
+  2.7 line needs 1.90. A dependency the declared toolchain cannot build is not a
+  dependency.
+* **It pulls a second copy of the `windows` crate** (0.61, through
+  `tauri-winrt-notification`, next to the 0.62 that spec §4.2 needs for Job
+  Objects). They are independent crates and coexist; the cost is inside the
+  +0,17 MiB above.
+
+The wording of the notification comes from the **same dictionaries the UI uses**,
+embedded with `include_str!`. Two alternatives were rejected: building the
+sentence in the backend would create a second place where user-visible strings
+live (spec §11.9 forbids it), and letting the webview send it would miss the
+moment the queue goes idle while the window is in the background — which is
+exactly when a notification is worth having.
+
+### D80 — `queue.json` has no separate `order` array
+
+Spec §7.4 lists what the file holds: "schema version, items, groups, **order**".
+The document has the first three; the order is **the order of the `items`
+vector**.
+
+A second array is a second thing that can disagree with the first, and nothing
+needs it: reordering is moving elements inside the vector, and the frontend
+receives the order as a list of ids in the `queue:update` event (only when it
+changed — re-sending 5 000 ids ten times a second would cost more than the items
+themselves). Two sources of truth for one fact is the kind of bug that only
+shows up on someone else's machine.
+
+### D81 — `queue:update` carries whole items, not field-level patches
+
+Spec §7.6 asks for two things: "coalesce progress per item and emit at most
+~10 updates/s" (implemented, in `services/queue/events.rs`) and "send only changed
+fields".
+
+The second is implemented at **item granularity**: a changed item is sent whole,
+an unchanged one is not sent at all. Field-level patches would need
+`Option<Option<T>>` on every field of the payload and a merge step in the
+frontend store, and the win — not sending three unchanged strings — is smaller
+than the risk that the store drifts from the backend after a partial patch that
+nobody tests. A queue item is a few hundred bytes; the coalescing that actually
+matters is the one that decides **whether** it is sent.
+
+The frontend patches single rows either way (a keyed map plus an explicit order,
+`$lib/queue.ts`), which is what spec §11.7 asks for.
+
+### D82 — The lanes are counters in the scheduler, not semaphores
+
+Spec §7.2 says "Resource-aware scheduling with separate semaphores". This engine
+keeps the equivalent as **counters inside the scheduler task**, because the
+scheduler is the only thing that ever starts an item: a permit could not be
+acquired anywhere else, so a semaphore would only duplicate a count that already
+exists.
+
+The argument that decided it is the mid-flight settings change. With a
+semaphore, "2 → 1 parallel downloads" while two items are running has to either
+revoke a live permit (cannot) or be reconciled against the items that hold one
+(a second source of truth). With counters, the next planning pass simply reads
+`capacity - busy` and the truth is always the items themselves.
+
+The observable behaviour spec §15 item 7 asks for — parallel downloads,
+per-host cap — is unchanged and is tested as a **pure function**
+(`services/queue/scheduler.rs`): lanes, the per-host cap of §6.4, retry timers
+and "first runnable first" are all unit tests with no process and no clock.
+
+### D83 — The Add bar inspects; the engine does not
+
+Spec §3's pipeline starts `inspect → download → …`, and spec §2.2 says a pasted
+link is inspected **as it is added**, with the row showing a spinner and then the
+title and the qualities. So in M2 the inspection happens in the Add bar
+(`inspect_urls`, three in parallel, each with its own token and answers in
+order), and the item stores the result in its **options snapshot** together with
+the title, the site and the duration.
+
+The engine therefore starts at the download stage. The state machine still
+declares `Inspecting` (and `Encoding`, `Transcribing`, `Summarizing`, which are
+M4/M5/M6): the persisted documents, the wire values and the i18n keys are already
+the ones those phases need, and an item whose state is `interrupted` in
+`paused_from: inspecting` can be resumed correctly when M3 adds inspection
+inside the queue.
+
+The reason is not laziness but cost: a yt-dlp process costs ~0,46 s to start
+(measured, D75) plus a network round trip. Re-inspecting at enqueue time would
+pay it twice for every link, to learn what the Add bar already knows.
+
+### D84 — A playlist link is refused, not silently added
+
+Spec §6.4 (playlists) is M3. In M2 the Add bar inspects a pasted link and, when
+the answer is a **playlist**, the row says so (`queue.add.playlist.unsupported`)
+instead of adding it as if it were a video. yt-dlp with `--no-playlist` on a
+playlist URL returns the playlist's own metadata, and the app would then
+"download" something the user did not ask for — the behaviour spec §12.12
+records as a bug in the original.
+
+### D85 — The host key strips `www.` and nothing else
+
+The per-host cap of spec §6.4 needs one key per site. The rule is
+**lowercase, minus a leading `www.`**: `www.youtube.com` and `youtube.com` share
+a budget, `m.youtube.com` does not (it is a different host string, and pretending
+otherwise would be a guess about what "the same site" means).
+
+The alternative — folding `m.`, `mobile.` and friends — was considered and
+rejected: it is a per-site mapping that would be wrong somewhere, and a cap that
+is slightly too generous is much less harmful than one that blocks a download the
+user asked for. The rule is a pure function with a test
+(`queue::model::host_key`).
+
+### D86 — The paused item goes back to `Queued`, not to the stage it was in
+
+A first version resumed an interrupted or paused item into the stage recorded in
+`paused_from` (e.g. `downloading` → `downloading`). It looked right and was
+wrong: **only a `Queued` item is eligible for the scheduler**, so a resumed item
+in any other state sat there forever, "downloading" with nothing running. Caught by
+`pause_keeps_the_item_and_resume_finishes_it`, which is exactly the test that
+should exist.
+
+`paused_from` is kept — it is what the lane is taken from, and what the UI shows
+("resumed after a restart") — but the state a resume produces is `Queued`.
+
+### D87 — Interrupted items wait for the Resume button (and why it was wrong first)
+
+Spec §7.4: "On startup items in an active stage become **Interrupted** and are
+shown with a 'Resume' button (or auto-resume if the setting is on)".
+
+The first version treated `Interrupted` as **eligible** for the scheduler, on
+the reading that the two alternatives are "Resume button" and "auto-resume
+setting" and that a queue which stops dead after a restart is worse. It is the
+wrong reading: the spec's default is the button, and the setting is the
+alternative, so without the setting the item must not move.
+
+It was caught by a flaky test rather than by reading — `resume_all()` came back
+empty, because the scheduler had already started the item — which is exactly the
+kind of bug a test that asserts the *outcome* misses and one that asserts the
+*decision* finds. The planner now takes only `Queued` items
+(`scheduler::is_eligible`), and `Interrupted` and `Paused` wait for
+`queue_resume` / `queue_resume_all`.
+
+Auto-resume on start is **not** implemented: it needs the setting of spec §7.4,
+and one setting that only exists to switch off the default behaviour is not
+worth its place until somebody asks for it. Noted in `PROGRESS.md`.
+
+### D88 — The engine's tasks are spawned on Tauri's runtime, found by running the app
+
+`QueueEngine::start()` is called from `setup`, on the **main thread**, where no
+Tokio context is entered. A bare `tokio::spawn` there panics at once:
+
+```
+thread 'main' panicked at src/services/queue/engine.rs:271:9:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+Found by actually starting the release binary (`npm run app:binary`) — no test
+would have found it, because every test calls `start()` from inside a
+`#[tokio::test]`, where a bare `tokio::spawn` works. The spawns now go through
+`tauri::async_runtime::spawn`, which is the documented way and works from both
+places; the tasks spawned *inside* a running task still use `tokio::spawn`.
+
+Recorded because it is the second time in this project that "the tests pass"
+and "the app starts" are different claims (the first was the Windows CI run that
+found the `Path::is_absolute` difference, D20-ish). Starting the app is cheap
+and is worth doing before declaring a phase done.
+
+### D89 — A cancelled item's temp directory goes *before* the row says so
+
+Spec §7.3: "Cancel: kill the tree, **delete the item's temp dir**, never touch
+finished outputs." The first implementation deleted the directory a few lines
+*after* setting `state = Cancelled`, which is a real (if narrow) hole: anything
+that sees "Cancelled" and then looks for the directory can find it still there.
+
+Two things depend on the two going together. The startup sweep of spec §4.10
+lists the temp dirs the queue still **owns** and deletes what is left over, so a
+directory that outlives its row is invisible to it. And the frontend's own
+"the item is cancelled, so nothing is being written any more" reading is only
+true if the writer has really stopped.
+
+The order is now, on the path that matters — a **running** item that is
+cancelled or removed: kill the tree → delete the temp dir (with the queue's
+lock released, because deleting a folder is not something to hold the whole
+queue still for) → record the terminal state. There is no time-of-check /
+time-of-use window there: the item is already finished when `finish_item` runs,
+so the scheduler will not start it again, and its temp path does not depend on
+the state being written.
+
+The other path — cancelling an item that is not running (nothing to kill) —
+deletes the directory immediately after the mutation instead, again outside the
+lock. It cannot be reordered without a window of its own: the scheduler could
+start that item in between, and deleting the temp directory of a job that is
+about to run would be worse than the one it closes.
+
+Found by a **flaky** integration test — `assert!(!temp.exists())` right after the
+poll saw `Cancelled` — which failed roughly one run in ten. The test was not
+weakened: the code was made to keep the promise the test was making.
+
+### D90 — Pausing an item that is not running parks it, it does not cancel it
+
+`queue_pause` on a `Queued` item used to set it to `Cancelled`: the
+"nothing is running" branch of `QueueEngine::signal` treated every signal that
+was not `Remove` as a cancel. The same branch also hit a **finished** item —
+`pause` on a row that had just completed turned `Done` into `Cancelled`, with
+its progress wiped and its file pointer kept. The UI never offers Pause on
+either (only on rows with a lane), and `pause_all` only touches items with a
+lane, so it was unreachable — but the command is public IPC, and a stale view of
+a row is exactly the case where the user clicks Pause on something that has
+meanwhile finished or not started yet.
+
+Cancelling is a lie the user then has to undo: a queued item shows "Cancelled"
+(Retry) for something that was never downloaded, and its partial files — if any
+— were deleted. Pausing now parks the item as `Paused` with `paused_from` set,
+which is the state the spec already has for "stopped, waits for the user" and
+which `queue_resume` returns to `Queued` (D86). An item that is already parked
+is left exactly as it is.
+
+### D91 — An item is written to `queue.json` as *running* **before** the tool is spawned
+
+Found by a flaky integration test, one run in about ten:
+`the_queue_survives_a_restart_and_the_interrupted_item_can_resume` came back
+from its simulated restart with the item in state **`Queued`** — and, in another
+run, `Downloading`. Both are the same bug seen at two moments.
+
+Spec §7.4 says: "On startup items in an active stage become **Interrupted**
+and are shown with a 'Resume' button". That recovery can only see what the file
+says, and the file said `Queued`, because `QueueEngine::start_item` set the
+state to `Downloading` in memory, marked the item dirty for the flusher and
+spawned the task — and **never wrote the file**. The only writes were the ones
+`after_mutation` and `finish_item` do. So for the whole life of a download the
+document claimed the item had not started yet.
+
+A clean exit hid it: `finish_item` persisted `Cancelled` at the end, and the
+test reopened the file after the item had settled. A crash — `kill -9`, a power
+cut, an OOM kill, the window being closed with the process killed — leaves the
+file as it was, and the next launch **downloads the item again by itself**, with
+no Resume, no question asked and no sign that anything had happened. The `.part`
+files it starts from are still there, so it mostly resumes, but the user was
+never asked and the row never said `Interrupted`.
+
+The fix is one line and one place: `start_item` persists **after** taking the
+state lock and **before** `tokio::spawn`. The invariant now holds by
+construction:
+
+> a `queue.json` that says `Queued` never has a tool behind it.
+
+The only thing the new order can get wrong is dying between the write and the
+spawn: the file says `Downloading` while nothing ran, so the item comes back
+`Interrupted` and waits for a Resume it did not need. That is the cheap
+direction — one unnecessary click instead of a silent re-download — and it is
+the direction spec §7.4 chooses.
+
+**Cost:** one extra write of the queue document per item, on top of the one at
+the end. The §7.4 bound of "≤ 1 write/s while running" is about *progress*, and
+progress still never reaches the file; a start is a state change, not a
+progress tick, and it is the state change the crash case depends on.
+
+Covered by two tests that assert it: a unit test that reads `queue.json` (not
+the engine) while an item runs, and an assertion inside the restart integration
+test that reads the file while the fake yt-dlp is running. The unit test was
+checked against the old code and fails there, printing `Queued`.
+
+### D92 — The temp file of an atomic write is per **write**, not per process
+
+`paths::atomic_write` named its temp file `.<file>.tmp-<pid>`. Inside one
+process that name is **shared by every concurrent write to the same
+destination**, which makes "temp + rename" stop being atomic:
+
+1. writer A creates the file (truncating it) and starts writing;
+2. writer B creates the same file — a second file descriptor, its own offset —
+   and writes over A's bytes;
+3. A renames it over the destination: `queue.json` now holds whatever mixture
+   the two writes left, possibly truncated mid-document;
+4. B renames: `ENOENT`, and `settings.json`/`queue.json` silently kept the
+   broken version.
+
+Step 3 is the data loss: the next reader sees unparseable JSON, and both
+`Settings::load` and the queue's `store::load` answer a corrupt document the way
+the spec asks (§7.4) — move it to `.bak` and carry on with **defaults**. So the
+user's whole queue, or their settings, is replaced by an empty document because
+two threads wrote at the same moment.
+
+The M2 queue is the first thing that writes concurrently by design: its
+scheduler task, its flusher and each running item all persist, and the
+`queue:update` events, the actions and the item transitions can land together.
+The flaky test that led here printed it plainly in stderr —
+`cannot write the queue file: No such file or directory (os error 2)`, which is
+step 4, and the empty queue that followed is step 3.
+
+The name is now `.<file>.tmp-<pid>-<counter>` with a process-wide `AtomicU64`,
+so two writes can never meet. Cost: one static and one `fetch_add`. The test
+that proves it runs eight threads × twelve rounds over ~40 KB documents and
+fails immediately with the old name.
+
+### D93 — `save_settings` moves the file and the in-memory copy under one lock
+
+`settings_save` replaces the **whole** document, and two saves can overlap: the
+settings page saves on every change and the app saves again on the way out. The
+old order was "write the file, then take the lock and update the copy", so a
+second save could land its file between the two steps — and the engine, which
+reads the lanes and the notification switch from the in-memory copy, would then
+be scheduling with settings that were never on disk.
+
+Now the file write and the in-memory update happen under the same lock, file
+first: a failed write still leaves the engine on the last saved settings.
+
+### D94 — Every wait in `queue_engine.rs` is a poll with a deadline, never a fixed sleep
+
+The soak (30 runs of `cargo test --test queue_engine`, three times) found five
+separate flakes, all of the same shape: a test that looked at what a **task**
+produces the instant the **state** said it should be there.
+
+- the state is updated under the lock; the file write and the notifier call
+  happen after it, with no lock held;
+- the flusher is a task: "the last event has been sent" is a wait;
+- a `shutdown()`-ed engine's running task still writes the file once the
+  process is really gone — a real app cannot hit this, because exiting kills
+  the tasks, but a test that returns early can.
+
+Each is now a poll with a deadline that fails with the reason, which is what
+`wait_for` has done for states since the first version. Two claims needed care
+because they are claims about **absence**:
+
+- "exactly one idle notification": wait for the first, then wait again, or the
+  test proves nothing about the second through the third;
+- "the file never said `queued` while running": wait for the file to leave
+  `queued`, and assert `!= "queued"` rather than `== "downloading"`, because
+  the fake's download is 400 ms and a loaded machine can be slow enough that the
+  read lands after it finished. Every state except `queued` is one the item can
+  only reach **by having started**, and that is the invariant. The exact value
+  is pinned by a unit test whose tool lookup never returns.
+
+Recorded because the tempting alternative — "the test was flaky, let me just add
+a sleep" — is how a suite ends up with a 500 ms wait that hides a real
+interleaving. Five of the six flakes in this phase were the tests, and the two
+that were not (D91, D92) were the worst bugs of the phase.
+
+### D95 — The same lock discipline applies to the runtime memory, not only to the settings
+
+D93 was about `AppState::save_settings`; the same read-then-write pair exists in
+`RuntimeMemoryStore::remember` (spec §5.3.3: which runtime to start with, per
+pair of versions), so it is fixed the same way rather than left as the one place
+where the pattern still disagrees with itself.
+
+Two yt-dlp jobs can find the same degraded runtime at the same moment — two
+downloads of a YouTube link is the normal case, not an edge case — and each
+carries a whole document. The window between "the file is written" and "the
+copy is updated" is short, but the consequence is that the file and the memory
+disagree about which runtime to start with, and only one of them is read back
+after a restart.
+
+Both still write the file **first**: a failed write must leave the engine on the
+last settings that were actually saved, not on ones that exist only in memory.
+
+### D96 — Nothing starts after `shutdown()`, and the check is in `start_item`
+
+Found by the soak, through the corruption test: it shuts an engine down, waits
+for the item to settle, corrupts `queue.json` and expects the next launch to
+start empty. It intermittently saw items instead.
+
+The cause is a real window, not a test artefact. `scheduler_loop` checks
+`stopped` at the top of each pass, but a pass already in flight when
+`shutdown()` lands goes on to `start_item` for everything it planned. So an
+item the scheduler had chosen **before** the app started tearing down could be
+spawned **after** it, and then write the queue file — over the document the test
+had just corrupted, and over whatever the next launch is about to read.
+
+Two problems in one, both real:
+
+- a yt-dlp process that the exit hook has already walked past, so spec §4.2's
+  "on app exit cancel all running items" does not hold for it;
+- a `queue.json` written during teardown, which is the file the next launch
+  trusts.
+
+`start_item` now returns immediately when `stopped` is set, before it takes the
+state lock. The check belongs there rather than only in the loop because the
+loop is exactly the caller that can be mid-plan; a caller that arrives *after*
+the exit is not a scheduler decision any more. Covered by a unit test that calls
+`start_item` directly after `shutdown()` and asserts nothing moved — which
+fails on the old code, though not for the reason one would guess: without the
+guard the test reaches `tokio::spawn` from a synchronous `#[test]` and panics
+with "there is no reactor running". The panic *is* the bug, seen from a test
+that has no runtime to spawn into.
+
+### D97 — A `queue_list` that was overtaken by events never walks a row back
+
+The frontend's `load()` (spec §3's initial read) replaces the whole queue with
+the snapshot's contents. That is right when nothing else has happened, and
+**wrong** in one real case: the read is in flight, a `queue:update` arrives
+describing an item that has started downloading, and *then* the read lands
+with a snapshot taken a moment earlier. The row goes back to `queued` and the
+footer counts it again.
+
+It is not a flicker. Once the queue goes idle the next event is the one that
+would have corrected it, and an idle queue does not emit one: the row would say
+"queued" for a download that is really running, until the user does something
+else. The window is the time between `invoke("queue_list")` being sent and its
+answer being reduced — tens of milliseconds on a loaded machine, and the
+restored-queue case (an item that starts the instant the app opens) is exactly
+when it is most likely to be hit.
+
+The store now remembers the `seq` it had when the request went out. If the
+answer comes back with events already applied (`seq` has moved on), the
+snapshot is **not** applied wholesale: only the rows the UI is missing are
+taken from it, and the newer summary and sequence are kept. `groups` are still
+taken from the snapshot — they travel nowhere else.
+
+The same class of problem, one layer down, decided the shape of the fix: the
+reducer moved out of the store into `$lib/queue` as a pure function, because
+the store's own comment claimed it was "testable without a Tauri event bus" and
+it was not — a `$state` field needs the Svelte compiler, and the vitest config
+deliberately does not use it. `applyUpdate` and `applySnapshot` are now nine
+tests, including "drops an event that is not newer" and "never walks a row back
+when events overtook the read".
+
+The store keeps **per-field** reactivity on purpose: the state is one value,
+but `#write` assigns only the fields the reducer changed, because replacing the
+whole object would invalidate every reader and repaint the footer on every
+item tick — the thing spec §11.7 asks the UI not to do.
+
+### D98 — The queue extends the standard download; it does not replace it
+
+The first hands-on feedback on the M2 build (verbatim): *"L'app si avvia ma non
+capisco onestamente le modifiche effettuate, il download non parte e il tasto
+non riesco ad avviarlo"*, *"Questa modalità coda non ha senso, ti fa scegliere
+solo una risoluzione di picco e non è granulare"*, *"La modalità di download di
+coda deve essere un'estensione del download standard, non deve sostituirla.
+L'utilità principale è mettere in coda altri download e ha senso più che altro
+per le playlist, salvo altri casi."*
+
+Two defects were behind it, both in the Add bar, none in the engine:
+
+1. **The button could not work.** `toRequests()` is built from the *rows* of the
+   Add bar; rows were created only by `submit()`, which ran only on
+   Ctrl/Cmd+Enter or a drop. Typing or pasting — what the original's URL entry
+   did — left the rows empty, the button disabled (`readyCount === 0`), and the
+   click a silent no-op. Spec §11.3 asks for inspection "debounced 500 ms as in
+   the original" (`on_url_change` → `after(500, init_submit)`); it had simply
+   never been implemented.
+2. **The only action was "Aggiungi alla coda"**, and the only quality control
+   visible without rows was the coarse preset: the standard download was gone
+   from the app, and the queue's real utility (many links, playlists later) was
+   unreachable.
+
+What changed:
+
+- Inspection starts on its own, debounced 500 ms, as the original; the pasted
+  text becomes rows with spinner → title, site, duration.
+- Two actions, and **both check whatever is still in the box and wait for it
+  before adding**, so a click is never a no-op: **Scarica** (primary) and
+  **Aggiungi alla coda** (secondary).
+- **Scarica** puts the new items at the top of the queue — the "Start
+  immediately" side of §11.3; **Aggiungi alla coda** leaves them at the end.
+  With nothing ahead of them the two are the same by construction.
+- Both go through `queue_add`. Reviving the M1 `download_start` path for the
+  primary button would have been a second engine with no lanes, no per-host
+  cap, no retry policy and no persistence — the point of M2 is one path.
+- Quality: the preset is a **cap** (`MaxHeight`) over the six common heights,
+  Best and Audio only; the **per-row** picker lists the resolutions that video
+  actually reports as *exact* heights (the original's `1080p` list and its
+  exact-with-fallback selector, spec §8.2). The separate "audio only" checkbox
+  is gone — it was the missing `queue.add.audio` label (D99) and a second way
+  to say what the preset already says.
+
+Spec §11.2 (Queue as home) and §11.3 ("Add to queue") stay as written; what
+changed is which verb is primary, on the product owner's explicit instruction.
+
+### D99 — i18n keys are guarded by a test on both sides of the IPC
+
+`t()` falls back to the key itself, deliberately: a missing label is neither a
+crash nor a compiler error, it is raw text on screen. That is how
+`queue.add.audio`, `settings.general.behaviour` and
+`settings.general.notifyIdle` shipped. A fourth, `queue.add.playlist.unsupported`,
+was found by machine, not by eye: the Add bar sets it as a row's `errorKey` and
+it existed in no dictionary.
+
+Three changes:
+
+- **Heights are parameters.** `queue.item.quality.exact.{144…2160}` and
+  `queue.item.quality.max.{144…2160}` (16 keys per language) became
+  `queue.item.quality.exact` / `queue.item.quality.max` + `{height}`.
+  `qualityLabel()` returns `{ key, params }` and `qualityKey(item)` is the same
+  function now; a video reporting 576p or 4320p gets a label instead of a raw
+  key, and no future height can reopen the hole.
+- **Frontend guard**: `src/lib/i18n/usage.test.ts` scans every `.ts`/`.svelte`
+  under `src/` (tests excluded — some of them ask for missing keys on purpose)
+  for literal keys in `tt`/`ttCount`/`errorText`/`t`, for keys *assigned* to
+  `key:`/`errorKey:`/… fields, for all 12 item states and 10 item actions, and
+  for quality labels at heights no list covers.
+- **Rust guard**: `error::message_key_in_dictionaries` (test-only, reads both
+  dictionaries with `include_str!`), used by `error.rs` for every `ErrorCode`,
+  by `services/ytdlp.rs` for every `YtdlpErrorCode`, and by
+  `services/notify.rs` for **every `toast.` literal of the three files that
+  build those keys** (`notify.rs`, `queue/engine.rs`, `queue/store.rs`) —
+  scanned rather than listed, so a new toast fails the test.
+
+Both guards were verified by breaking them on purpose (a key renamed in the
+store, a toast renamed in the engine) and watching the test fail, then
+restoring. Small wording fixes came with them: "Qualità predefinita", "Svuota
+la lista", the list counter is the whole queue (`tCount`, not the rows in the
+viewport), the notification checkbox moved to a new "Comportamento" section
+(the heading it borrowed did not exist), and the stale first-run text ("La coda
+arriva con M2") became a plain hint.
+
+### D100 — Priority uses the commands that exist; no new flag on `queue_add`
+
+"Scarica" needs the new items ahead of the queue, and there were two ways: a
+`priority: bool` on `queue_add` (engine, model, IPC and its 12 tests), or the
+frontend calling `queue_move_to_top` per new id. The loop won: it changes no
+IPC surface, and it is **skipped entirely** when no *other* item is `queued` —
+the common case of an idle queue — so the usual single download costs one
+`queue_add` and nothing else. The calls go back to front, so a batch keeps the
+order it was pasted in. A backend flag remains an option if a future UI ever
+needs priority without the queue being non-empty.
+
+### D101 — The restart test's download margin: 3 s → 8 s
+
+`the_queue_survives_a_restart_and_the_interrupted_item_can_resume` reads
+`queue.json` *while the fake tool runs* and asserts it says `downloading`, the
+value a crash would leave behind (D91). One run out of the ~130 so far failed
+with `done` on the right: the test task was starved past the fake's 3 000 ms
+window, so the read landed after the tool had finished — a race in the *test*,
+not in the engine, and the same class of thing the `veryslow-<ms>` URL was
+introduced for. The margin is 8 000 ms now; the resume phase at the end waits
+it out. Four further full runs of the binary and one full `cargo test` are
+green, and the failures that would matter (a file still saying `queued`) fail
+immediately rather than waiting.
+
+### D102 — The queue page never paints over its own actions
+
+Second hands-on report: *"Quando si aggiungono i video la sezione della coda
+diventa più grande e si compenetra con le scritte e i pulsanti di sotto."*
+
+The list viewport carried `min-height: 240px` and
+`max-height: calc(100vh - 320px)`, inside a page pinned to `height: 100%` with
+no overflow policy of its own. As long as everything fit, the flex column
+distributed the space and the magic numbers did nothing. The moment it did not
+fit — the Add bar grows by 260px of pasted rows, or the window is small — the
+viewport's floor won: the list kept its 240px and the overflow painted *over*
+the row below it (`Sospendi tutto`, `Riprova i falliti`), which stayed at its
+flex position because nothing had moved it.
+
+The fix is the shape the layout should have had:
+
+- the page itself scrolls (`overflow: auto`) when its minimum does not fit, so
+  nothing can be painted over;
+- the list keeps a floor (104px) but the *viewport* is `flex: 1 1 auto;
+  min-height: 0` with no `max-height`, so the list scrolls internally whenever
+  there is room;
+- the Add bar, the page actions and the status footer are `flex: none`: on a
+  small window the page scrolls, and none of them is squeezed.
+
+The magic `calc(100vh - 320px)` is gone: it encoded the add bar's height at a
+moment in time and was wrong as soon as the bar changed.
+
+### D103 — One status line per card, and a virtual list that measures its rows
+
+Same report, second half: *"i valori di velocità e di tempo stimato … ci sono
+dei momenti in cui spariscono (forse perché yt-dlp riporta 0 o lavora a pezzi)
+e … il rettangolo della UI … continua a rimpicciolirsi e ingrandirsi … lo trovo
+distrattivo."* yt-dlp does print `NA` between fragments, and the card rendered
+speed and ETA only when they were there: every gap removed a line and moved
+everything below it.
+
+A card now has one shape for every state — head, bar, **one** status line,
+actions — and nothing about it depends on whether a number arrived:
+
+- the bar is always drawn: empty for `queued`, the last reported width for
+  `paused`/`interrupted`/`failed`/`cancelled`, full for `done`, animated only
+  while it runs and no percentage is known;
+- the status line shows, in order of priority: the problem (the error message,
+  or the short "Salvato a 360p invece di 1440p"), the progress
+  (`Velocità: … Mbit/s · Tempo rimasto …`, and `In attesa dei dati…` while
+  yt-dlp has not reported either), or the quality while the item waits. It is
+  clamped to one line with a `title`, and the full error and the full warning
+  moved into the details panel, where there is room for them;
+- `speedMbits` keeps one decimal below 1 Mbit/s: rounding a slow download to `0`
+  reads as "stalled" and it is the number the user is staring at.
+
+The same report exposed a latent bug the fix had to close: the list's
+virtualiser used a 92px constant, commented "the cards are fixed-height by
+construction" — they are not. A card is ~130px and its height depends on the
+window width, because the action buttons wrap. The pads that stand in for the
+off-screen rows were computed from the wrong number, so the window scrolled to
+the wrong place. The list now measures the real pitch between two rendered rows
+(height + flex gap) and re-measures when the window or the rendered slice
+changes; `visibleRange` keeps its pure signature and its tests.
+
+The status footer also learned the difference between "all done" and "not
+finished": with parked or failed items and nothing running it says `1 in pausa`
+or `2 falliti` instead of `Fatto`, and it is `flex: none` so it cannot be
+squeezed.
+
+### D104 — New items keep FIFO, and the list shows you where they went
+
+The user asked whether the newest links should go on top instead of at the end.
+The answer is no, and the reason is the batch: with "newest first", a playlist
+of forty (M3) would be starved by every single link added while it waits — the
+classic LIFO starvation, on exactly the case the queue exists for. Order stays
+the order items were added (spec §7.3: the scheduler picks the first runnable
+item), and the two explicit escapes stay what they are: **Scarica** moves the
+new items ahead of everything *waiting* (§11.3 "Start immediately") and
+**Sposta in cima** does it for one card later. Nothing already running is
+overtaken: that would mean cancelling it.
+
+What was really wrong was the feedback: with a long list, an appended row lands
+below the visible ones and looks like it went nowhere. So the queue store
+remembers the ids it just added (`flash`), and the list:
+
+- scrolls to the first of them, **only if it is not already in view**, and to
+  the nearest edge — the offset comes from `scrollOffsetFor()`, the same pure
+  arithmetic the pads use, because a virtualised row that is off-screen has no
+  element to ask;
+- keeps them highlighted for 2.5 s (`.item--new`, an accent ring pulsing twice,
+  off under `prefers-reduced-motion`), so the eye finds the row it just pasted;
+- the count line is a `role="status"` region, so a screen reader hears the
+  queue grow even when the new row is out of sight.
+
+Smooth scrolling is skipped under `prefers-reduced-motion`; an id that rolled
+off the history cap is "nowhere" rather than row zero, which `scrollOffsetFor`
+pins with a test.
+
+### D105 — The Deno offer and the stream detail live on the card
+
+The M1 screen carried two things the queue UI did not, and both belong to a
+card:
+
+- **The Deno install offer** (spec §5.3.2 "ask once"). With the screen gone, a
+  download that failed with `DENO_MISSING` left one message and a trip to
+  Settings → Tools: the only hole in the audit that could *block* a real
+  download. The failed card now carries the offer — Install (the same
+  `tools_install` path as the Tools page, with progress and Cancel), Not now
+  (persisted as `denoOfferDismissed`), and the tools error if the install
+  fails. It disappears as soon as Deno is found; retrying the item stays the
+  user's click, because the item's options froze the runtime mode it was added
+  with.
+- **The stream detail** (spec §11.5, "stage detail" next to the stage chip):
+  "Video 1/2", "Merging…". The backend has sent `progress.label` / `subIndex` /
+  `subTotal` since M1, the store read them, and nothing rendered them. They now
+  open the card's status line while the item runs. `progressLabelKey` maps the
+  stable tokens to the `job.label.*` strings of both dictionaries, and the i18n
+  guard walks those tokens too: no literal in the source can name a key that
+  arrives as data.
+
+### D106 — The URL metadata cache and the paste rule moved to the Add bar
+
+Spec §2.9 lists three things together on the URL input: the **metadata cache**,
+the **500 ms debounce**, and "cleared on Clear". M1 implemented them in its
+inspect store; M2 replaced that screen, and the store became unreachable — so
+the cache was dead code holding a required behaviour.
+
+It moved to the add bar, which is where the paste happens now:
+
+- a URL inspected in this session answers from the cache: no yt-dlp process, no
+  network, no spinner. Only complete, non-degraded videos are remembered (the
+  `MetadataCache` refuses playlists, errors and degraded answers on its own, so
+  a short resolution list can never stick), the cap is 50 URLs, "Ricontrolla"
+  bypasses the cache on purpose, "Svuota la lista" clears it, a restart starts
+  empty.
+- **D76 still holds**: a paste is one atomic event, so the inspection starts at
+  once; typing keeps the 500 ms. The component flags the paste, the store asks
+  `inspectDelay()` — the same function M1 tested, instead of a hard-coded
+  literal.
+
+### D107 — The dead M1 frontend is gone; the M1 backend stays
+
+Deleted because nothing could reach them any more: `stores/job.svelte.ts`,
+`stores/inspect.svelte.ts`, `job.ts` and its tests, `App.svelte`'s start/stop of
+that store, the helpers only they used (`resolutionOptions`, `defaultResolution`,
+`speedMbits`, `isDeterminate`, `summarise`/`UrlSummary`), and the six
+`job.stage.*` strings. The behaviour they carried is in D105/D106; the rest was
+duplicate of `$lib/queue`.
+
+The backend M1 commands (`download_start`, `download_cancel`,
+`inspect_url`, `inspect_cancel`, `download_dismiss_deno_offer`) and their eight
+IPC tests stay. They are the M1 path that spec §14 asks to keep working, they
+cost one module and 0.5 s of tests, and the queue calls into the same
+`services/job.rs` underneath. `services/job.rs`'s own header said "M2 replaces
+this module" — it is the module the queue runs on, and the comment now says so.
+
+### D108 — The fake tools never write into the repository
+
+The pre-push review found `src-tauri/Fake title [fakeid].mkv` **tracked** — sixteen
+bytes of `fake media bytes`, committed in the M1 branch (`91d469d`) and
+regenerated on every `cargo test` since, including one run during the review
+itself.
+
+The cause was a probe being read as a download. The fixtures copy the single
+`fake_ytdlp` binary under three names — `yt-dlp`, `qjs` **and** `ffmpeg` — and
+the tool resolution asks each with its own documented flag (`--version`,
+`--version`, `-version`). The fake only recognised `--version`, so the ffmpeg
+probe fell through to the download path, found no URL after `--` and no
+`--paths home:`, and wrote its media file where its `home` fell back to: `.`,
+the process's working directory, which is `src-tauri/` when cargo runs the
+tests.
+
+Two changes close the class, not the instance:
+
+- the fake answers `-version` with an ffmpeg banner, exactly as it answers
+  `--version` with its own version;
+- a download invocation **without a URL after `--`** or **without
+  `--paths home:`** prints an error and exits 2 instead of guessing.
+  `home_dir()` replaces the five `unwrap_or_else(|| PathBuf::from("."))`
+  fallbacks inside the branches, so the trap cannot come back behind the check
+  in `main`.
+
+The committed file is out of the index (it stays in the history of the M1
+branch: sixteen harmless bytes, not worth rewriting history for), and
+`.gitignore` gained a narrow net (`src-tauri/*.mkv`, `*.opus`, `fake-ytdlp*`)
+under the fix.

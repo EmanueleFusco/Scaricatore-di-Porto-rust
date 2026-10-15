@@ -38,6 +38,14 @@ export interface Settings {
    * (D74) — the app does not force the original app's list any more.
    */
   youtubePlayerClients: string | null;
+  /** Spec §7.2, §11.8: parallel downloads, 1–4 (default 2). */
+  parallelDownloads: number;
+  /** Spec §6.4, §11.8: max concurrent items per host (default 2). */
+  perHostCap: number;
+  /** Spec §7.7, §11.8: system notification when the queue goes idle. */
+  notifyOnIdle: boolean;
+  /** Spec §11.3, §11.8: Ctrl/Cmd+V anywhere adds links. */
+  pasteLinksAnywhere: boolean;
 }
 
 /** Mirror of the Rust `state::Recovery` payload. */
@@ -63,7 +71,7 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
@@ -75,7 +83,24 @@ export const DEFAULT_SETTINGS: Settings = {
   cookiesFile: null,
   denoOfferDismissed: false,
   youtubePlayerClients: null,
+  parallelDownloads: 2,
+  perHostCap: 2,
+  notifyOnIdle: false,
+  pasteLinksAnywhere: false,
 };
+
+/**
+ * Clamp a cap into the range the backend accepts.
+ *
+ * Spec §7.2: zero would deadlock the queue (nothing could ever start) and a
+ * huge number would defeat the lane the spec exists for. The Rust side clamps
+ * again — a settings file can be edited by hand — but the UI must not show a
+ * value the backend will silently change.
+ */
+export function clampCap(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
 
 const LANGUAGES: readonly LangPreference[] = ["system", "it", "en"];
 const THEMES: readonly ThemePreference[] = ["system", "dark", "light"];
@@ -164,6 +189,12 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
       typeof raw?.youtubePlayerClients === "string" && raw.youtubePlayerClients !== ""
         ? raw.youtubePlayerClients
         : null,
+    // The caps are clamped here exactly as the Rust `normalise()` does: an
+    // empty number field must not become `NaN` and reach the settings file.
+    parallelDownloads: clampCap(raw?.parallelDownloads, 1, 4, 2),
+    perHostCap: clampCap(raw?.perHostCap, 1, 8, 2),
+    notifyOnIdle: raw?.notifyOnIdle === true,
+    pasteLinksAnywhere: raw?.pasteLinksAnywhere === true,
   };
 }
 

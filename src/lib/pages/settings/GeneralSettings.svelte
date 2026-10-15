@@ -5,6 +5,7 @@
    * "unsaved form" state to get wrong.
    */
   import { languageName, type LangPreference } from "$lib/i18n";
+  import { clampCap } from "$lib/settings";
   import { settingsStore, activeLang, tt } from "$lib/stores/settings.svelte";
   import type { ThemePreference } from "$lib/theme";
 
@@ -25,6 +26,10 @@
     const value = (event.currentTarget as HTMLSelectElement).value as ThemePreference;
     void settingsStore.update({ theme: value });
   };
+
+  /** What a number field can hand over, clamped (spec §7.2). */
+  const cap = (value: number, min: number, max: number, fallback: number): number =>
+    clampCap(value, min, max, fallback);
 </script>
 
 <section class="settings__group" aria-labelledby="heading-lang">
@@ -74,8 +79,74 @@
       {settingsStore.settings.defaultOutputDir ?? tt("settings.outputDir.system")}
     </output>
     <p class="field__hint">{tt("settings.outputDir.hint")}</p>
-    <p class="field__hint">{tt("settings.downloads.comingSoon")}</p>
   </div>
+
+  <!-- Spec §7.2, §6.4: the two caps the scheduler obeys. Both are in the
+       settings because both are what a user on a slow line or a site with bot
+       detection reaches for. -->
+  <div class="field">
+    <label class="field__label" for="setting-parallel">
+      {tt("settings.downloads.parallel")}
+    </label>
+    <input
+      class="input"
+      id="setting-parallel"
+      type="number"
+      min="1"
+      max="4"
+      step="1"
+      value={settingsStore.settings.parallelDownloads}
+      onchange={(event) =>
+        void settingsStore.update({
+          parallelDownloads: cap(Number(event.currentTarget.value), 1, 4, 2),
+        })}
+    />
+    <p class="field__hint">{tt("settings.downloads.parallel.hint")}</p>
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="setting-per-host">{tt("settings.downloads.perHost")}</label>
+    <input
+      class="input"
+      id="setting-per-host"
+      type="number"
+      min="1"
+      max="8"
+      step="1"
+      value={settingsStore.settings.perHostCap}
+      onchange={(event) =>
+        void settingsStore.update({ perHostCap: cap(Number(event.currentTarget.value), 1, 8, 2) })}
+    />
+    <p class="field__hint">{tt("settings.downloads.perHost.hint")}</p>
+  </div>
+</section>
+
+<section class="card settings__group" aria-labelledby="heading-behaviour">
+  <h2 class="settings__group-title" id="heading-behaviour">
+    {tt("settings.section.behaviour")}
+  </h2>
+
+  <!-- Spec §7.7: one notification when the queue goes idle, off by default. -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.notifyOnIdle}
+      onchange={(event) => void settingsStore.update({ notifyOnIdle: event.currentTarget.checked })}
+    />
+    {tt("settings.general.notifyIdle")}
+  </label>
+
+  <!-- Spec §11.3: Ctrl/Cmd+V anywhere on the page, opt-in. -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.pasteLinksAnywhere}
+      onchange={(event) =>
+        void settingsStore.update({ pasteLinksAnywhere: event.currentTarget.checked })}
+    />
+    {tt("settings.general.pasteAnywhere")}
+  </label>
+  <p class="field__hint">{tt("settings.general.pasteAnywhere.hint")}</p>
 </section>
 
 <style>
@@ -97,5 +168,16 @@
     border-radius: var(--radius-md);
     background: var(--surface-2);
     word-break: break-all;
+  }
+
+  .settings__check {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    font-size: 13px;
+  }
+
+  .input[type="number"] {
+    max-width: 120px;
   }
 </style>

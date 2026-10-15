@@ -175,63 +175,9 @@ export function secondsToClock(seconds: number | null | undefined): string | nul
   return hours > 0 ? `${hours}:${two(minutes)}:${two(rest)}` : `${minutes}:${two(rest)}`;
 }
 
-/** Bytes/s → "12.34" (Mbit/s), two decimals and the shape the original used. */
-export function speedMbits(bytesPerSecond: number | null | undefined): string | null {
-  if (typeof bytesPerSecond !== "number" || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) {
-    return null;
-  }
-  return ((bytesPerSecond * 8) / (1024 * 1024)).toFixed(2);
-}
-
-/** A determinate bar needs a number in 0–100; everything else is the spinner. */
-export function isDeterminate(percent: number | null | undefined): boolean {
-  return typeof percent === "number" && Number.isFinite(percent);
-}
-
 // ---------------------------------------------------------------------------
-// Resolution picker (spec §2.9: vertical, ultrawide, 2:1 heights are kept)
+// The URL metadata cache (spec §2.9)
 // ---------------------------------------------------------------------------
-
-export interface ResolutionOption {
-  /** `"best"` or the height as a string. */
-  value: string;
-  height: number | null;
-}
-
-/**
- * The options of the resolution select: every height the backend found,
- * descending, plus "Best available".
- *
- * No height is an answer, not a failure (spec §6.2): the list then holds only
- * "Best available", which is exactly what an audio-only or height-less source
- * can offer.
- */
-export function resolutionOptions(video: VideoInfo): ResolutionOption[] {
-  const heights = [...new Set(video.heights)].sort((a, b) => b - a);
-  const options: ResolutionOption[] = heights.map((height) => ({
-    value: String(height),
-    height,
-  }));
-  options.push({ value: "best", height: null });
-  return options;
-}
-
-/** The first (highest) height, else "best". */
-export function defaultResolution(video: VideoInfo): string {
-  const options = resolutionOptions(video);
-  return options[0]?.value ?? "best";
-}
-
-// ---------------------------------------------------------------------------
-// The URL metadata cache (spec §2.9: "URL metadata cache", cleared on Clear)
-// ---------------------------------------------------------------------------
-
-export interface UrlSummary {
-  title: string;
-  duration: number | null;
-  heights: number[];
-  site: string;
-}
 
 /** How many URLs are remembered. Small on purpose: this is a convenience. */
 export const CACHE_LIMIT = 50;
@@ -272,14 +218,4 @@ export class MetadataCache {
   get size(): number {
     return this.#entries.size;
   }
-}
-
-/** The small summary kept for the cache identity, used by the tests. */
-export function summarise(video: VideoInfo): UrlSummary {
-  return {
-    title: video.title,
-    duration: video.duration,
-    heights: video.heights,
-    site: video.site,
-  };
 }
