@@ -3001,3 +3001,28 @@ question is not "how big a margin" but "which test can assert this without
 one". Then the margin goes away instead of growing. (`read_state_on_disk` went
 with the read: with the assertion gone it had no users, and dead test helpers
 are still dead code.)
+
+### D113 — A test that breaks the queue file must be the only writer of it
+
+The third `ci` run failed `the_queue_file_survives_a_corruption_with_a_backup`
+with *"the queue starts empty"*: the reopened engine found a **valid** document
+with items in it. The file had been rewritten **after** the test corrupted it.
+
+The mechanism is in the code, not in a timing guess. `wait_until_quiet` waits
+for the item to settle in the **snapshot** (memory), and `finish_item` mutates
+the state under the lock, releases it, and only *then* calls `self_persist` —
+so the state is visible a moment before the write that records it (the same
+window D94 documents, from the other side). A test that corrupts the file right
+after `wait_until_quiet` corrupts a document the item task is about to
+overwrite.
+
+The fix is not a longer wait: it is to remove the other writer. The document is
+now written by `fx.idle_engine()` — an engine whose tasks were **never started**
+— so `add()` is the only thing that touches the file, and the test owns the
+corruption. The fixture already had that constructor, and it is what an earlier
+soak used to keep an engine out of the way.
+
+The rule, which is D112's rule applied to a file instead of an assertion: when
+a test has to make something happen *at* a moment, remove the other actors
+rather than wait longer for them. A real app does not have this problem —
+exiting kills the process before anything writes again.

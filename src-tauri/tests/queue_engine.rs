@@ -964,20 +964,18 @@ async fn an_item_that_was_running_when_the_app_died_comes_back_interrupted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_queue_file_survives_a_corruption_with_a_backup() {
     let fx = fixture();
+    // The document is written by an engine whose tasks were **never started**,
+    // so nothing can write to it while the test breaks it. Corrupting a file
+    // right after a *running* engine's `shutdown()` is a race the CI caught:
+    // the item task still persists the state it settled on a moment later, and
+    // that write lands on top of the corruption — the file is valid again by
+    // the time the next engine reads it, which is exactly what the test is
+    // meant to rule out. A real app cannot do that (exiting kills the process
+    // before anything writes again, which is why `wait_until_quiet` exists in
+    // the other tests), so the race was the test's, not the recovery's.
     {
-        let engine = fx.engine();
-        let id = engine
-            .add(vec![fx.request("https://a.example/slow-one")], false)
-            .added[0]
-            .clone();
-        // The item has to be finished before the file is corrupted. `shutdown`
-        // asks the running task to stop, and that task still writes the file
-        // once the process is really gone: a real app exits the process and
-        // nothing writes afterwards, a test cannot. Corrupting the document
-        // while a write is still in flight would be testing a race instead of
-        // the recovery.
-        engine.shutdown();
-        wait_until_quiet(&engine, &id).await;
+        let engine = fx.idle_engine();
+        engine.add(vec![fx.request("https://a.example/slow-one")], false);
     }
     fs::write(&fx.queue_path, "{ not json at all").expect("corrupt it");
 

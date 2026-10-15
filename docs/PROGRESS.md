@@ -2778,3 +2778,36 @@ came from reading the code with those tests in hand.
   1. Push, re-run `ci` on `main`: `check` green on the three systems.
   2. Then the tag `v0.1.0` (the version is 0.1.0 in all three manifests) for the
      draft release.
+
+## 2026-10-15 — M2 / the third CI failure: a test was corrupting a file a task was about to rewrite
+- **Done**
+  - The `check` job failed `the_queue_file_survives_a_corruption_with_a_backup`
+    this time (`the_queue_survives_a_restart...` is **green** since D112 ✓), with
+    *"the queue starts empty"*: the reopened engine found a valid document with
+    items, i.e. the file had been rewritten after the test corrupted it.
+  - Cause read out of the code, not guessed: `wait_until_quiet` waits for the
+    item to settle in the **snapshot**, while `finish_item` mutates under the
+    lock, releases it and only then calls `self_persist` — so the item task's
+    final write can land after the corruption.
+  - Fix (D113): the document is written by `fx.idle_engine()`, whose tasks were
+    never started, so `add()` is the only writer and the test owns the
+    corruption. No wait was added. `wait_until_quiet` stays where the file is
+    not touched afterwards.
+- **Verified by running**
+  - The corruption test: **20/20 green** in a loop and **10/10 under load**
+    (`taskset -c 0,1,2` with CPU hogs); the whole `queue_engine` binary 22/22
+    under the same load.
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+    `cargo test`: **415 green**, 3 ignored; `npm test`: **207 green**;
+    `npm run check`: 0 errors, 0 warnings.
+- **Not verified / stubbed**
+  - **The GitHub runner**, again: the proof is the next `ci` run on `main`.
+  - A sweep of the other tests that touch `queue.json`: the only writer of a
+    file a test then breaks is this one (the crashed-item test builds its own
+    document on a fresh fixture, and `an_added_item_is_persisted...` reads after
+    `add()`, which persists synchronously). No other test has this shape.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D113.
+- **Next step**
+  1. Push, re-run `ci` on `main`.
+  2. Then the tag `v0.1.0` for the draft release.
