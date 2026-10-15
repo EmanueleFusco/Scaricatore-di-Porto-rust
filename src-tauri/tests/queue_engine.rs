@@ -1291,6 +1291,7 @@ fn the_snapshot_is_the_shape_the_frontend_expects() {
     // normaliser would default it, but the wire has one shape.
     for key in [
         "file",
+        "sizeBytes",
         "runtime",
         "requestedHeight",
         "actualHeight",
@@ -1310,6 +1311,50 @@ fn the_snapshot_is_the_shape_the_frontend_expects() {
     assert!(json["summary"]["parallelDownloads"].is_number());
     assert_eq!(json["summary"]["perHostCap"], 2);
     assert!(json["groups"].as_array().expect("an array").is_empty());
+}
+
+/// A finished item carries the size of the file it produced (spec §11.5), read
+/// from the file itself: it is the only source that cannot lie.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finished_item_carries_the_size_of_the_file_it_produced() {
+    let fx = fixture();
+    let engine = fx.engine();
+    let ids = engine
+        .add(vec![fx.request("https://a.example/slow-one")], false)
+        .added;
+    let snapshot = wait_for(
+        &engine,
+        "the download to finish",
+        |snapshot| state_of(snapshot, &ids[0]) == Some(ItemState::Done),
+        Duration::from_secs(30),
+    )
+    .await;
+    let item = snapshot
+        .items
+        .iter()
+        .find(|item| item.id == ids[0])
+        .expect("the item is there");
+    assert!(item.file.is_some(), "a finished item has its path");
+    // The fake writes exactly these bytes, whatever the URL.
+    assert_eq!(
+        item.size_bytes,
+        Some(b"fake media bytes".len() as u64),
+        "the size comes from the file on disk"
+    );
+
+    // And it survives the round trip through `queue.json`: a fresh engine over
+    // the same file still knows it.
+    let reopened = fx.idle_engine();
+    let again = reopened.snapshot();
+    let item = again
+        .items
+        .iter()
+        .find(|item| item.id == ids[0])
+        .expect("still there");
+    assert_eq!(item.size_bytes, Some(b"fake media bytes".len() as u64));
+
+    engine.shutdown();
+    wait_until_quiet(&engine, &ids[0]).await;
 }
 
 #[test]

@@ -1084,9 +1084,15 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
                     actual_height,
                     ..
                 } => {
+                    // Spec §11.5 asks the card for the size. The only honest
+                    // source is the file yt-dlp has just produced, and a file
+                    // that vanished between the two lines is not a failure of
+                    // the download: the size is simply unknown.
+                    let size_bytes = std::fs::metadata(&file).ok().map(|meta| meta.len());
                     let item = &mut state.items[index];
                     item.state = ItemState::Done;
                     item.file = Some(file);
+                    item.size_bytes = size_bytes;
                     item.runtime = Some(runtime.as_str().to_owned());
                     item.requested_height = requested_height;
                     item.actual_height = actual_height;

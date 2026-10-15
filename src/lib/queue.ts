@@ -71,6 +71,8 @@ export interface QueueItem {
   groupId: string | null;
   progress: ItemProgress;
   file: string | null;
+  /** Size of the produced file, in bytes (spec §11.5). */
+  sizeBytes: number | null;
   runtime: string | null;
   requestedHeight: number | null;
   actualHeight: number | null;
@@ -282,6 +284,7 @@ export function normaliseItem(raw: unknown): QueueItem {
       subTotal: asNumber(progress.subTotal),
     },
     file: asNullableString(value.file),
+    sizeBytes: asNumber(value.sizeBytes),
     runtime: asNullableString(value.runtime),
     requestedHeight: asNumber(value.requestedHeight),
     actualHeight: asNumber(value.actualHeight),
@@ -585,6 +588,23 @@ export function speedMbits(bytesPerSecond: number | null): number | null {
   // One decimal below 1 Mbit/s: `0` for a slow download reads as "stalled",
   // and the footer and the cards both show this number.
   return mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
+}
+
+/**
+ * A file size as a short string: `512 B`, `2 kB`, `480 MB`, `1.4 GB`.
+ *
+ * Binary divisors, the ones yt-dlp itself prints. One decimal only for
+ * gigabytes, where the difference matters; `null` in, `null` out, because an
+ * item that produced nothing has no size to show.
+ */
+export function formatBytes(bytes: number | null): string | null {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} kB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 /** Seconds → `h:mm:ss` / `m:ss`, or `null` when there is nothing to show. */

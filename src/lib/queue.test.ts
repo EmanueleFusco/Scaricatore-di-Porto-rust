@@ -15,6 +15,7 @@ import {
   detailsText,
   emptyQueueState,
   fileName,
+  formatBytes,
   heightWarning,
   isActive,
   isParked,
@@ -70,6 +71,7 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
     file: null,
+    sizeBytes: null,
     runtime: null,
     requestedHeight: null,
     actualHeight: null,
@@ -198,6 +200,7 @@ describe("normalising the backend payloads", () => {
       },
       progress: { percent: 42, speedBps: 3e6, etaSec: 9, label: "video", subIndex: 1, subTotal: 2 },
       file: "/out/a.mkv",
+      sizeBytes: 1234567,
       runtime: "deno",
       error: { code: "NETWORK", messageKey: "error.ytdlp.network", detail: "boom" },
       logTail: ["line one", 42],
@@ -207,6 +210,7 @@ describe("normalising the backend payloads", () => {
     expect(parsed.options.quality).toEqual({ kind: "maxHeight", height: 720 });
     expect(parsed.options.cookies).toEqual({ kind: "browser", browser: "firefox" });
     expect(parsed.progress.percent).toBe(42);
+    expect(parsed.sizeBytes).toBe(1234567);
     expect(parsed.error?.code).toBe("NETWORK");
     // A non-string line in the tail is dropped rather than rendered.
     expect(parsed.logTail).toEqual(["line one"]);
@@ -278,6 +282,16 @@ describe("the text the cards show", () => {
     expect(speedMbits(50_000)).toBe(0.4);
     expect(speedMbits(0)).toBeNull();
     expect(speedMbits(null)).toBeNull();
+  });
+
+  it("writes a file size in the unit a person reads", () => {
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(2048)).toBe("2 kB");
+    expect(formatBytes(5 * 1024 * 1024)).toBe("5 MB");
+    expect(formatBytes(1536 * 1024 * 1024)).toBe("1.5 GB");
+    // Nothing produced, nothing shown: the card asks for `null`, not zero.
+    expect(formatBytes(null)).toBeNull();
+    expect(formatBytes(-1)).toBeNull();
   });
 
   it("formats a duration and refuses the empty ones", () => {

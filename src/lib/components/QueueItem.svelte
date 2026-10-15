@@ -13,6 +13,7 @@
     actionKey,
     barPercentFor,
     detailsText,
+    formatBytes,
     heightWarning,
     isActive,
     itemLabel,
@@ -43,6 +44,8 @@
   const indeterminate = $derived(isActive(item.state) && item.progress.percent === null);
   const quality = $derived(qualityKey(item));
   const detail = $derived(tt(quality.key, quality.params));
+  /** "480 MB", once the file exists (spec §11.5). */
+  const size = $derived(formatBytes(item.sizeBytes));
   const stageKey = $derived(stateKey(item.state));
   /**
    * One status line, whatever the state.
@@ -74,7 +77,7 @@
       ].filter((part) => part !== null);
       return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
     }
-    return detail;
+    return size !== null ? `${detail} · ${size}` : detail;
   });
 
   /**
@@ -296,6 +299,10 @@
         {#if item.file !== null}
           <dt>{tt("queue.item.output")}</dt>
           <dd class="item__path">{item.file}</dd>
+        {/if}
+        {#if size !== null}
+          <dt>{tt("queue.item.size")}</dt>
+          <dd>{size}</dd>
         {/if}
       </dl>
 

@@ -485,6 +485,10 @@ pub struct QueueItem {
     pub progress: ItemProgress,
     /// The real output path, from `SDP_FILE` (spec §8.3). Never guessed.
     pub file: Option<PathBuf>,
+    /// The size of that file, read from it once the download is done
+    /// (spec §11.5). `None` while it runs, and for anything that produced
+    /// nothing.
+    pub size_bytes: Option<u64>,
     /// `quickjs` | `deno` (spec §15 item 3).
     pub runtime: Option<String>,
     pub requested_height: Option<u32>,
@@ -521,6 +525,7 @@ impl Default for QueueItem {
             group_id: None,
             progress: ItemProgress::empty(),
             file: None,
+            size_bytes: None,
             runtime: None,
             requested_height: None,
             actual_height: None,

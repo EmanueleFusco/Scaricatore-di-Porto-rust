@@ -86,6 +86,7 @@
   "queue.item.output": "File",
   "queue.item.log": "Last messages",
   "queue.item.error": "Error",
+  "queue.item.size": "Size",
   "queue.item.runtime": "Runtime: {runtime}",
   "queue.item.retrying": "Automatic retry {attempt}/2 shortly",
   "queue.item.resumed": "Resumed after a restart",
