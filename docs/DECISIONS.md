@@ -2295,3 +2295,46 @@ should exist.
 
 `paused_from` is kept — it is what the lane is taken from, and what the UI shows
 ("resumed after a restart") — but the state a resume produces is `Queued`.
+
+### D87 — Interrupted items wait for the Resume button (and why it was wrong first)
+
+Spec §7.4: "On startup items in an active stage become **Interrupted** and are
+shown with a 'Resume' button (or auto-resume if the setting is on)".
+
+The first version treated `Interrupted` as **eligible** for the scheduler, on
+the reading that the two alternatives are "Resume button" and "auto-resume
+setting" and that a queue which stops dead after a restart is worse. It is the
+wrong reading: the spec's default is the button, and the setting is the
+alternative, so without the setting the item must not move.
+
+It was caught by a flaky test rather than by reading — `resume_all()` came back
+empty, because the scheduler had already started the item — which is exactly the
+kind of bug a test that asserts the *outcome* misses and one that asserts the
+*decision* finds. The planner now takes only `Queued` items
+(`scheduler::is_eligible`), and `Interrupted` and `Paused` wait for
+`queue_resume` / `queue_resume_all`.
+
+Auto-resume on start is **not** implemented: it needs the setting of spec §7.4,
+and one setting that only exists to switch off the default behaviour is not
+worth its place until somebody asks for it. Noted in `PROGRESS.md`.
+
+### D88 — The engine's tasks are spawned on Tauri's runtime, found by running the app
+
+`QueueEngine::start()` is called from `setup`, on the **main thread**, where no
+Tokio context is entered. A bare `tokio::spawn` there panics at once:
+
+```
+thread 'main' panicked at src/services/queue/engine.rs:271:9:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+Found by actually starting the release binary (`npm run app:binary`) — no test
+would have found it, because every test calls `start()` from inside a
+`#[tokio::test]`, where a bare `tokio::spawn` works. The spawns now go through
+`tauri::async_runtime::spawn`, which is the documented way and works from both
+places; the tasks spawned *inside* a running task still use `tokio::spawn`.
+
+Recorded because it is the second time in this project that "the tests pass"
+and "the app starts" are different claims (the first was the Windows CI run that
+found the `Path::is_absolute` difference, D20-ish). Starting the app is cheap
+and is worth doing before declaring a phase done.

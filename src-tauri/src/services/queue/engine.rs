@@ -264,13 +264,18 @@ impl QueueEngine {
         dirs
     }
 
-    /// Start the scheduler and the flusher. Must be called from inside a Tokio
-    /// runtime; Tauri's commands run on one.
+    /// Start the scheduler and the flusher.
+    ///
+    /// The spawns go through **Tauri's** runtime, not a bare `tokio::spawn`:
+    /// this is called from `setup`, on the main thread, where no Tokio context
+    /// is entered — and a bare `tokio::spawn` there panics with "there is no
+    /// reactor running". Found by actually starting the app, which no test
+    /// would have: the tests call this from inside a `#[tokio::test]`.
     pub fn start(&self) {
         let scheduler = Arc::clone(&self.inner);
-        tokio::spawn(async move { scheduler_loop(scheduler).await });
+        tauri::async_runtime::spawn(async move { scheduler_loop(scheduler).await });
         let flusher = Arc::clone(&self.inner);
-        tokio::spawn(async move { flusher_loop(flusher).await });
+        tauri::async_runtime::spawn(async move { flusher_loop(flusher).await });
     }
 
     /// Stop both tasks and cancel everything running (spec §4.2: "On app exit
@@ -826,7 +831,6 @@ fn candidates_of(items: &[QueueItem]) -> Vec<Candidate<'_>> {
             url: item.url.as_str(),
             state: item.state,
             retry_at: item.retry_at,
-            resume_state: item.resumed_state(),
         })
         .collect()
 }

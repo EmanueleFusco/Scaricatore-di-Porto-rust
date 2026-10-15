@@ -605,14 +605,6 @@ impl QueueItem {
         backoff(self.auto_retries)
     }
 
-    /// The queued state a resume returns to (spec §7.3: "resume re-runs the
-    /// stage"; yt-dlp continues from the `.part` files).
-    pub fn resumed_state(&self) -> ItemState {
-        self.paused_from
-            .filter(|state| state.is_active())
-            .unwrap_or(ItemState::Queued)
-    }
-
     /// Append one stderr line to the tail, keeping the last
     /// [`LOG_TAIL_LINES`] (spec §4.3).
     pub fn push_log(&mut self, line: &str) {
@@ -1375,13 +1367,10 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_item_returns_to_the_stage_it_was_paused_in() {
+    fn a_paused_item_remembers_the_stage_it_was_paused_in() {
         let mut paused = item("q1", "https://a.example/1", ItemState::Paused);
-        assert_eq!(paused.resumed_state(), ItemState::Queued);
-        paused.paused_from = Some(ItemState::Downloading);
-        assert_eq!(paused.resumed_state(), ItemState::Downloading);
-        // A stage that can no longer exist (a finished one) is not resumed into.
-        paused.paused_from = Some(ItemState::Done);
-        assert_eq!(paused.resumed_state(), ItemState::Queued);
+        assert_eq!(paused.paused_from, None, "nothing was running yet");
+        paused.paused_from = Some(ItemState::PostProcessing);
+        assert_eq!(paused.paused_from, Some(ItemState::PostProcessing));
     }
 }

@@ -219,52 +219,47 @@ impl Fixture {
             .collect()
     }
 
-    /// The largest number of downloads that were running at the same moment,
+    /// The largest number of downloads that were running at the same instant,
     /// counting only the ones whose URL contains `needle`.
     ///
-    /// Counted by **overlap of intervals**, not by walking the events: two
-    /// starts and ends can share a millisecond, and an event-ordered walk would
-    /// then count a start after an end that happened first.
-    fn max_concurrency_of(&self, needle: &str) -> usize {
+    /// Counted by **interval overlap with a common window**, not by walking the
+    /// events: two starts and ends can share a millisecond, and an event-ordered
+    /// walk would then count a start after an end that happened first.
+    fn max_concurrency(&self, needle: Option<&str>) -> usize {
         let intervals: Vec<(u128, u128)> = self
             .runs()
             .into_iter()
+            .filter(|(url, _, _)| needle.is_none_or(|needle| url.contains(needle)))
             // A start with no end is a killed download: it cannot be placed in
             // time, and counting it as "still running" would inflate the peak.
-            .filter(|(url, _, _)| url.contains(needle))
             .filter_map(|(_, started, ended)| Some((started?, ended?)))
             .collect();
         intervals
             .iter()
-            .map(|(start, end)| {
+            .map(|(start, _)| {
+                // The instant `COMMON_MS` after this download started: every
+                // interval alive there shares at least that much life.
+                let at = start + COMMON_MS;
                 intervals
                     .iter()
-                    .filter(|(other_start, other_end)| other_start < end && start < other_end)
-                    .count()
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// The largest number of downloads of **any** host at the same moment.
-    fn max_concurrency(&self) -> usize {
-        let intervals: Vec<(u128, u128)> = self
-            .runs()
-            .into_iter()
-            .filter_map(|(_, started, ended)| Some((started?, ended?)))
-            .collect();
-        intervals
-            .iter()
-            .map(|(start, end)| {
-                intervals
-                    .iter()
-                    .filter(|(other_start, other_end)| other_start < end && start < other_end)
+                    .filter(|(other_start, other_end)| *other_start <= at && at <= *other_end)
                     .count()
             })
             .max()
             .unwrap_or(0)
     }
 }
+
+/// The smallest stretch of time a group of downloads must share to be counted
+/// as concurrent.
+///
+/// The fake writes its `end` record and **then** exits, so the real end of a
+/// process is a few milliseconds after the record (measured here: 1–9 ms).
+/// Counting that sliver as an overlap would let a correct lane of 2 look like 3
+/// on a fast machine and pass on a slow one. Asking for 10 ms of **common** life
+/// measures what the record can actually prove: N downloads were all running at
+/// the same instant, for long enough to notice.
+const COMMON_MS: u128 = 10;
 
 async fn wait_for(
     engine: &QueueEngine,
@@ -335,15 +330,15 @@ async fn ten_links_run_two_at_a_time_and_all_finish() {
     assert_eq!(snapshot.summary.done, 10, "every item finished");
     assert_eq!(snapshot.summary.failed, 0);
     assert!(
-        fx.max_concurrency() <= 2,
+        fx.max_concurrency(None) <= 2,
         "the download lane must cap concurrency at 2, saw {} in {:?}",
-        fx.max_concurrency(),
+        fx.max_concurrency(None),
         fx.runs()
     );
     assert!(
-        fx.max_concurrency() >= 2,
+        fx.max_concurrency(None) >= 2,
         "two must actually have overlapped, saw {} in {:?}",
-        fx.max_concurrency(),
+        fx.max_concurrency(None),
         fx.runs()
     );
 
@@ -396,7 +391,7 @@ async fn one_parallel_download_means_one_at_a_time() {
         Duration::from_secs(60),
     )
     .await;
-    assert_eq!(fx.max_concurrency(), 1, "the lane was asked for 1");
+    assert_eq!(fx.max_concurrency(None), 1, "the lane was asked for 1");
     engine.shutdown();
 }
 
@@ -431,17 +426,17 @@ async fn the_per_host_cap_stops_the_third_download_of_one_site() {
     .await;
 
     assert_eq!(
-        fx.max_concurrency_of("youtube.com"),
+        fx.max_concurrency(Some("youtube.com")),
         2,
         "the per-host cap is about the host: never three from YouTube at once \
          (spec §6.4); the runs were {:?}",
         fx.runs()
     );
     assert!(
-        fx.max_concurrency() >= 3,
+        fx.max_concurrency(None) >= 3,
         "and the other host is not held back by it: the lane allowed a third \
          download to run, saw {} in {:?}",
-        fx.max_concurrency(),
+        fx.max_concurrency(None),
         fx.runs()
     );
     engine.shutdown();
@@ -778,6 +773,15 @@ async fn an_item_that_was_running_when_the_app_died_comes_back_interrupted() {
         "its temp directory is kept so Resume can continue (spec §4.10)"
     );
 
+    // Spec §7.4: it waits for the user. It must not start by itself while the
+    // app is still deciding what to show.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        state_of(&engine.snapshot(), "q-crashed"),
+        Some(ItemState::Interrupted),
+        "an interrupted item is not re-run behind the user's back"
+    );
+
     // And resuming really finishes it.
     assert_eq!(engine.resume_all(), vec!["q-crashed".to_owned()]);
     let snapshot = wait_for(
@@ -1003,7 +1007,7 @@ async fn the_settings_of_the_lanes_reach_the_engine() {
         Duration::from_secs(60),
     )
     .await;
-    assert_eq!(fx.max_concurrency(), 4, "four in parallel, as asked");
+    assert_eq!(fx.max_concurrency(None), 4, "four in parallel, as asked");
 
     // Changing it mid-flight takes effect on the next planning pass.
     engine.configure(

@@ -94,8 +94,6 @@ pub struct Candidate<'a> {
     pub state: ItemState,
     /// Unix seconds before which the item must not start (automatic retry).
     pub retry_at: Option<u64>,
-    /// The stage to resume into, when the item was interrupted.
-    pub resume_state: ItemState,
 }
 
 /// Which items the engine should start now, in queue order (spec §7.3: "the
@@ -113,16 +111,11 @@ pub fn plan<'a>(
         if !is_runnable(candidate, now) {
             continue;
         }
-        // Which lane the item needs: the one of its current state, the one of
-        // the stage an interrupted item resumes into, or — for a fresh queued
-        // item — the download lane, because spec §3's pipeline starts at
-        // inspect/download and that is the only stage M2 runs. M4 and M5 add
-        // their own lanes when their stages arrive.
-        let lane = candidate
-            .state
-            .lane()
-            .or_else(|| candidate.resume_state.lane())
-            .unwrap_or(Lane::Download);
+        // Which lane the item needs. A queued item has no lane of its own:
+        // spec §3's pipeline starts at inspect/download, and that is the only
+        // stage M2 runs, so it takes the download lane. M4 and M5 give their
+        // stages a lane when they arrive.
+        let lane = candidate.state.lane().unwrap_or(Lane::Download);
         let host = host_key(candidate.url);
         if capacity.try_take(lane, &host) {
             plan.push((candidate.id.to_owned(), lane));
@@ -131,10 +124,15 @@ pub fn plan<'a>(
     plan
 }
 
-/// May this item start at all, ignoring the retry timer? A paused item waits for
-/// its own Resume, a terminal one for a Retry (spec §7.3).
+/// May this item start at all, ignoring the retry timer?
+///
+/// **Only a queued item.** Spec §7.4 is explicit about the alternative: items
+/// that were running when the app stopped come back `Interrupted` and "are shown
+/// with a 'Resume' button (or auto-resume if the setting is on)". M2 has no
+/// auto-resume setting, so they wait — a paused one for its own Resume, a
+/// terminal one for a Retry.
 pub fn is_eligible(candidate: &Candidate<'_>) -> bool {
-    candidate.state == ItemState::Queued || candidate.state == ItemState::Interrupted
+    candidate.state == ItemState::Queued
 }
 
 /// Can this item start right now? (spec §7.3)
@@ -177,7 +175,6 @@ mod tests {
             url,
             state,
             retry_at: None,
-            resume_state: state,
         }
     }
 
@@ -294,6 +291,15 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_item_takes_the_download_lane() {
+        // The only lane M2 runs: spec §3's pipeline starts at download.
+        let items = queued_spread(3);
+        let mut capacity = Capacity::all_free(LaneConfig::default());
+        let plan = plan(&items, &mut capacity, 0);
+        assert!(plan.iter().all(|(_, lane)| *lane == Lane::Download));
+    }
+
+    #[test]
     fn a_higher_per_host_cap_allows_more_of_the_same_host() {
         let items = queued_same_host(3, "https://youtube.com");
         let config = LaneConfig {
@@ -328,14 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn only_queued_and_interrupted_items_are_runnable() {
-        for state in [ItemState::Queued, ItemState::Interrupted] {
-            assert!(is_runnable(
-                &candidate("q", "https://a.example/1", state),
-                0
-            ));
-        }
+    fn only_a_queued_item_starts_by_itself() {
+        assert!(is_runnable(
+            &candidate("q", "https://a.example/1", ItemState::Queued),
+            0
+        ));
         for state in [
+            ItemState::Interrupted,
             ItemState::Downloading,
             ItemState::PostProcessing,
             ItemState::Encoding,
@@ -367,17 +372,17 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_item_takes_the_lane_of_the_stage_it_resumes() {
-        let mut item = candidate("q1", "https://a.example/1", ItemState::Interrupted);
-        item.resume_state = ItemState::Encoding;
-        let config = LaneConfig::default();
-        let mut capacity = Capacity::all_free(config);
-        let plan = plan(std::slice::from_ref(&item), &mut capacity, 0);
-        assert_eq!(plan, vec![("q1".to_owned(), Lane::Encode)]);
+    fn an_interrupted_item_waits_for_its_resume_button() {
+        // Spec §7.4: it comes back with a Resume button, not by running again
+        // behind the user's back.
+        let item = candidate("q1", "https://a.example/1", ItemState::Interrupted);
+        let mut capacity = Capacity::all_free(LaneConfig::default());
+        assert!(!is_runnable(&item, 0));
+        assert!(plan(std::slice::from_ref(&item), &mut capacity, 0).is_empty());
         assert_eq!(
             capacity.free(Lane::Download),
-            config.download,
-            "an encode item must not take a download slot"
+            LaneConfig::default().download,
+            "and it must not have consumed a slot"
         );
     }
 

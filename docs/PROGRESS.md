@@ -2104,7 +2104,7 @@ Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
   - **i18n** — 79 new keys in IT and EN; the M1 placeholders
       (`queue.comingSoon`, `settings.downloads.comingSoon`) are gone.
 - **Verified by running**
-  - `cargo test`: **327 tests** green (296 lib, 17 `queue_engine`, 14
+  - `cargo test`: **328 tests** green (297 lib, 17 `queue_engine`, 14
       `queue_ipc`, 3 bundled_tools, 9 download, 8 m1_ipc, 16 process_tree, 6
       settings_ipc, 13 tools, 22 ytdlp_job) + the 3 `#[ignore]` real-tool tests.
       `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
@@ -2134,6 +2134,10 @@ Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
   - `cargo build --release`: app binary **6,88 MiB** (budget 15 MB). The
       notification plugin's own cost was measured separately for D79: **+0,17
       MiB** (6,71 → 6,88).
+  - **`npm run app:binary` starts**: the release binary opens the queue, starts
+      its two tasks and stays up. This is how D88 was found — a `tokio::spawn` on
+      the main thread panicked, and no test could see it (they all start the
+      engine inside a `#[tokio::test]`).
 - **Not verified / stubbed**
   - **The GUI has not been clicked.** From here there is no way to drive the
       window: no manual check of the Add bar, the cards, the context actions or
@@ -2153,8 +2157,9 @@ Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
       Ctrl/Cmd+F filtering, the 2 000+ item load test (the arithmetic is tested,
       a real 5 000-item queue is M7's performance item).
   - **Auto-resume on start** (spec §7.4's "or auto-resume if the setting is on")
-      is not implemented: the items come back `Interrupted` with a Resume button,
-      which is the spec's first-listed behaviour.
+      is not implemented, and an interrupted item does **not** start by itself:
+      it comes back `Interrupted` with a Resume button, which is the spec's
+      first-listed behaviour (D87).
   - **"Keep the computer awake"** (§7.7, optional, per-OS API) is not
       implemented.
 - **Spec items marked "verify" that I checked**
@@ -2166,7 +2171,7 @@ Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
   - **`tauri-plugin-notification` 2.7 requires Rust 1.90** and this package
       declares `rust-version = 1.85`, so 2.4.0 is the newest usable release;
       `cargo add` picks it for that reason (D79).
-- **Decisions/deviations (also in DECISIONS.md)**: D79–D86.
+- **Decisions/deviations (also in DECISIONS.md)**: D79–D88.
   - The two deliberate deviations from the spec's wording are D81 (item-granular
     event diffs instead of field-level patches) and D82 (lane counters instead
     of semaphores); D83–D86 are decisions of scope, not of behaviour.
