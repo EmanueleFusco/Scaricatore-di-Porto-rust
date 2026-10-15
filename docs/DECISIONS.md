@@ -3026,3 +3026,66 @@ The rule, which is D112's rule applied to a file instead of an assertion: when
 a test has to make something happen *at* a moment, remove the other actors
 rather than wait longer for them. A real app does not have this problem —
 exiting kills the process before anything writes again.
+
+### D114 — The tool is told to write UTF-8, because a piped stdout is not UTF-8
+
+The first Windows run of the built installer reported, for some videos:
+
+> Download non riuscito: yt-dlp reported C:\Users\…\GTA 6 … [sVunlQ_mhbQ].mkv
+> but the file is not there (spec §8.3: the path is never guessed)
+
+and the file **is** there, correct and playable. The same links never failed on
+Linux, and the report was the same every time for the same video, not random.
+
+**The cause is the encoding of the tool's stdout, and only titles decide.**
+
+1. The path the app checks is the one yt-dlp *prints*
+   (`--print after_move:SDP_FILE|%(filepath)s`), and it is printed through
+   `YoutubeDL._write_string` → `write_string(..., encoding=self.params['encoding'])`.
+   With no `--encoding`, `write_string` falls back to
+   `out.encoding or preferredencoding()` — **the encoding of the pipe**.
+2. On Windows a *pipe* gets the ANSI code page (cp1252 on the western systems;
+   yt-dlp's own debug line shows `locale cp1252, pref cp1252`), not UTF-8: only
+   a *console* gets UTF-8 I/O. `write_string` then encodes with
+   `.encode(enc, 'ignore')`, so every character outside the code page is
+   **dropped** and single-byte accents become mojibake. (yt-dlp issue #13853 is
+   exactly this: redirecting the output loses Unicode "and spaces appear
+   instead" — and the reporter found the remedy in `--help`, which is what this
+   entry applies.)
+3. The *file*, on the other hand, is created with Python's wide-char APIs under
+   its **real** name, so the folder is right and the printed path is wrong.
+   Which is why the report quoted a clean, plausible-looking ASCII path: the
+   characters that could not survive the code page were simply gone.
+4. So the failure is **deterministic per title** (accented or non-Latin
+   characters, emoji) and invisible for pure-ASCII titles — "some downloads,
+   often", the same links on the same machine, and never on Linux, where the
+   pipe is UTF-8 already.
+
+Why the environment cannot fix it from outside: the standalone Linux/macOS and
+Windows builds are PyInstaller bundles whose interpreter runs an **isolated**
+configuration, where `PYTHON*` variables are not read. Measured on the bundled
+binary: `PYTHONIOENCODING=cp1252` and `PYTHONIOENCODING=ascii` change nothing,
+and `LC_ALL=C` is coerced to UTF-8 (PEP 538) — which is also why this cannot be
+reproduced on this machine. The only lever is the tool's own flag, which is what
+spec §4.5 prescribes: **pass `--encoding utf-8`**.
+
+What changed: `ytdlp::ENCODING_ARGS` is part of the **base** arguments of every
+download (so it survives the retry without `-f`, the audio-only path and every
+future branch) and of the inspection. It is passed on **every** platform: the
+same bug waits on any machine whose locale is not UTF-8, and making the tool's
+output UTF-8 is what our reader already assumes (`String::from_utf8_lossy`,
+spec §4.5). The inspection's JSON is safe either way (`json.dumps` escapes
+non-ASCII), but its stderr carries titles into error messages, and the flag has
+to be a property of "how we call yt-dlp", not of one call site.
+
+The rule this leaves behind: **every tool we parse must be told which encoding
+to write**, because the encoding of a pipe is a platform (and locale) decision,
+never ours. A tool that has no such flag (ffmpeg is byte-preserving) still gets
+its output decoded as UTF-8, and its behaviour has to be measured, not assumed.
+
+Reproduction in the suite, on every OS: the fake yt-dlp now writes the final
+path the way the real tool does — through the console code page unless
+`--encoding utf-8` was passed — so
+`ytdlp_job::an_accented_final_path_survives_the_tools_console_code_page` fails
+with the user's exact message if the flag is ever removed (verified by removing
+it).

@@ -347,7 +347,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         eprintln!("SDP_PP|started|Merger");
         let file = home.join(safe_name(url));
         let _ = std::fs::write(&file, b"fake media bytes");
-        println!("SDP_FILE|{}", file.display());
+        print_file_line(args, &file);
         return 0;
     }
 
@@ -369,7 +369,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");
         let _ = std::fs::write(&file, b"fake media bytes");
-        println!("SDP_FILE|{}", file.display());
+        print_file_line(args, &file);
         return 0;
     }
 
@@ -392,7 +392,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");
         let _ = std::fs::write(&file, b"fake media bytes");
-        println!("SDP_FILE|{}", file.display());
+        print_file_line(args, &file);
         return 0;
     }
 
@@ -412,7 +412,25 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         let _ = std::fs::create_dir_all(&home);
         let file = home.join(safe_name(url));
         let _ = std::fs::write(&file, b"fake media bytes");
-        println!("SDP_FILE|{}", file.display());
+        print_file_line(args, &file);
+        return 0;
+    }
+
+    // A download whose real file name has characters outside the console code
+    // page, for the encoding scenario of D114. The file is written under its
+    // real Unicode name — exactly like the real tool, which creates it with
+    // wide-char APIs — and the printed path goes through `print_file_line`,
+    // which writes the code page unless `--encoding utf-8` was passed.
+    if url.contains("accent") {
+        println!("SDP_FORMAT|137+140|1080|vp9|opus");
+        emit_download_line("downloading", 2048, 4096, "vp9");
+        emit_download_line("finished", 4096, 4096, "vp9");
+        eprintln!("SDP_PP|started|Merger");
+        let home = home_dir(args);
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join(safe_name(url));
+        let _ = std::fs::write(&file, b"fake media bytes");
+        print_file_line(args, &file);
         return 0;
     }
 
@@ -441,7 +459,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
     };
     let file = home.join(name);
     let _ = std::fs::write(&file, b"fake media bytes");
-    println!("SDP_FILE|{}", file.display());
+    print_file_line(args, &file);
     0
 }
 
@@ -453,6 +471,10 @@ fn emit_download_line(status: &str, downloaded: u64, total: u64, vcodec: &str) {
 
 /// A file name from the URL's last path segment, so ten items of one test do
 /// not write to the same output.
+///
+/// Anything the OS can put in a file name is kept, accents included: the app
+/// must not assume an ASCII title (spec §12.5 is the original's mistake), and
+/// the encoding test needs a name the *console* code page would not survive.
 fn safe_name(url: &str) -> String {
     let tail = url
         .split(['/', '?', '#'])
@@ -461,7 +483,7 @@ fn safe_name(url: &str) -> String {
     let cleaned: String = tail
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
+            if c.is_alphanumeric() || c == '-' {
                 c
             } else {
                 '-'
@@ -469,6 +491,32 @@ fn safe_name(url: &str) -> String {
         })
         .collect();
     format!("Fake {cleaned} [fakeid].mkv")
+}
+
+/// The final-path line, written the way the real tool would write it.
+///
+/// Measured on Windows: when stdout is a **pipe**, yt-dlp writes the *console*
+/// code page (cp1252 in the west, via `write_string`'s `out.encoding`), so
+/// every character outside it is dropped and the path it prints stops naming
+/// the file it just wrote — which is the D114 report: "yt-dlp reported … but
+/// the file is not there", about a file sitting in the output folder, playable,
+/// and never reproduced on Linux, where the pipe is UTF-8. `--encoding utf-8`
+/// (spec §4.5) is what makes the tool write what our reader decodes.
+///
+/// The fake reproduces that on every OS — ASCII stands in for the code page:
+/// dropping the character is the failure, whichever code page drops it — so a
+/// missing flag is caught by the suite instead of by a user on Windows.
+fn print_file_line(args: &[String], file: &Path) {
+    let text = file.display().to_string();
+    let forced_utf8 = args
+        .windows(2)
+        .any(|pair| pair[0] == "--encoding" && pair[1] == "utf-8");
+    if forced_utf8 {
+        println!("SDP_FILE|{text}");
+        return;
+    }
+    let console_code_page: String = text.chars().filter(char::is_ascii).collect();
+    println!("SDP_FILE|{console_code_page}");
 }
 
 fn paths_value(args: &[String], prefix: &str) -> Option<PathBuf> {

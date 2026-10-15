@@ -258,6 +258,41 @@ async fn a_successful_job_reports_the_sdp_file_and_the_progress_labels() {
     assert!(log[0].contains("format=yes"));
 }
 
+/// The D114 report, reproduced on every OS by the fake (see
+/// `print_file_line` in the fake): with stdout piped, the tool writes the
+/// *console* code page, so a path with accented letters arrives without them
+/// and the app concludes "yt-dlp reported … but the file is not there" about a
+/// file that is sitting in the output folder, playable. It never happened on
+/// Linux, where the pipe is UTF-8, and it always happened on Windows for the
+/// same links — the titles decide, not the site.
+///
+/// The tool is told to write UTF-8 (spec §4.5), so the path it prints really
+/// names the file it wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_accented_final_path_survives_the_tools_console_code_page() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let outcome = job::run_job(
+        &env,
+        &fixture.request("https://a.example/accent-città-perché"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+
+    let JobOutcome::Done { file, .. } = outcome else {
+        panic!("the accented path must not be reported as missing: {outcome:?}");
+    };
+    assert!(
+        file.to_string_lossy().contains('à'),
+        "the accent has to survive the trip: {file:?}"
+    );
+    assert!(file.is_file(), "the reported path must exist");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_a_job_kills_the_tree_and_removes_nothing_else() {
     let fixture = fixture();

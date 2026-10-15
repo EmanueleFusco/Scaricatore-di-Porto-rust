@@ -583,6 +583,11 @@ pub fn inspect_args(
     for flag in ["--ignore-config", "-J", "--flat-playlist"] {
         args.push(flag.into());
     }
+    // The tool writes what our reader decodes (spec §4.5): the same code page
+    // that mangles a printed path would mangle the warning and error text this
+    // inspection turns into user-visible messages. The JSON itself is
+    // ASCII-escaped by the tool and would survive either way (D114).
+    args.extend(ytdlp::ENCODING_ARGS.map(std::ffi::OsString::from));
     if let Some((kind, path)) = runtime {
         args.extend(jsruntime::runtime_args(kind, path));
     }
@@ -1278,9 +1283,13 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        for required in ["--ignore-config", "-J", "--flat-playlist"] {
+        for required in ["--ignore-config", "-J", "--flat-playlist", "--encoding"] {
             assert!(rendered.contains(&required.to_owned()), "{rendered:?}");
         }
+        // The flag belongs to how we call the tool, not to one stage (D114);
+        // here it is the warning and error text that would otherwise arrive
+        // mangled, since the JSON itself is ASCII-escaped by the tool.
+        assert!(rendered.contains(&"utf-8".to_owned()), "{rendered:?}");
         // Deliberate deviation from spec §6.2: warnings stay ON, because the
         // "solving failed: some formats may be missing" line is the only honest
         // signal of a degraded extraction (they go to stderr, the JSON to

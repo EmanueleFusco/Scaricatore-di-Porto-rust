@@ -84,6 +84,28 @@ pub const RETRIES: &str = "10";
 pub const FRAGMENT_RETRIES: &str = "10";
 pub const SOCKET_TIMEOUT_SECS: &str = "30";
 
+/// The output encoding the tool is forced to write, as an argv pair (spec §4.5).
+///
+/// Why it is needed, and why only the tool can be asked: our process layer
+/// decodes tool output as UTF-8 ([`crate::services::process`], spec §4.5), but
+/// a Python tool writes its stdout in the **console code page** when stdout is
+/// a pipe — cp1252 on a western Windows. Non-ASCII characters of the final path
+/// are then dropped or mangled, and the printed `SDP_FILE` path no longer names
+/// the file that really exists: the app reported *"yt-dlp reported … but the
+/// file is not there"* while the file sat in the output folder under its real
+/// Unicode name, playable. The report is deterministic per title (only titles
+/// with characters outside the code page are affected), which is why the same
+/// links worked on Linux: there the pipe encoding is UTF-8 already.
+///
+/// Verified in the pinned tool's own source and `--help`:
+/// `YoutubeDL._write_string` → `write_string(encoding=self.params['encoding'])`
+/// and, when that is unset, `out.encoding or preferredencoding()` (the pipe's
+/// code page). The standalone builds are PyInstaller bundles whose interpreter
+/// runs an *isolated* config, so `PYTHONIOENCODING` cannot correct it from
+/// outside — measured: the bundled binary ignores it, and a `C` locale is still
+/// coerced to UTF-8, which is why this cannot be reproduced on Linux.
+pub const ENCODING_ARGS: [&str; 2] = ["--encoding", "utf-8"];
+
 // ---------------------------------------------------------------------------
 // Job shape
 // ---------------------------------------------------------------------------
@@ -313,6 +335,9 @@ pub fn download_args(
     ] {
         args.push(flag.into());
     }
+
+    // The tool writes what our reader decodes (spec §4.5, [`ENCODING_ARGS`]).
+    args.extend(ENCODING_ARGS.map(OsString::from));
 
     args.push("--concurrent-fragments".into());
     args.push(CONCURRENT_FRAGMENTS.into());
@@ -1139,6 +1164,43 @@ mod tests {
             !rendered.contains(&"--extractor-args".to_owned()),
             "the forced client list must not come back: {rendered:?}"
         );
+    }
+
+    /// The final path is the one string the app cannot survive a mojibake in:
+    /// it is checked against the filesystem. On Windows a piped stdout makes the
+    /// tool write the console code page, which drops every character outside it
+    /// — verified in the tool's own source (`write_string` uses the stream's
+    /// encoding) — and the check then says "the file is not there" about a file
+    /// that is there. The flag has to be in the **base** args, so it is present
+    /// on every path: video, audio-only, the retry without `-f`, and the
+    /// inspection (D114, spec §4.5).
+    #[test]
+    fn the_tool_is_forced_to_utf8_on_every_path() {
+        let cases = [
+            ("video", spec(FormatChoice::Best), false),
+            (
+                "exact height",
+                spec(FormatChoice::Exact { height: 1080 }),
+                false,
+            ),
+            ("audio only", spec(FormatChoice::AudioOnly), false),
+            ("retry without -f", spec(FormatChoice::Best), true),
+        ];
+        for (label, spec, omit_format) in cases {
+            let args = download_args(
+                "https://youtu.be/x",
+                &spec,
+                &dirs(),
+                &plain_env(),
+                omit_format,
+            );
+            let rendered = args_as_strings(&args);
+            assert!(
+                rendered.contains(&"--encoding".to_owned())
+                    && rendered.contains(&"utf-8".to_owned()),
+                "{label}: missing --encoding utf-8 in {rendered:?}"
+            );
+        }
     }
 
     #[test]

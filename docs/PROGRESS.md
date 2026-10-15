@@ -2811,3 +2811,75 @@ came from reading the code with those tests in hand.
 - **Next step**
   1. Push, re-run `ci` on `main`.
   2. Then the tag `v0.1.0` for the draft release.
+
+## 2026-10-15 — Windows: "yt-dlp reported … but the file is not there" while the file is there (spec §4.5, §8.3)
+
+- **Done**
+  - The first Windows run of the installer reported some downloads as failed with
+    *"yt-dlp reported … [id].mkv but the file is not there (spec §8.3 …)"*, with
+    the file present in the output folder, playable, and the same links working
+    on Linux.
+  - Cause, read out of the tool's source rather than guessed: the path the app
+    checks is the one yt-dlp **prints**, and with a piped stdout the tool writes
+    the **console code page** (cp1252 in the west), not UTF-8 — `write_string`
+    encodes with `.encode(enc, 'ignore')`, so characters outside the code page
+    are dropped and accents arrive as mojibake. The *file* is written under its
+    real Unicode name with wide-char APIs, so the folder is right and the printed
+    path is wrong. Deterministic per **title**, hence "some downloads, often",
+    the same links, and never on Linux (its pipe is UTF-8).
+  - A Windows-only symptom needs no Windows-only fix: spec §4.5 says to pass
+    `--encoding utf-8`, and that is the only lever that works — the standalone
+    builds run an isolated PyInstaller interpreter config, so `PYTHONIOENCODING`
+    is ignored from outside (measured on the bundled binary: `cp1252` and `ascii`
+    change nothing; the `C` locale is coerced to UTF-8, which is also why the
+    mangling cannot be reproduced here).
+  - `ytdlp::ENCODING_ARGS` (`--encoding utf-8`) is now part of the **base** args
+    of every download (retry without `-f`, audio-only and future branches
+    included) and of the inspection, on every platform. D114.
+- **Verified by running**
+  - New unit test `services::ytdlp::tests::the_tool_is_forced_to_utf8_on_every_path`
+    (video, exact height, audio-only, retry without `-f`) and `--encoding` added
+    to the existing inspection arg test.
+  - New integration test
+    `ytdlp_job::an_accented_final_path_survives_the_tools_console_code_page`: the
+    fake tool now prints its final path **the way the real one does** — through
+    the console code page unless `--encoding utf-8` was passed — so the Windows
+    behaviour is reproduced on every OS. Removing the flag makes it fail with the
+    user's exact message:
+    `Failed(Unknown, "yt-dlp reported …/Fake accent-citt-perch [fakeid].mkv but
+    the file is not there (spec §8.3: the path is never guessed)")`
+    — note the accents gone from a path that still looks plausible, which is what
+    the report showed. The flag back in: green.
+  - Real tool, live: the bundled yt-dlp 2026.08.19, a real download with an
+    accented `-o` template, `--paths home:`/`temp:`, our exact `--print` template
+    and `--encoding utf-8`: the `SDP_FILE` bytes are valid UTF-8 and the printed
+    path `is_file()`. `--help` of the pinned binary confirms
+    `--encoding ENCODING  Force the specified encoding (experimental)`.
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+    `cargo test`: **417 green** (3 ignored), 0 failed; `npm test`: **207 green**;
+    `npm run check`: 0 errors, 0 warnings.
+- **Not verified / stubbed**
+  - **Windows itself**: the machine that reported it is the only place where the
+    end-to-end proof can be taken. What is verified here is the mechanism (in
+    yt-dlp's source and `--help`), the flag being passed on every path (tests),
+    and the failure the fake reproduces byte for byte on Linux. If a download
+    still fails on Windows with this message after the fix, the item's "Copy
+    details" plus the folder listing would pin it down.
+  - The inspection's JSON is not affected either way (`json.dumps` escapes
+    non-ASCII); the flag is there for its stderr titles (which reach error
+    messages) and for the printed fields of M3.
+  - Tools without such a flag (ffmpeg, the JS runtimes, whisper) are M4/M9; the
+    rule recorded in D114 is that their output encoding is measured, not assumed.
+- **Spec items marked "verify" that I checked**
+  - `--encoding utf-8` exists in the pinned yt-dlp (`--help`, Workarounds) and
+    overrides the pipe's encoding: `YoutubeDL._write_string` →
+    `write_string(..., encoding=self.params['encoding'])`.
+  - `--print after_move:filepath` is printed **after** the move to `home`
+    (`YoutubeDL.post_process` runs `MoveFilesAfterDownloadPP` before the
+    `after_move` prints) — so a missing file is really a name mismatch, not a
+    timing artefact.
+- **Decisions/deviations (also in DECISIONS.md)**: D114.
+- **Next step**
+  1. Push, rebuild, and retry on Windows the **same** links (the ones with
+     accented or emoji titles).
+  2. Then the tag `v0.1.0` for the draft release.
