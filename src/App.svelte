@@ -13,7 +13,6 @@
   import SettingsPage from "$lib/pages/SettingsPage.svelte";
   import { router } from "$lib/router.svelte";
   import { isTauriRuntime, settingsStore, tt, activeLang } from "$lib/stores/settings.svelte";
-  import { jobStore } from "$lib/stores/job.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { themeStore } from "$lib/stores/theme.svelte";
@@ -54,13 +53,11 @@
       // load, because `activeLang()` reads them.
       await pushLanguage();
     })();
-    // `job:progress` / `job:done` (spec §3) and `queue:update` (spec §7.6) are
-    // app-wide, not QueuePage-local: the footer reads the queue, and a
-    // component that unmounts must not be able to lose a completion event.
-    void jobStore.start();
+    // `queue:update` (spec §7.6) is app-wide, not QueuePage-local: the footer
+    // reads the queue, and a component that unmounts must not be able to lose a
+    // completion event.
     void queueStore.start();
     return () => {
-      void jobStore.stop();
       void queueStore.stop();
     };
   });

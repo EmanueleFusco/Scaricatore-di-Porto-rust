@@ -121,17 +121,11 @@
   "queue.state.paused": "Paused",
   "queue.state.interrupted": "Interrupted",
 
-  "job.stage.preparing": "Preparing",
 
-  "job.stage.downloading": "Downloading",
 
-  "job.stage.postProcessing": "Processing",
 
-  "job.stage.done": "Done",
 
-  "job.stage.failed": "Failed",
 
-  "job.stage.cancelled": "Cancelled",
 
   "job.label.preparing": "Preparing…",
 

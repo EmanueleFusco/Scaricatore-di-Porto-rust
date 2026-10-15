@@ -34,6 +34,8 @@
   /** The row whose link was just copied, so only that button says so. */
   let copiedKey = $state<string | null>(null);
   let pasteBlocked = $state(false);
+  /** One-shot: the next input comes from a paste, so it skips the debounce. */
+  let pasted = $state(false);
 
   const rows = $derived(addBarStore.rows);
   const readyCount = $derived(addBarStore.readyCount);
@@ -230,9 +232,11 @@
       placeholder={tt("queue.add.placeholder")}
       value={addBarStore.text}
       onkeydown={onKeydown}
+      onpaste={() => (pasted = true)}
       oninput={(event) => {
         pasteBlocked = false;
-        addBarStore.setText(event.currentTarget.value);
+        addBarStore.setText(event.currentTarget.value, pasted);
+        pasted = false;
       }}
     ></textarea>
     <p class="field__hint">

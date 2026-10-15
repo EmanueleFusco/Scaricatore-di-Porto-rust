@@ -14,7 +14,7 @@
  * Svelte runtime.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { normaliseInspected, type Inspected } from "$lib/inspect";
+import { normaliseInspected, inspectDelay, MetadataCache, type Inspected } from "$lib/inspect";
 import { QUALITY_PRESETS, newLinks, splitLinks } from "$lib/addbar";
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
@@ -54,6 +54,8 @@ class AddBarStore {
   #request = 0;
   /** The pending debounced inspection, if one is waiting (spec §11.3). */
   #timer: ReturnType<typeof setTimeout> | null = null;
+  /** Spec §2.9: a URL inspected before answers without a second round-trip. */
+  #cache = new MetadataCache();
 
   /** Rows that can be added right now. */
   get ready(): AddRow[] {
@@ -81,18 +83,22 @@ class AddBarStore {
   }
 
   /**
-   * Typing or pasting schedules the inspection, 500 ms after the last change
-   * (spec §11.3, "as in the original"). Nothing is lost if the user presses a
-   * button first: the button asks for the same inspection and waits for it.
+   * Typing or pasting schedules the inspection (spec §11.3).
+   *
+   * A **paste** is one atomic event, not typing: nothing else is coming, so the
+   * wait is pure latency and it starts at once (D76). Typing keeps the 500 ms —
+   * without them every keystroke would launch a yt-dlp process. Nothing is lost
+   * if the user presses a button first: the button asks for the same inspection
+   * and waits for it.
    */
-  setText(value: string): void {
+  setText(value: string, pasted = false): void {
     this.text = value;
     this.#cancelTimer();
     if (this.links.length === 0) return;
     this.#timer = setTimeout(() => {
       this.#timer = null;
       void this.submit();
-    }, 500);
+    }, inspectDelay(pasted));
   }
 
   /** Check everything in the box: the debounce, the button, or Enter. */
@@ -130,7 +136,24 @@ class AddBarStore {
 
     this.rows = [...this.rows, ...rows];
     this.text = "";
-    await this.#check(rows);
+
+    // Spec §2.9: a URL inspected before answers from the cache — no yt-dlp
+    // process, no network, no spinner. Only the others are asked for.
+    const misses: AddRow[] = [];
+    for (const row of rows) {
+      const hit = this.#cache.get(row.url);
+      if (hit === undefined) {
+        misses.push(row);
+        continue;
+      }
+      this.#patch(row.key, {
+        state: "ready",
+        inspected: hit,
+        errorKey: null,
+        errorDetail: null,
+      });
+    }
+    if (misses.length > 0) await this.#check(misses);
   }
 
   /** Drag-and-drop of text (spec §2.2 "drop text"). */
@@ -162,6 +185,8 @@ class AddBarStore {
     this.rows = [];
     this.text = "";
     this.checking = false;
+    // Spec §2.9: the cache is cleared by Clear.
+    this.#cache.clear();
   }
 
   #cancelTimer(): void {
@@ -276,6 +301,11 @@ class AddBarStore {
         continue;
       }
       const inspected = normaliseInspected(answer.inspected);
+      // Spec §2.9: a complete answer is worth remembering; the cache refuses
+      // playlists, errors and degraded lists on its own.
+      if (inspected.kind === "video") {
+        this.#cache.set(row.url, inspected);
+      }
       // A playlist is not a queue item in M2 (spec §6.4 arrives in M3): the row
       // says so instead of quietly downloading the wrong thing.
       if (inspected.kind === "playlist") {

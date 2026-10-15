@@ -1,9 +1,10 @@
-//! The temporary single-video pipeline of M1.
+//! The job runner the queue drives (spec §3 `job.rs`).
 //!
-//! M2 replaces this module with the queue engine of spec §7; until then this is
-//! the one place that runs a download to completion, and it exists so the
-//! behaviour M1 has to demonstrate — fallback, retry, cancel, temp cleanup — is
-//! testable without any UI.
+//! It was written for M1's single-video screen; M2 kept it and made it the one
+//! place a download happens: [`crate::services::queue::engine::run_item`] calls
+//! [`run_job`] for every queue item. It exists so the behaviour the queue has
+//! to demonstrate — fallback, retry, cancel, temp cleanup — is testable without
+//! any UI.
 //!
 //! The runner composes the pure pieces of [`crate::services::ytdlp`] and
 //! [`crate::services::inspect`] with the process layer of
