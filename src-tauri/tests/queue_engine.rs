@@ -337,20 +337,23 @@ fn size_on_disk(fx: &Fixture, id: &str) -> Option<u64> {
         .as_u64()
 }
 
-/// Wait until the fake reports that it is running, and say which URL it named.
+/// Wait until the fake reports that it is running, and say which **host** it
+/// named.
 ///
-/// The fake writes `.fake-started-<url tail>` while it is alive, so this is the
+/// The fake writes `.fake-started-<host>` while it is alive, so this is the
 /// moment "a tool is running" becomes a **fact** instead of an assumption about
 /// how long a download lasts: the CI starved a poller past a 3 s margin and
-/// then past an 8 s one before this became a handshake.
+/// then past an 8 s one before this became a handshake. The host is what makes
+/// it a fact about *one item*: the single download lane may pick either of the
+/// two the test added, and guessing which is the flake this removes.
 async fn wait_for_fake_start(out: &std::path::Path, within: Duration) -> String {
     let deadline = Instant::now() + within;
     loop {
         if let Ok(entries) = fs::read_dir(out) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if let Some(url) = name.strip_prefix(".fake-started-") {
-                    return url.to_owned();
+                if let Some(host) = name.strip_prefix(".fake-started-") {
+                    return host.to_owned();
                 }
             }
         }
@@ -358,6 +361,50 @@ async fn wait_for_fake_start(out: &std::path::Path, within: Duration) -> String 
             Instant::now() < deadline,
             "the fake never reported a download in {}",
             out.display()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The state `queue.json` records for one item, or `None` while the write that
+/// records it is still in flight.
+///
+/// The counterpart of [`size_on_disk`]: an in-memory state change becomes
+/// visible to `snapshot()` **before** the write that records it — the state lock
+/// is released before the file is touched, and never held across a write — so
+/// "the item is parked" and "the next launch will find it parked" are two
+/// different moments. A test that reopens the queue between them reads the
+/// state the app was in *before* it closed, which is a real flake and not a
+/// test that can be fixed with a bigger margin.
+fn state_on_disk(path: &Path, id: &str) -> Option<ItemState> {
+    let raw = fs::read_to_string(path).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let recorded = document["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"] == json_id(id))?["state"]
+        .as_str()?;
+    Some(ItemState::parse(recorded))
+}
+
+/// Wait until the document on disk records `id` as parked.
+///
+/// This is what makes the restart deterministic: the engine is dropped only
+/// once the file it would read agrees with the state the test already saw in
+/// memory. Without it, a slow machine reopens a queue that trusts an older
+/// world — the CI answered this test twice with a document that still said
+/// `queued` for an item whose tool had already been killed (D115).
+async fn wait_for_parked_on_disk(path: &Path, id: &str, what: &str, within: Duration) {
+    let deadline = Instant::now() + within;
+    loop {
+        let recorded = state_on_disk(path, id);
+        if recorded.is_some_and(ItemState::is_parked) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {within:?} waiting for {what} to reach queue.json; \
+             the file says {recorded:?}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -792,7 +839,7 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
     let fx = fixture();
 
     // First "launch": two items, one of them stopped mid-flight.
-    let (first_id, engine) = {
+    let (running_id, engine) = {
         let engine = fx.engine_with(
             LaneConfig {
                 download: 1,
@@ -800,26 +847,34 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
             },
             false,
         );
-        let ids = engine
-            .add(
-                vec![
-                    // The fake writes a marker while it runs and then sleeps, so
-                    // the test knows a tool is alive **before** it closes the
-                    // app: that is the crash the next launch has to recover
-                    // from. Which of the two items the single download lane
-                    // picked is not the test's business — the marker names the
-                    // URL, and the test does not have to guess.
-                    //
-                    // The duration is only how long the window between the
-                    // marker and the shutdown stays open, and the resume at the
-                    // end pays it.
-                    fx.request("https://a.example/veryslow-4000"),
-                    fx.request("https://b.example/veryslow-4000"),
-                ],
-                false,
-            )
-            .added;
-        wait_for_fake_start(&fx.out, Duration::from_secs(30)).await;
+        // Both items land; the `items.len() == 2` of the second launch is what
+        // proves it.
+        engine.add(
+            vec![
+                // The fake writes a marker — named after the **host** it is
+                // downloading — while it runs, so the test knows a tool is
+                // alive **before** it closes the app: that is the crash the
+                // next launch has to recover from. The marker also says *which*
+                // item the single download lane picked, so the test does not
+                // have to guess: on a slow machine the lane and the queue order
+                // say nothing about the thread running this test.
+                fx.request("https://a.example/veryslow-4000"),
+                fx.request("https://b.example/veryslow-4000"),
+            ],
+            false,
+        );
+        let started_host = wait_for_fake_start(&fx.out, Duration::from_secs(30)).await;
+        let running_id = engine
+            .snapshot()
+            .items
+            .iter()
+            .find(|item| item.url.starts_with(&format!("https://{started_host}/")))
+            .map(|item| item.id.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fake is downloading {started_host}, which is not one of the added items"
+                )
+            });
 
         // What the file says **while the tool runs** is not asserted here, and
         // that is deliberate: the invariant belongs to
@@ -837,7 +892,7 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
         // This is what closing the app mid-download looks like: cancel the
         // token of everything still running and stop.
         engine.shutdown();
-        (ids[0].clone(), engine)
+        (running_id, engine)
     };
 
     // Closing the app takes a moment: the kill is `SIGTERM` first, and the item
@@ -846,7 +901,21 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
     wait_for(
         &engine,
         "the killed item to settle",
-        |snapshot| state_of(snapshot, &first_id).is_some_and(ItemState::is_parked),
+        |snapshot| state_of(snapshot, &running_id).is_some_and(ItemState::is_parked),
+        Duration::from_secs(20),
+    )
+    .await;
+
+    // And then the *file* has to have caught up: `snapshot()` sees the settled
+    // state a moment before the write that records it lands, because the state
+    // lock is released before the file is touched. Reopening the queue in that
+    // window means reading the world the app was in *before* it closed — which
+    // is exactly what the CI did here, twice: it reopened a document that still
+    // said `queued` for the item whose tool had just been killed.
+    wait_for_parked_on_disk(
+        &fx.queue_path,
+        &running_id,
+        "the closed item",
         Duration::from_secs(20),
     )
     .await;
@@ -856,28 +925,29 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
     let engine = fx.engine();
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.items.len(), 2, "nothing was lost on the way out");
-    let recovered = state_of(&snapshot, &first_id).expect("the item is there");
+    let recovered = state_of(&snapshot, &running_id).expect("the item is there");
+    let on_disk = fs::read_to_string(&fx.queue_path).unwrap_or_default();
     assert!(
         matches!(
             recovered,
             ItemState::Cancelled | ItemState::Interrupted | ItemState::Paused
         ),
-        "an item that was running comes back parked, never running again on its \\
-         own: {recovered:?}"
+        "an item that was running comes back parked, never running again on its \
+         own: {recovered:?}\nqueue.json says: {on_disk}"
     );
 
     // Whatever it came back as, the user decides: Resume for interrupted and
     // paused, Retry for cancelled (spec §7.3).
     engine.resume_all();
     if matches!(recovered, ItemState::Cancelled) {
-        engine.retry(&first_id);
+        engine.retry(&running_id);
     }
     let snapshot = wait_for(
         &engine,
         "the recovered item to finish after Resume",
         |snapshot| {
             matches!(
-                state_of(snapshot, &first_id),
+                state_of(snapshot, &running_id),
                 Some(ItemState::Done | ItemState::Failed)
             )
         },
@@ -885,7 +955,7 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
     )
     .await;
     assert_eq!(
-        state_of(&snapshot, &first_id),
+        state_of(&snapshot, &running_id),
         Some(ItemState::Done),
         "the file is on disk: {:?}",
         snapshot

@@ -2883,3 +2883,78 @@ came from reading the code with those tests in hand.
   1. Push, rebuild, and retry on Windows the **same** links (the ones with
      accented or emoji titles).
   2. Then the tag `v0.1.0` for the draft release.
+
+## 2026-10-15 — Windows CI: "the item that was running comes back parked … : Queued" (spec §7.4)
+
+- **Done**
+  - The fourth `check` failure was again `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`,
+    only on Windows: the reopened engine found the killed item `Queued`. The
+    other two OSes still pass, and this same test passed on Windows before the
+    marker handshake was added.
+  - Cause (D115), and it is an **ordering**, not a duration: `finish_item` mutates
+    the state under the lock, releases it, and *then* writes `queue.json`, so
+    `snapshot()` — what the test waited on — shows the settled state a moment
+    before the write that records it. The test dropped the engine and reopened it
+    inside that window, and the "second launch" read the document written
+    **before** the app closed: still `queued` for the item whose tool had just
+    been killed. Same window as D94 and D113, seen from the reopen.
+  - Fix: `wait_for_parked_on_disk` — the engine is dropped only once the document
+    the reopen will read agrees with the state the test already saw. The
+    invariant is still guarded and visibly so: with the closing write removed the
+    test now fails with *"timed out … waiting for the closed item to reach
+    queue.json"* (verified by breaking it on purpose).
+  - The test also stopped guessing: it waited for *any* marker and then asserted
+    on `ids[0]`, while its own comment said which item the lane picked is not the
+    test's business. The fake now writes `.fake-started-<host>` and the test
+    follows the host to the item it added, so the assertion is about the item that
+    really had a tool behind it. The failure message now carries `queue.json`.
+- **Verified by running**
+  - `cargo test --test queue_engine the_queue_survives_a_restart…`: 4 green runs
+    in a row (4.1 s each — the 20 s waits of the old shape are gone).
+  - The whole `queue_engine` binary **22/22** three times in a row under load
+    (`taskset -c 0,1,2` with three CPU hogs, 25 s each).
+  - The "file never catches up" simulation: fails with the explicit message
+    above (so the new wait guards rather than hides).
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+    `cargo test`: **417 green**.
+- **Not verified / stubbed**
+  - **The Windows runner is the only proof** available: the mechanism is read out
+    of the code and reproduced on purpose, and the fix is verified here, but the
+    green check on Windows can only come from the next CI run.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D115.
+- **Next step**
+  1. Push, re-run `ci` (the Windows `check` job is the one that was failing).
+  2. Then the tag `v0.1.0` for the draft release.
+
+## 2026-10-15 — process: a Windows spawn that fails because the file is held is retried (spec §5.2.1)
+
+- **Done**
+  - `is_text_file_busy` now also accepts Windows' `ERROR_SHARING_VIOLATION` (32)
+    and `ERROR_ACCESS_DENIED` (5), and the spawn retry is a per-OS-family time
+    budget instead of a fixed count of retries: 100 ms/20 ms on Unix (unchanged:
+    ETXTBSY only, one errno, as the unit test still asserts), 1 s/50 ms on
+    Windows. D116.
+  - Recorded honestly as **precaution, not measurement**: unlike the Unix
+    ETXTBSY case (which the suite observed firing), no Windows failure of this
+    shape has been seen, and the CI failure that opened this branch turned out to
+    be the reopen race of D115, not the spawn. The `TODO(verify)` and the reason
+    the amount is a judgement are in D116.
+- **Verified by running**
+  - `process` unit tests: 31 green, both halfs of the predicate (the Unix one
+    asserts 32 and 5 are **not** retried there; the `#[cfg(windows)]` one asserts
+    they are on Windows and runs on the Windows CI).
+  - New assertion in `the_spawn_retry_stays_shorter_than_the_user_notices`: the
+    delay fits the budget and the budget stays ≤ 1 s, so a genuinely broken tool
+    is still reported inside the shortest user-visible timeout.
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
+    (417 green), `npm test` (207), `npm run check` (0/0).
+- **Not verified / stubbed**
+  - Windows itself: the two error codes are stable Win32 values and the predicate
+    is unit-tested, but whether a first launch ever hits them is the
+    `TODO(verify)` of D116.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D116.
+- **Next step**
+  1. Push, re-run the process-tests workflow on `windows-x64` (and `ci` on push).
+  2. Then the tag `v0.1.0` for the draft release.

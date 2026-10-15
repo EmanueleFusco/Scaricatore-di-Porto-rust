@@ -335,7 +335,17 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         println!("SDP_FORMAT|137+140|1080|vp9|opus");
         let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
-        let _ = std::fs::write(home.join(format!(".fake-started-{}", safe_name(url))), b"");
+        // The marker is named after the **host** the tool is downloading, not
+        // after the title: two items of one test differ by host, and the test
+        // must be able to tell which of them the lane actually picked — a marker
+        // built from the URL tail cannot (two URLs of one test share a tail).
+        let host = url
+            .split('/')
+            .nth(2)
+            .and_then(|authority| authority.split(':').next())
+            .filter(|host| !host.is_empty())
+            .unwrap_or("unknown-host");
+        let _ = std::fs::write(home.join(format!(".fake-started-{host}")), b"");
         // Twenty steps, so the progress line grows like a real download and
         // the watchdog of spec §5.3.2 has something to watch.
         let steps: u64 = 20;

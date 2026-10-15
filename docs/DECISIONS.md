@@ -3089,3 +3089,69 @@ path the way the real tool does — through the console code page unless
 `ytdlp_job::an_accented_final_path_survives_the_tools_console_code_page` fails
 with the user's exact message if the flag is ever removed (verified by removing
 it).
+
+### D115 — The restart test waits for the file to catch up, because the memory settles first
+
+The fourth `check` failure on Windows was `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`:
+
+> an item that was running comes back parked, never running again on its own: Queued
+
+It passed on Linux and macOS, on every run, and it passed on the Windows runner
+before the marker handshake was introduced (the earlier failures of this test
+were about *reading the file mid-run*, which the marker solved).
+
+**The mechanism, which is the same window D94 and D113 document from the other
+sides:** `finish_item` mutates the state under the lock, releases it, and only
+then writes `queue.json`. `snapshot()` — what the test was waiting on — sees the
+settled state a moment **before** the write that records it. The test dropped the
+engine and reopened it in that window, so the "second launch" read the document
+the app had written *before* it closed: for the item whose tool had just been
+killed, that document still said `queued`. It is not a timing margin that fixes
+this, because the gap is not a duration, it is an ordering.
+
+The fix is to wait for the **file**, not for the memory: `wait_for_parked_on_disk`
+polls `queue.json` until it records the item as parked, and only then is the
+engine dropped. The invariant is still guarded, and guarding it is now visible:
+with the closing write removed the test fails with *"timed out … waiting for the
+closed item to reach queue.json"* instead of passing quietly (verified by
+breaking it on purpose).
+
+**The second thing this test was doing wrong, which the fix also removes:** it
+waited for *any* marker from the fake and then asserted on `ids[0]`, while its own
+comment said "which of the two items the single download lane picked is not the
+test's business". On a starved machine the lane and the queue order say nothing
+about the thread running the test. The fake now writes its marker named after the
+**host** it is downloading, and the test follows that to the item it added — so
+the assertion is about the item that really had a tool behind it.
+
+The rule this leaves behind, which is D113's rule applied to a *reopen*: when a
+test closes and reopens something, it must first wait for the artifact the reopen
+reads to agree with what the test has already seen. Waiting longer for the same
+moment does not close an ordering gap; waiting for the *other* side of it does.
+
+### D116 — Windows: a spawn that fails because the file is held is retried too
+
+`is_text_file_busy` recognised only Unix's `ETXTBSY` (26) — "the executable is
+still open for writing" — and retried the spawn for up to 100 ms. On Windows the
+same situation has different names: a freshly created or copied executable is read
+by a scanner (antivirus, indexer), and `CreateProcessW` answers
+`ERROR_SHARING_VIOLATION` (32) or `ERROR_ACCESS_DENIED` (5) until it releases the
+file. This project creates that situation on purpose: the first launch copies
+yt-dlp and qjs into the app data dir and runs them a moment later (spec §5.2.1).
+
+This is **precaution, not a measurement**: unlike the Unix case — where the suite
+observed the retry firing — there is no recorded Windows failure of this shape,
+and the CI failure of D115 turned out to be the reopen race, not the spawn. So
+the amount (1 s of budget, 50 ms apart) is a judgement written down as such, and
+the `TODO(verify)` below is what closes it.
+
+What is verified: the two error codes are stable Win32 values; they are compared
+only on Windows (32 and 5 are `EPIPE` and `EIO` on Linux and macOS, where the
+predicate now covers exactly one errno, as its unit test still asserts); the
+budget stays inside a second so a genuinely unstartable tool is still reported
+inside the shortest user-visible timeout.
+
+`TODO(verify)`: run a first launch on Windows with the bundled tools and confirm
+whether `CreateProcess` ever answers 32 or 5 for them; if it does not, the budget
+can go back to the Unix amount and this becomes a one-line comment instead of two
+constants.
