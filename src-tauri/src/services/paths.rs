@@ -4,8 +4,13 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tauri::{AppHandle, Manager};
+
+/// Distinguishes the temp files of two concurrent writes of the same
+/// destination (see [`atomic_write`]).
+static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// File name of the settings document inside the config dir (spec §2.8).
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -134,6 +139,14 @@ pub fn ensure_dir(dir: &Path) -> io::Result<()> {
 /// `std::fs::rename` maps to `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` on
 /// Windows and to POSIX `rename(2)` elsewhere, so it replaces the destination
 /// atomically on all three targets without pulling in an extra dependency.
+///
+/// The temp file is named **per write**, not per process. Two threads of the
+/// same process writing the same destination must not share it: they would
+/// truncate and overwrite each other's bytes through two independent file
+/// offsets, and whoever renamed first would publish the other's half-written
+/// document — which is the one thing a temp+rename write exists to prevent. The
+/// queue does exactly this: two of its tasks can persist at the same moment
+/// (D92).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
@@ -145,7 +158,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(file_name);
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    tmp_name.push(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = parent.join(tmp_name);
 
     // Any failure below must not leave the temp file behind.
@@ -263,6 +280,76 @@ mod tests {
     fn atomic_write_rejects_a_path_without_parent() {
         let err = atomic_write(Path::new(""), b"x").expect_err("must fail");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// The temp file is per **write**, not per process: two threads writing the
+    /// same destination must not share it (D92).
+    ///
+    /// The payloads are long and different, because the failure is an
+    /// interleaving: a shared temp file lets one writer publish another's
+    /// half-written bytes, and the loser of the rename fails with ENOENT. This
+    /// is what the queue's two tasks used to do to `queue.json`.
+    #[test]
+    fn concurrent_writes_of_one_path_are_each_a_whole_document() {
+        const WRITERS: usize = 8;
+        const ROUNDS: usize = 12;
+        let dir = TempDir::new().expect("temp dir");
+        let target = dir.path().join("queue.json");
+
+        // One long line per writer, so a mixture is unmistakable.
+        let payloads: Vec<String> = (0..WRITERS)
+            .map(|n| {
+                format!(
+                    "{{{}\n",
+                    (0..40_000)
+                        .map(|_| char::from(b'a' + n as u8))
+                        .collect::<String>()
+                )
+            })
+            .collect();
+
+        for round in 0..ROUNDS {
+            let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+            let handles: Vec<_> = payloads
+                .iter()
+                .map(|payload| {
+                    let target = target.clone();
+                    let start = std::sync::Arc::clone(&start);
+                    let payload = payload.clone();
+                    std::thread::spawn(move || {
+                        start.wait();
+                        atomic_write(&target, payload.as_bytes())
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("no thread may panic")
+                    .unwrap_or_else(|err| panic!("a concurrent write failed: {err}"));
+            }
+
+            let on_disk = fs::read_to_string(&target).expect("read");
+            assert!(
+                payloads.contains(&on_disk),
+                "round {round}: the file must be one writer's whole document, \
+                 not a mixture ({} bytes, longest payload {})",
+                on_disk.len(),
+                payloads.iter().map(String::len).max().unwrap_or(0),
+            );
+        }
+
+        // And no temp file outlived them.
+        let leftovers: Vec<String> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "queue.json")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     #[test]

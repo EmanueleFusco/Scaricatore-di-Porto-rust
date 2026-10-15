@@ -80,6 +80,15 @@ tokio = { version = "1", features = [
 # `CancellationToken` (spec §4.4).
 tokio-util = { version = "0.7", features = ["rt"] }
 
+# System notification when the queue becomes idle (spec §7.7, §11.8). Added in
+# M2; see D79 for the dependency-size measurement that justified it.
+# NOT pinned to a newer major-minor: 2.4 is the newest release whose
+# `rust-version` stays inside this package's `rust-version = 1.85`, and a
+# dependency that cannot be built by the toolchain the project declares is not
+# a dependency. The `windows` crate it pulls in is the 0.61 line, separate from
+# the 0.62 one spec §4.2 needs; they are independent crates and coexist.
+tauri-plugin-notification = "2.4"
+
 [target.'cfg(unix)'.dependencies]
 # killpg() for the process-group tree-kill of spec §4.2. Not used on Windows,
 # where the same job is done with the `windows` crate below.

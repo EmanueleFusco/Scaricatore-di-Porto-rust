@@ -3,7 +3,7 @@
  * (spec §2.6, §2.8) and exposes the active language to the whole UI.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { resolveLanguage, t, type Lang, type Params } from "$lib/i18n";
+import { resolveLanguage, t, tCount, type Lang, type Params } from "$lib/i18n";
 import {
   currentLocaleTags,
   normaliseSettings,
@@ -120,6 +120,11 @@ export function activeLang(): Lang {
 /** Translate with the active language. Components call this in the markup. */
 export function tt(key: string, params?: Params): string {
   return t(activeLang(), key, params);
+}
+
+/** Translate with the active language, picking the plural form of `count`. */
+export function ttCount(key: string, count: number, params?: Params): string {
+  return tCount(activeLang(), key, count, params);
 }
 
 /** Translate an i18n key coming from the backend (`error.*`, …). */

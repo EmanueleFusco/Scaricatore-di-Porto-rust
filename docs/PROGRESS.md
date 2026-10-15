@@ -2053,6 +2053,553 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
      audio, cartella, annulla) — è l'unica cosa che qui non si può fare.
   2. Merge del branch dopo la revisione; poi M2 (coda).
 
+---
+
+## 2026-10-15 — M2 / The queue (spec §7, §11.2, §11.5, §11.7)
+
+Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
+
+- **Done**
+  - **`services/queue/`**, in five files with one job each:
+    - `model.rs` — the state machine of spec §3 (all twelve states, including
+      the `Encoding`/`Transcribing`/`Summarizing` of M4/M5/M6 and the
+      `Interrupted` of §7.4), the immutable options snapshot of §7.1, groups,
+      the counters of §7.5, duplicate detection, the retry policy and the
+      500-item history cap of §7.3. Pure, 34 unit tests;
+    - `store.rs` — `queue.json`: atomic writes, `.bak` on corruption, active
+      items come back `Interrupted` keeping their temp dir (§7.4, §4.10);
+    - `scheduler.rs` — the planning function: lanes (download 2, encode 1,
+      transcribe 1), the per-host cap of §6.4, retry timers, first-runnable
+      first. 12 unit tests, no process and no clock;
+    - `events.rs` — the `queue:update` payload and the ≤ 10/s per-item
+      coalescing of §7.6;
+    - `engine.rs` — a scheduler task, one task per item (which runs **the M1
+      pipeline unchanged**, `job::run_job`), a flusher, the actions and the
+      persistence triggers.
+  - **`services/notify.rs`** — the system notification when the queue goes
+      idle (§7.7), off by default, text taken from the same dictionaries the UI
+      uses.
+  - **Commands** — `queue_list`, `queue_add`, `queue_cancel`, `queue_pause`,
+      `queue_resume`, `queue_retry`, `queue_remove`, `queue_pause_all`,
+      `queue_resume_all`, `queue_retry_failed`, `queue_reorder`,
+      `queue_move_to_top`, `queue_clear_finished`, `queue_lanes`,
+      `read_links_file`, `app_set_language`, plus **`inspect_urls`** (three in
+      parallel, own tokens, answers in order, §6.2's last bullet).
+  - **Settings** (schema 4): `parallel_downloads` (1–4), `per_host_cap` (1–8),
+      `notify_on_idle`, `paste_links_anywhere`, all clamped on both sides, and
+      the Downloads section of Settings → General now really edits them.
+  - **Startup** — the queue opens before the window, the orphan-temp sweep of
+      §4.10 now knows **which temp dirs the queue still owns** (an interrupted
+      item keeps its `.part` files) and looks in every output folder a live item
+      writes to, not only in the default one. The exit hook cancels the items
+      before killing the trees.
+  - **Frontend** — `lib/queue.ts` and `lib/addbar.ts` (pure, tested),
+      `lib/stores/queue.svelte.ts` (a keyed map + explicit order; a tick with one
+      changed item patches one row), the new **Add bar** (multi-link paste,
+      drop of text or `.txt`, per-row quality picker, inline errors with Retry,
+      "add anyway" for duplicates), the **virtualised list**, the **item cards**
+      (stage chip, progress, speed/ETA, actions per state, expandable details
+      with Copy details, drag to reorder) and a footer that now says
+      "N running · M queued · speed".
+  - **i18n** — 79 new keys in IT and EN; the M1 placeholders
+      (`queue.comingSoon`, `settings.downloads.comingSoon`) are gone.
+- **Verified by running**
+  - `cargo test`: **328 tests** green (297 lib, 17 `queue_engine`, 14
+      `queue_ipc`, 3 bundled_tools, 9 download, 8 m1_ipc, 16 process_tree, 6
+      settings_ipc, 13 tools, 22 ytdlp_job) + the 3 `#[ignore]` real-tool tests.
+      `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+  - `cargo test --test queue_engine` — **17 integration tests on the fake
+      yt-dlp**, all offline:
+      * ten links, **exactly 2 at a time** measured from the fake's own
+        start/end log (peak concurrency, by interval overlap);
+      * one parallel download means one; four means four;
+      * the per-host cap: never three from YouTube, while a different host is
+        not held back;
+      * pause keeps the item (and no error), resume finishes it, pause-all stops
+        the scheduler;
+      * cancel removes the temp dir and nothing else;
+      * a transient network failure is retried by the queue (1 automatic retry,
+        `auto_retries == 1`), a permanent one is never retried by itself, AUTH is
+        never retried and keeps its raw detail;
+      * a crash-style `queue.json` (an item still `downloading`) comes back
+        `Interrupted` with its temp dir, and Resume finishes it;
+      * a graceful shutdown comes back parked and Retry finishes it;
+      * a corrupt file is kept as `.bak`, the queue starts empty and the toast
+        reaches the sink;
+      * the footer counters and **one** idle notification for the transition;
+      * clear-finished, reorder, move-to-top, the events and their coalescing,
+        the settings' lanes (including 0 → clamped to 1).
+  - `npm test`: **197** green (162 of M0/M1 + 35 new for `queue.ts` and
+      `addbar.ts`). `npm run check` 0 errors 0 warnings; `npm run build` ok.
+  - `cargo build --release`: app binary **6,88 MiB** (budget 15 MB). The
+      notification plugin's own cost was measured separately for D79: **+0,17
+      MiB** (6,71 → 6,88).
+  - **`npm run app:binary` starts**: the release binary opens the queue, starts
+      its two tasks and stays up. This is how D88 was found — a `tokio::spawn` on
+      the main thread panicked, and no test could see it (they all start the
+      engine inside a `#[tokio::test]`).
+- **Not verified / stubbed**
+  - **The GUI has not been clicked.** From here there is no way to drive the
+      window: no manual check of the Add bar, the cards, the context actions or
+      the drag-and-drop. Recorded rather than implied.
+  - **The real network path through the queue is untested.** Every queue test
+      uses the fake yt-dlp; a real end-to-end (paste → 2 in parallel → files) is
+      the manual check above.
+  - **The system notification has not been seen.** The plugin is wired, the
+      strings resolve in both languages (unit-tested), and the engine calls it on
+      the idle transition; whether the OS shows it, and what it looks like, is
+      for the manual check.
+  - **Playlist links are refused with a message** (D84); M3 brings the selection
+      panel.
+  - **Not implemented in M2, on purpose**: per-row "start immediately", the
+      "More options" drawer, user presets, the thumbnail column, the group
+      actions of §11.5 (the model and the grouping exist, M3 creates groups),
+      Ctrl/Cmd+F filtering, the 2 000+ item load test (the arithmetic is tested,
+      a real 5 000-item queue is M7's performance item).
+  - **Auto-resume on start** (spec §7.4's "or auto-resume if the setting is on")
+      is not implemented, and an interrupted item does **not** start by itself:
+      it comes back `Interrupted` with a Resume button, which is the spec's
+      first-listed behaviour (D87).
+  - **"Keep the computer awake"** (§7.7, optional, per-OS API) is not
+      implemented.
+- **Spec items marked "verify" that I checked**
+  - **Tauri v2 exposes no OS locale to Rust.** `Manager` has no `locale()`, and
+      neither `Window` nor `Webview` has one (read in the 2.12.3 sources, then
+      in the docs.rs page for `tauri::Manager`, `tauri::window::Window`). That is
+      why the language for the notification travels from the webview
+      (`app_set_language`), and why the backend falls back to `LANG`/`LC_ALL`.
+  - **`tauri-plugin-notification` 2.7 requires Rust 1.90** and this package
+      declares `rust-version = 1.85`, so 2.4.0 is the newest usable release;
+      `cargo add` picks it for that reason (D79).
+- **Decisions/deviations (also in DECISIONS.md)**: D79–D88.
+  - The two deliberate deviations from the spec's wording are D81 (item-granular
+    event diffs instead of field-level patches) and D82 (lane counters instead
+    of semaphores); D83–D86 are decisions of scope, not of behaviour.
+- **Next step**
+  1. Manual check on the development machine: paste several links, watch two
+     downloads run at once, pause/resume/cancel one, clear finished, restart the
+     app mid-download and Resume; then Settings → Downloads with the two caps,
+     and the notification with the switch on.
+  2. Merge the branch after the review; then M3 (playlist and other sites).
+
+## 2026-10-15 — M2 / The queue's IPC layer as real IPC tests, and four real bugs
+
+Still branch `m2-queue`. Same phase: the queue was done, this step is the pass
+that makes its **claims** true rather than merely asserted in prose. Two of the
+four bugs below came out of a test that failed once in ten runs; the other two
+came from reading the code with those tests in hand.
+
+- **Done**
+  - **`tests/queue_ipc.rs` rewritten as real IPC tests.** The 14 tests it had
+      were placeholders that only proved the file compiled; they now go through
+      `tauri::test::MockRuntime` with the real `App`, the real handlers and the
+      real argument deserialisation (the `m1_ipc.rs` pattern). **12 tests**:
+    - `inspect_urls` answers one row per URL, **in the order the URLs were sent**,
+      and an empty list is not an error (three in parallel, answers in order,
+      §6.2);
+    - `queue_add` refuses a non-HTTP URL and keeps the others, reports duplicates
+      as `{url, itemId, title}` and adds them anyway on the second call with
+      `force`;
+    - an audio-only **quality** wins over the `kind` the frontend sent (§8.4);
+    - the actions on an unknown id answer `false`, they do not raise (§15: a
+      stale click must not be an error);
+    - `queue_reorder` / `queue_move_to_top` change the order over the wire;
+    - `queue_lanes` returns the lanes the settings actually clamped to;
+    - `read_links_file` reads a dropped `.txt` and refuses a directory **with a
+      message**, not a panic;
+    - `app_set_language` travels from the webview to the backend (D79's
+      fallback) and the queue settings survive `settings_save`/`settings_get`
+      clamped at both ends (this one goes through the real `AppState`, the
+      document on disk and the engine that reads it).
+  - **Four more `queue_engine` tests** (21 in all) and **three more unit tests**
+      (300 in the lib), covering what the previous pass left untested:
+    - the add → `queue_list` → event → `queue.json` path the frontend actually
+      walks, checked at all three points;
+    - the snapshot's **wire shape**: the states as strings, `options.kind`,
+      `options.quality`, and every optional an explicit `null` rather than a
+      missing key (the frontend's normaliser would default it, the wire has one
+      shape);
+    - the options are **frozen into the item**, so a later settings change
+      cannot alter what the runner will use (§7.1);
+    - a group is upserted (replaced, not appended) and survives the file;
+    - pausing an item that is not running parks it (D90);
+    - **the file says an item is running while the tool runs** (D91), read from
+      the disk and not from the engine, and a restart over that file parks it;
+    - **concurrent writes of one path are each a whole document** (D92): eight
+      threads, twelve rounds, ~40 KB payloads;
+    - **the frontend reducer**: `applyUpdate` and `applySnapshot` in
+      `queue.ts`, nine new tests (197 → 206), covering the per-row identity a
+      tick must preserve, the removal, the order, and the stale event.
+  - **Seven fixes** (D89–D93, D96, D97). D91, D92 and D96 came out of the
+      flaky runs; D89, D93, D95 and D97 out of reading the same code with the
+      new tests in hand:
+    - a **running** item that is cancelled or removed now has its temp
+      directory deleted **before** the row records it, and with the queue's lock
+      released. It used to be deleted after, which left a window where
+      "Cancelled" and "its directory is gone" were not the same statement — the
+      startup sweep of §4.10 lists what the queue still owns, so a directory
+      that outlives its row is invisible to it. `QueueEngine::signal` no longer
+      deletes anything while holding the state mutex either;
+    - `queue_pause` on an item that is **not running** used to **cancel** it — a
+      queued row would come back as "Cancelled" (Retry), and a row that had just
+      finished would lose its progress and read "Cancelled" while keeping its
+      file. The UI never offers Pause there and `pause_all` never reaches it,
+      but the command is public IPC: it now parks the item as `Paused`, so the
+      row says Resume, and leaves an already parked item alone;
+    - **an item is written to `queue.json` as running before yt-dlp is spawned**
+      (D91). `start_item` set the state in memory and never wrote the file, so
+      for the whole life of a download the document claimed the item had not
+      started. Spec §7.4's recovery can only park what it can see was in an
+      active stage, so **a crash left the item in `Queued` and the next launch
+      downloaded it again by itself** — no Resume, no question asked. The
+      invariant is now: a file that says `Queued` never has a tool behind it.
+      One extra write per item, on top of the one at the end;
+    - **the temp file of an atomic write is per write, not per process** (D92).
+      `.<file>.tmp-<pid>` was shared by every concurrent write to the same
+      destination inside one process, so "temp + rename" was not atomic at all:
+      two writers overwrote each other's bytes through two file descriptors,
+      the first rename published the other's half-written document, and the
+      second failed with `ENOENT`. The next reader found unparseable JSON and —
+      as §7.4 asks — moved it to `.bak` and carried on with **defaults**: an
+      empty queue, or default settings, because two threads happened to save at
+      once. Now `.<file>.tmp-<pid>-<counter>` with a process-wide `AtomicU64`.
+      This one predates M2 (`paths.rs` is M0) and the queue is simply the first
+      thing that writes concurrently by design;
+    - **`save_settings` and `RuntimeMemoryStore::remember` move the file and the
+      in-memory copy under one lock** (D93). Two saves can overlap — the
+      settings page saves on every change and the app saves again on the way out
+      — and each one carries a whole document, so the old "write the file, then
+      update the copy" could leave the engine scheduling with settings that were
+      never on disk. The runtime memory has the same shape: two yt-dlp jobs can
+      learn a degraded runtime at the same moment. Both still write the file
+      **first**, so a failed write leaves the copy on the last saved values;
+    - **nothing starts after `shutdown()`** (D96). The scheduler checks
+      `stopped` at the top of each pass, but a pass already in flight went on to
+      `start_item` for everything it had planned: an item could be spawned
+      *after* the app began tearing down, escaping the exit hook's kill, and it
+      would rewrite `queue.json` while the next launch was reading it. The
+      check moved into `start_item`, before it takes the lock;
+    - **the frontend never walks a row back** (D97). `load()` replaced the whole
+      queue with the snapshot; a `queue_list` overtaken by an event in flight
+      put a *running* item back to `queued`, and an idle queue emits nothing
+      that would correct it — the row stayed wrong until the user touched
+      something. The store remembers the `seq` it had when the read went out
+      and, if the answer was overtaken, takes only the rows it is missing. To
+      make that testable at all, the reducer moved from the store into
+      `$lib/queue` as a pure function: a `$state` field needs the Svelte
+      compiler, which the vitest config deliberately does not use, so the
+      store's own "testable without an event bus" claim had never been true.
+- **Verified by running**
+  - `cargo test`: **411 tests** green (301 lib, 21 `queue_engine`, 12
+      `queue_ipc`, 3 bundled_tools, 9 download, 8 m1_ipc, 16 process_tree, 6
+      settings_ipc, 13 tools, 22 ytdlp_job) + the 3 `#[ignore]` real-tool tests.
+      `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+  - **The flakes were chased, not retried away.** `cargo test --test
+      queue_engine` failed about one run in ten on the first binary. The log
+      named `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`
+      with the recovered state `Queued` (and, in another run, `Downloading`),
+      and `an_added_item_is_persisted_patched_and_gone_from_a_restart` with an
+      **empty** queue plus `cannot write the queue file: No such file or
+      directory` in stderr. Those two symptoms are D91 and D92 — how a
+      crash-recovery bug and a data-loss bug in the same file path announce
+      themselves. Each new test was checked to **fail without its fix**: the
+      D91 unit test prints `Queued`, the D92 test fails with the old name on the
+      first round.
+  - **The suite was soaked 30 times, three times over**, and each soak found
+      something: the first the two product bugs above, the second and third five
+      test-side races. That is the whole reason for a soak — the tests that only
+      fail on a loaded machine are the ones that would have failed in CI
+      intermittently and been re-run until green.
+  - `the_queue_settings_travel_through_the_settings_ipc_and_are_clamped` now
+      goes through the **real** `settings_get` / `settings_save` commands and
+      reads the document back off disk, instead of calling `AppState` directly:
+      it is the only test in the file that proves the frontend's shape of the
+      request (a whole camelCase document) deserialises into `Settings`.
+  - **Five of the flakes were the tests themselves, and are fixed without being
+      weakened.** Each was a test observing a task's output
+      the instant the *state* said it should be there, and each is now a poll
+      with a deadline, which is what the other waits in the file already do:
+    - a test that read `queue.json` right after seeing a state in memory was
+      reading the **previous** document: the state lock is released before the
+      file is touched, so there is a microsecond in which the engine says
+      `downloading` and the disk still says `queued`. It now waits for the file
+      to leave `queued`. And the fake grew a `veryslow-<ms>` URL whose download
+      takes exactly as long as the test asks, so the assertion pins the real
+      value (`downloading`) instead of "not queued": a 400 ms download can
+      finish while a loaded machine is still running the assertion;
+    - two tests corrupted or inspected the file while a `shutdown()`-ed engine
+      could still write to it, which a real app cannot do (exiting kills the
+      tasks). They now wait until the queue is quiet, where "quiet" also covers
+      an item still `Queued` because the stopped scheduler never got to it;
+    - the idle-notification test read the notifications as soon as the
+      counters said idle, but the notifier is called *after* the state is
+      updated. It waits for the first notification and then 500 ms more, because
+      "exactly one" is a claim about absence and absence has to be waited for
+      too;
+    - the coalescing test's fixed 300 ms sleep became the same wait, on the last
+      event reporting a settled queue.
+  - `npm test`: **206** green (197 + the nine reducer tests). `npm run check`:
+      0 errors, 0 warnings; `npm run build` ok (184 kB, 56 kB gzipped).
+  - The count in the M2 block above (328 tests, 14 `queue_ipc`, and its claim
+      that writes happen "exactly on the state changes spec §7.4 lists (add,
+      remove, finish)") is what that earlier run reported and is left as
+      written: a **start** writes too, now, and that is D91.
+- **Not verified / stubbed**
+  - **Still not clicked**: the GUI, the real network path and the system
+      notification are as unverified as in the M2 block above.
+  - **The fixes were not exercised against a real crash.** D91 is proven by
+      reading the file while a tool runs and by reopening it, not by `kill -9`.
+      The real kill is the new spike **S7** in `docs/SPIKES.md` (a table to
+      fill in per OS), added to the manual list for exactly this reason.
+- **Spec items marked "verify" that I checked**: none new. No new tool flag,
+      URL, crate API or asset name was used in this step: the fixes are
+      re-orderings of existing paths, one temp-file name and one lock.
+- **Decisions/deviations (also in DECISIONS.md)**: D89, D90, D91, D92, D93,
+      D94, D95, D96, D97.
+- **Next step**
+  1. The manual check listed at the end of the M2 block (paste several links,
+     watch two downloads, pause/resume/cancel, restart and Resume, the two
+     caps, the notification) — still the only thing missing before the phase
+     can be called done. **S7** was added for the crash case (D91).
+  2. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / the Add bar, the labels and an M1-parity pass after the first hands-on feedback
+- **Done**
+  - The Add bar is the standard download again, on the queue's single path (D98).
+    Inspection starts on its own after 500 ms (the original's `on_url_change` →
+    `after(500, init_submit)`), so pasting a link produces a row with title,
+    site, duration and the resolutions that video really reports; the two
+    actions are **Scarica** (primary: new items go on top, only when some other
+    item is queued — D100) and **Aggiungi alla coda** (appended). Both check
+    whatever is still in the box *and wait for it* before adding, which is the
+    defect the first build shipped: the button was disabled and the click a
+    silent no-op whenever the rows were not there yet.
+  - Quality: preset = cap (`MaxHeight`) over 2160/1440/1080/720/480/360 + Best +
+    Solo audio; per row = the video's own heights as *exact* choices (the
+    original's `1080p` semantics, spec §8.2) + Best + Solo audio. The "audio
+    only" checkbox is gone: it was the missing `queue.add.audio` (D99) and a
+    second way to say what the preset already says.
+  - Labels: the three missing keys, a fourth found by machine
+    (`queue.add.playlist.unsupported`, set as a row's `errorKey`), heights as
+    parameters instead of 16 fixed keys, "Qualità predefinita", "Svuota la
+    lista", the list counter is the whole queue (`tCount`) and not the rows in
+    the viewport, the notification checkbox moved to a new "Comportamento"
+    section, the stale first-run text ("La coda arriva con M2") replaced.
+  - Guards (D99), all three verified by breaking them on purpose and watching
+    the test fail, then restoring: `src/lib/i18n/usage.test.ts` (frontend scan:
+    literal keys, *assigned* keys, every state and action, quality labels at
+    heights no list covers), `error.rs`/`ytdlp.rs` (every backend error code),
+    `services/notify.rs` (every `toast.` literal of the three files that build
+    them, scanned rather than listed).
+  - Test-only: the restart test's download margin 3 s → 8 s (D101) after one
+    observed flake where the file said `done` and the test asserted
+    `downloading`, i.e. the test task was starved past the fake's window.
+- **Verified by running**
+  - `cargo fmt --all -- --check`: ok. `cargo clippy --all-targets -- -D warnings`: clean.
+  - `cargo test`: **414 passed, 3 ignored** (304 lib, 3 bundled_tools, 9 download,
+    8 m1_ipc, 16 process_tree, 21 queue_engine, 12 queue_ipc, 6 settings_ipc,
+    13 tools, 22 ytdlp_job); `cargo test --test queue_engine` alone: 21 green,
+    three more runs green before the margin change.
+  - `npm test`: **215** green (206 + the 9 new i18n/usages tests). `npm run
+    check`: 0 errors, 0 warnings. `npm run build`: ok (183,54 kB, 56,35 kB gzipped).
+  - The two guards, broken on purpose: a renamed key in
+    `stores/addbar.svelte.ts` and a renamed toast in `queue/engine.rs` both made
+    the new tests fail with the key named; restored, green.
+- **Not verified / stubbed**
+  - **Still not clicked**: the GUI. The new flow (paste → row → per-row quality →
+    Scarica) is type-checked, unit-tested where it is pure, and built, but no
+    window has shown it. The manual list at the end of the previous M2 block
+    still stands, with item 1 and 2 rewritten for the two actions.
+  - Playlists remain M3: a playlist link is refused with a message that says so
+    (the message is now a real dictionary entry).
+- **Spec items marked "verify" that I checked**: none new — no new tool flag,
+  URL, crate API or asset name. The 500 ms figure is the original's own
+  (`on_url_change`), not a guess.
+- **Decisions/deviations (also in DECISIONS.md)**: D98 (the queue extends the
+  standard download), D99 (i18n guards, parameterised heights), D100 (priority
+  via `queue_move_to_top`, no flag on `queue_add`), D101 (test margin 3 s → 8 s).
+- **Next step**
+  1. The manual check list (the window): paste one link and press **Scarica**;
+     paste several and compare **Scarica** with **Aggiungi alla coda**; then the
+     rest of the list — pause/resume/cancel, restart and Resume, the two caps,
+     the notification, the drag-and-drop.
+  2. Then M3 (playlists and other sites), which is what the queue was built for.
+
+## 2026-10-15 — M2 / the second hands-on report: card height, page layout, footer
+- **Done**
+  - **The list no longer paints over the page actions** (D102). The viewport's
+    `min-height: 240px` and `max-height: calc(100vh - 320px)` are gone; the page
+    scrolls when its minimum does not fit (`overflow: auto`), the list has a
+    104px floor with a `min-height: 0` viewport, and the Add bar, the actions
+    row and the footer are `flex: none`.
+  - **One status line per card, same shape in every state** (D103): the bar is
+    always drawn (empty when queued, last width when parked/failed, full when
+    done) and the line shows the problem, the progress
+    (`Velocità: … · Tempo rimasto …`, `In attesa dei dati…` while yt-dlp reports
+    nothing) or the quality. The full error and the full warning moved into the
+    details panel. `speedMbits` keeps one decimal below 1 Mbit/s.
+  - **The virtual list measures its rows** (D103): the 92px constant was wrong
+    (a card is ~130px and its height depends on the window width), so the pads
+    stood in the wrong place. The list measures the pitch between two rendered
+    rows and re-measures on resize and on every slice change; `visibleRange` is
+    untouched and still pure.
+  - **Footer** (D103): parked and failed counts instead of a premature `Fatto`,
+    `flex: none`, a red dot for failures, and `footer.nothing` when the queue is
+    empty (it used to say `In attesa`).
+  - Two new pure helpers with tests: `statusKindFor` (every state gets a line)
+    and `barPercentFor` (always a width: 0, the last one, or 100 when done).
+- **Verified by running**
+  - `npm test`: **217** green (215 + `statusKindFor`/`barPercentFor`, plus the
+    sub-1 Mbit/s case). `npm run check`: 0 errors, 0 warnings. `npm run build`:
+    ok (185,52 kB, 56,92 kB gzipped).
+  - Rust untouched; the last full run (`cargo fmt --check`, `clippy -D
+    warnings`, 414 tests, 3 ignored) still stands.
+- **Not verified / stubbed**
+  - **Still not clicked from here**: the fixes are layout and rendering, and no
+    window exists in this environment. The report they answer came from the
+    user's machine, and so must the confirmation. What to look at: resize the
+    window both ways while the Add bar holds several rows, watch a download
+    through a stall, and check the footer with a paused and a failed item.
+  - The row-height measurement is the pragmatic answer for the heights we have
+    (uniform cards, ±one wrapped button row). A variable-size virtualiser stays
+    the answer if a future layout makes rows genuinely different; M7's 5 000
+    item item is where that would show.
+- **Spec items marked "verify" that I checked**: none new (CSS and one display
+  helper).
+- **Decisions/deviations (also in DECISIONS.md)**: D102 (page layout), D103
+  (one status line, measured rows, footer).
+- **Next step**
+  1. The user's re-test of the three points above, plus the rest of the manual
+     list.
+  2. The open items from the M1/M2 audit: the Deno install offer, the "Video
+     1/2" stage detail on the card, `size`, the right-click context menu, the
+     dead M1 frontend code (`jobStore`, `inspectStore`, `job.ts`).
+  3. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / new items stay FIFO, the list shows where they went
+- **Done**
+  - The user asked whether new links should be added on top. Answered no, and
+    recorded why (D104): a playlist of forty would be starved by every link
+    added after it. The order stays the order items were added; **Scarica**
+    keeps its priority over what is *waiting*, and **Sposta in cima** does the
+    same for one card later.
+  - The real gap was feedback, so: the store remembers the just-added ids
+    (`queueStore.flash`), the list scrolls to the first one **only when it is
+    not already visible** and to the nearest edge, the new rows pulse for 2.5 s
+    (accent ring; off under `prefers-reduced-motion`), and the count line is a
+    `role="status"` region so the growth is announced.
+  - New pure helper with tests: `scrollOffsetFor(index, pitch, scrollTop,
+    viewport)` — the "nearest edge" arithmetic, computed from the virtualiser's
+    numbers because the target row usually has no element yet.
+- **Verified by running**
+  - `npm test`: **218** green (217 + the scroll arithmetic, including the
+    already-visible, above, below, first-row and rolled-off cases).
+    `npm run check`: 0 errors, 0 warnings. `npm run build`: ok (186,30 kB,
+    57,19 kB gzipped).
+  - Rust untouched since the last green run (`fmt`, `clippy -D warnings`, 414
+    tests, 3 ignored).
+- **Not verified / stubbed**
+  - **Still not clicked**: the scroll and the pulse need a real window; that is
+    the user's next check. What to look at: with the list scrolled up, add a
+    link — the list must glide to the new row and pulse it; add one while it is
+    already visible — the list must not move.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D104.
+- **Next step**
+  1. The user's re-test (the scroll, the pulse, the not-moving-when-visible).
+  2. The open items from the M1/M2 audit: the Deno install offer, the "Video
+     1/2" stage detail, `size`, the right-click context menu, the dead M1
+     frontend code.
+  3. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / Deno offer, stream detail, file size, and the dead M1 frontend
+- **Done**
+  - **Deno install offer** (D105) back on the failed card, where it can unblock a
+    real download: Install (with progress and Cancel, the same `tools_install`
+    path as the Tools page), Not now (persisted), the tools error when it
+    fails, and it disappears as soon as Deno is found.
+  - **Stream detail** (D105): "Video 1/2", "Merging…" now open the card's status
+    line while the item runs. `progressLabelKey`/`stageDetail` are pure and
+    tested, and the i18n guard now walks the label tokens too (verified by
+    deleting `job.label.merging` and watching it fail).
+  - **File size** (spec §11.5): `sizeBytes` on the item, read from the file
+    yt-dlp produced when the item finishes, surviving `queue.json`. Shown on the
+    status line of a finished card ("1080p · 480 MB") and as a row in the
+    details panel. `formatBytes` is pure and tested.
+  - **Dead M1 frontend removed** (D107): job store, inspect store, `job.ts` and
+    its tests, the helpers only they used, and the six `job.stage.*` strings.
+    The **backend** M1 commands stay, and `services/job.rs`'s header now says
+    what it is: the module the queue runs on.
+  - **Two behaviours the dead files carried are alive again** (D106): the URL
+    metadata cache of spec §2.9 moved into the add bar (a URL inspected in this
+    session answers without a round-trip; Ricontrolla bypasses it; Svuota la
+    lista clears it) and D76's paste rule too (a paste inspects at once, typing
+    keeps the 500 ms).
+- **Verified by running**
+  - `cargo test`: **415 passed, 3 ignored** (304 lib, 3, 9, 8, 16, 22, 12, 6,
+    13, 22), including the new `a_finished_item_carries_the_size_of_the_file_it
+    _produced` (which also reopens `queue.json` and checks the size is still
+    there). `cargo fmt --check` and `clippy -D warnings`: clean.
+  - `npm test`: **204** green — fewer than before because twenty tests went with
+    the deleted files: what remains covers what the app can still do.
+    `npm run check`: 0 errors, 0 warnings. `npm run build`: ok (186,74 kB,
+    57,16 kB gzipped).
+  - The new i18n guard for the stage tokens was verified by breaking it on
+    purpose (deleting `job.label.merging` from the Italian dictionary) and
+    watching the test name the token.
+- **Not verified / stubbed**
+  - **Still not clicked**: the Deno offer needs a `DENO_MISSING` failure to
+    appear, which needs a real YouTube challenge and no Deno installed. From
+    here it is type-checked and its pieces are tested; seeing it is a manual
+    check for a machine without Deno.
+  - The cache's effect (no second round-trip on a repeated paste) is likewise a
+    behaviour of the running app: the class has its tests, the wiring does not.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D105 (Deno offer, stream
+  detail), D106 (cache and paste rule in the add bar), D107 (what was deleted,
+  what stayed).
+- **Next step**
+  1. The user's next round: paste a link twice (the second must be instant), the
+     "Video 1/2" line while it downloads, the size on a finished card.
+  2. Then M3 (playlists and other sites). The right-click menu of §11.5 stays
+     queued for the polish phase, as agreed.
+
+## 2026-10-15 — M2 / pre-push review: a test artefact was tracked, and the fake tools are fixed
+- **Done**
+  - Pre-push review of the whole branch (what would go to GitHub, file by file):
+    no executables, no bundled tools, no secrets or user data, no binary file in
+    the diff against `main`. One thing was wrong: a **test artefact was tracked**
+    (`src-tauri/Fake title [fakeid].mkv`, committed in the M1 branch and
+    regenerated on every run).
+  - Root cause found and closed (D108): the fixtures copy the one `fake_ytdlp`
+    binary under `yt-dlp`, `qjs` **and** `ffmpeg`; the fake only knew
+    `--version`, so the ffmpeg probe (`-version`) fell through to the download
+    path and wrote its media file into the process's working directory. The fake
+    now answers `-version`, and **refuses** a download without a URL after `--`
+    or without `--paths home:` (exit 2). `home_dir()` replaces the five
+    `unwrap_or_else(|| PathBuf::from("."))` fallbacks so the trap cannot come
+    back inside a branch.
+  - The artefact is out of the index and `.gitignore` has a narrow net
+    (`src-tauri/*.mkv`, `*.opus`, `fake-ytdlp*`) under the fix.
+- **Verified by running**
+  - `cargo test`: **415 passed, 3 ignored**; `cargo fmt --check` and `clippy -D
+    warnings` clean; and after the full run the artefact is **not** recreated
+    (`find` over the repo and `git status`: clean).
+  - `npm test`: **204** green; `npm run check`: 0 errors, 0 warnings.
+  - Pre-push scan, all empty: executables/binaries tracked, `.env`/settings/
+    queue/cookies/keys tracked, API-key-shaped strings, binary files in the diff
+    against `main`.
+- **Not verified / stubbed**
+  - The artefact remains in the **history** of the M1 branch (already pushed).
+    Removing it from the tip is what matters; rewriting the history for sixteen
+    harmless bytes is not worth it.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D108.
+- **Next step**
+  1. Push `m1-single-video`, `m2-queue` and (optionally) `main`, then the
+     manual checks before merging `m2-queue` into `main`.
+  2. M3.
+
 ## 2026-10-15 — CI / one artifact per Linux format (spec §13.5)
 - **Done**
   - The `bundle` job used to upload one artifact per platform, with all three

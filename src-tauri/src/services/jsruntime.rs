@@ -397,14 +397,20 @@ impl RuntimeMemoryStore {
             preferred,
             decided_at,
         };
-        {
+        // The file and the in-memory copy move together, under one lock, the
+        // same reason as `AppState::save_settings` (D93): two yt-dlp jobs can
+        // learn a degraded runtime at the same moment, and a second one landing
+        // its write between the two steps would leave the memory and the file
+        // disagreeing about which runtime to start with.
+        let written = {
             let mut slot = match self.memory.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
             *slot = Some(memory.clone());
-        }
-        if let Err(err) = self.persist(&memory) {
+            self.persist(&memory)
+        };
+        if let Err(err) = written {
             eprintln!(
                 "scaricatore-di-porto: could not save the runtime memory to {} ({err})",
                 self.path.display()

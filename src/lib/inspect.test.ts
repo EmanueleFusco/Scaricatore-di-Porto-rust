@@ -3,14 +3,9 @@ import {
   CACHE_LIMIT,
   INSPECT_DEBOUNCE_MS,
   MetadataCache,
-  defaultResolution,
   inspectDelay,
-  isDeterminate,
   normaliseInspected,
-  resolutionOptions,
   secondsToClock,
-  speedMbits,
-  summarise,
   type Inspected,
   type VideoInfo,
 } from "$lib/inspect";
@@ -88,43 +83,6 @@ describe("clocks and speeds (spec §8.3)", () => {
     expect(secondsToClock(-1)).toBeNull();
     expect(secondsToClock(Number.NaN)).toBeNull();
   });
-
-  it("shows Mbit/s with two decimals, like the original", () => {
-    expect(speedMbits(131072)).toBe("1.00");
-    expect(speedMbits(0)).toBe("0.00");
-    expect(speedMbits(null)).toBeNull();
-    expect(speedMbits(-5)).toBeNull();
-  });
-
-  it("a bar is determinate exactly when there is a number", () => {
-    expect(isDeterminate(0)).toBe(true);
-    expect(isDeterminate(42.5)).toBe(true);
-    expect(isDeterminate(null)).toBe(false);
-    expect(isDeterminate(Number.NaN)).toBe(false);
-  });
-});
-
-describe("resolution options (spec §6.2, §2.9)", () => {
-  it("lists heights descending plus Best available", () => {
-    const options = resolutionOptions(video({ heights: [360, 1080, 720] }));
-    expect(options.map((option) => option.value)).toEqual(["1080", "720", "360", "best"]);
-    expect(options[3].height).toBeNull();
-  });
-
-  it("keeps vertical, ultrawide and 2:1 heights as they are", () => {
-    expect(resolutionOptions(video({ heights: [1920, 1080] }))[0].value).toBe("1920");
-    expect(resolutionOptions(video({ heights: [1440, 1080] }))[0].value).toBe("1440");
-  });
-
-  it("offers only Best when there are no heights at all", () => {
-    const options = resolutionOptions(video({ heights: [], hasVideo: false }));
-    expect(options).toEqual([{ value: "best", height: null }]);
-  });
-
-  it("preselects the highest, else Best", () => {
-    expect(defaultResolution(video({ heights: [720, 1080] }))).toBe("1080");
-    expect(defaultResolution(video({ heights: [] }))).toBe("best");
-  });
 });
 
 describe("inspectDelay() (spec §6.2, D76)", () => {
@@ -177,14 +135,5 @@ describe("the URL metadata cache (spec §2.9)", () => {
 
     cache.set("https://a", video({ degraded: false }));
     expect(cache.get("https://a")).toBeDefined();
-  });
-
-  it("summarise keeps the four fields the original cached", () => {
-    expect(summarise(video())).toEqual({
-      title: "Title",
-      duration: 213,
-      heights: [1080, 720, 360],
-      site: "Youtube",
-    });
   });
 });
