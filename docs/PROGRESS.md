@@ -2475,3 +2475,39 @@ came from reading the code with those tests in hand.
      1/2" stage detail on the card, `size`, the right-click context menu, the
      dead M1 frontend code (`jobStore`, `inspectStore`, `job.ts`).
   3. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / new items stay FIFO, the list shows where they went
+- **Done**
+  - The user asked whether new links should be added on top. Answered no, and
+    recorded why (D104): a playlist of forty would be starved by every link
+    added after it. The order stays the order items were added; **Scarica**
+    keeps its priority over what is *waiting*, and **Sposta in cima** does the
+    same for one card later.
+  - The real gap was feedback, so: the store remembers the just-added ids
+    (`queueStore.flash`), the list scrolls to the first one **only when it is
+    not already visible** and to the nearest edge, the new rows pulse for 2.5 s
+    (accent ring; off under `prefers-reduced-motion`), and the count line is a
+    `role="status"` region so the growth is announced.
+  - New pure helper with tests: `scrollOffsetFor(index, pitch, scrollTop,
+    viewport)` — the "nearest edge" arithmetic, computed from the virtualiser's
+    numbers because the target row usually has no element yet.
+- **Verified by running**
+  - `npm test`: **218** green (217 + the scroll arithmetic, including the
+    already-visible, above, below, first-row and rolled-off cases).
+    `npm run check`: 0 errors, 0 warnings. `npm run build`: ok (186,30 kB,
+    57,19 kB gzipped).
+  - Rust untouched since the last green run (`fmt`, `clippy -D warnings`, 414
+    tests, 3 ignored).
+- **Not verified / stubbed**
+  - **Still not clicked**: the scroll and the pulse need a real window; that is
+    the user's next check. What to look at: with the list scrolled up, add a
+    link — the list must glide to the new row and pulse it; add one while it is
+    already visible — the list must not move.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D104.
+- **Next step**
+  1. The user's re-test (the scroll, the pulse, the not-moving-when-visible).
+  2. The open items from the M1/M2 audit: the Deno install offer, the "Video
+     1/2" stage detail, `size`, the right-click context menu, the dead M1
+     frontend code.
+  3. Then M3 (playlists and other sites).

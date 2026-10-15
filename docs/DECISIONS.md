@@ -2764,3 +2764,32 @@ The status footer also learned the difference between "all done" and "not
 finished": with parked or failed items and nothing running it says `1 in pausa`
 or `2 falliti` instead of `Fatto`, and it is `flex: none` so it cannot be
 squeezed.
+
+### D104 — New items keep FIFO, and the list shows you where they went
+
+The user asked whether the newest links should go on top instead of at the end.
+The answer is no, and the reason is the batch: with "newest first", a playlist
+of forty (M3) would be starved by every single link added while it waits — the
+classic LIFO starvation, on exactly the case the queue exists for. Order stays
+the order items were added (spec §7.3: the scheduler picks the first runnable
+item), and the two explicit escapes stay what they are: **Scarica** moves the
+new items ahead of everything *waiting* (§11.3 "Start immediately") and
+**Sposta in cima** does it for one card later. Nothing already running is
+overtaken: that would mean cancelling it.
+
+What was really wrong was the feedback: with a long list, an appended row lands
+below the visible ones and looks like it went nowhere. So the queue store
+remembers the ids it just added (`flash`), and the list:
+
+- scrolls to the first of them, **only if it is not already in view**, and to
+  the nearest edge — the offset comes from `scrollOffsetFor()`, the same pure
+  arithmetic the pads use, because a virtualised row that is off-screen has no
+  element to ask;
+- keeps them highlighted for 2.5 s (`.item--new`, an accent ring pulsing twice,
+  off under `prefers-reduced-motion`), so the eye finds the row it just pasted;
+- the count line is a `role="status"` region, so a screen reader hears the
+  queue grow even when the new row is out of sight.
+
+Smooth scrolling is skipped under `prefers-reduced-motion`; an id that rolled
+off the history cap is "nowhere" rather than row zero, which `scrollOffsetFor`
+pins with a test.
