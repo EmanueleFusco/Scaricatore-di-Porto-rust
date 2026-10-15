@@ -2360,5 +2360,5 @@ came from reading the code with those tests in hand.
   1. The manual check listed at the end of the M2 block (paste several links,
      watch two downloads, pause/resume/cancel, restart and Resume, the two
      caps, the notification) — still the only thing missing before the phase
-     can be called done.
+     can be called done. **S7** was added for the crash case (D91).
   2. Then M3 (playlists and other sites).
