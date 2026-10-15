@@ -1,459 +1,600 @@
-//! M2 IPC tests: the queue's commands, state and events (spec §3, §15).
+//! IPC-level tests for the M2 commands, through the real Tauri handlers.
 //!
-//! Same approach as `m1_ipc.rs` — the fake yt-dlp is the resolved tool, so the
-//! whole path (`queue_add` → engine → `queue:update`) runs offline, without a
-//! window and without touching the real settings of the developer machine.
+//! Same `MockRuntime` pattern as `m1_ipc.rs`: real argument deserialisation,
+//! real `State` lookup, real error serialisation — no window, no network, no
+//! real tool. The behaviour of the engine with a running process is in
+//! `queue_engine.rs` (fake tool); this file covers what only exists here: the
+//! **wire shapes** of `inspect_urls`, `queue_add` and `read_links_file`, and the
+//! refusal paths that must never reach a process.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use scaricatore_di_porto_lib::error::ErrorInfo;
-use scaricatore_di_porto_lib::services::inspect::{ResolvedRuntime, Runtimes};
-use scaricatore_di_porto_lib::services::job::JobEnvironment;
-use scaricatore_di_porto_lib::services::jsruntime::{
-    JsRuntimeMode, RuntimeKind, RuntimeMemoryStore,
-};
-use scaricatore_di_porto_lib::services::queue::engine::{
-    AddRequest, BoxFuture, EngineConfig, Outcome, QueueEngine, ToolProvider,
-};
+use scaricatore_di_porto_lib::services::queue::engine::{EngineConfig, QueueEngine};
 use scaricatore_di_porto_lib::services::queue::events::QueueUpdate;
-use scaricatore_di_porto_lib::services::queue::model::{
-    ItemOptions, ItemState, Kind, LaneConfig, QualityChoice,
-};
-use scaricatore_di_porto_lib::state::{AppState, Settings};
+use scaricatore_di_porto_lib::services::queue::model::LaneConfig;
+use scaricatore_di_porto_lib::state::AppState;
+use serde_json::json;
+use tauri::ipc::{CallbackFn, InvokeBody};
+use tauri::test::{MockRuntime, get_ipc_response, mock_builder, mock_context, noop_assets};
+use tauri::webview::InvokeRequest;
+use tauri::{Manager, WebviewWindow};
 use tempfile::TempDir;
 
-/// The `fake_ytdlp` example `cargo test` builds next to this test binary.
-fn fake_ytdlp_source() -> PathBuf {
+fn request(cmd: &str, body: serde_json::Value) -> InvokeRequest {
+    InvokeRequest {
+        cmd: cmd.into(),
+        callback: CallbackFn(0),
+        error: CallbackFn(1),
+        url: if cfg!(any(windows, target_os = "android")) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .expect("valid ipc url"),
+        body: InvokeBody::Json(body),
+        headers: Default::default(),
+        invoke_key: tauri::test::INVOKE_KEY.to_string(),
+    }
+}
+
+/// The fake yt-dlp copied under the names the lookup expects (same helper shape
+/// as `m1_ipc.rs`, kept here so the two files do not share a module).
+fn fake_tool_environment(root: &Path) -> scaricatore_di_porto_lib::state::ToolContext {
     let profile_dir = std::env::current_exe()
-        .expect("the test binary has a path")
+        .expect("test binary path")
         .parent()
         .and_then(Path::parent)
-        .expect("the test binary lives in <profile>/deps/")
+        .expect("<profile>/deps")
         .to_path_buf();
-    let mut path = profile_dir.join("examples").join("fake_ytdlp");
+    let mut source = profile_dir.join("examples").join("fake_ytdlp");
     if cfg!(windows) {
-        path.set_extension("exe");
+        source.set_extension("exe");
     }
     assert!(
-        path.is_file(),
-        "the fake_ytdlp example was not built next to the tests (looked for {}).\n\
-         Run the suite as `cargo test`.",
-        path.display()
+        source.is_file(),
+        "run the suite as `cargo test`: {}",
+        source.display()
     );
-    path
-}
 
-/// Resolves every item to the same fake binary.
-struct FakeTools {
-    ytdlp: PathBuf,
-    memory: Arc<RuntimeMemoryStore>,
-}
-
-impl ToolProvider for FakeTools {
-    fn environment(&self, options: ItemOptions) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
-        let _ = std::fs::create_dir_all(&options.output_dir);
-        let environment = JobEnvironment {
-            ytdlp: self.ytdlp.clone(),
-            ffmpeg: Some(self.ytdlp.clone()),
-            runtimes: Runtimes {
-                mode: JsRuntimeMode::QuickJsOnly,
-                qjs: Some(ResolvedRuntime {
-                    path: self.ytdlp.clone(),
-                    version: Some("0.17.0".into()),
-                }),
-                deno: None,
-                ytdlp_version: "2026.08.19".into(),
-            },
-            memory: Arc::clone(&self.memory),
-            private_temp: None,
-            youtube_clients: None,
-        };
-        Box::pin(std::future::ready(Ok(environment)))
+    let triple =
+        scaricatore_di_porto_lib::services::manifest::current_target_triple().expect("triple");
+    let bundled = root.join("bundled");
+    std::fs::create_dir_all(&bundled).expect("bundled dir");
+    for tool in ["yt-dlp", "qjs", "ffmpeg"] {
+        let mut name = format!("{tool}-{triple}");
+        if cfg!(windows) {
+            name.push_str(".exe");
+        }
+        std::fs::copy(&source, bundled.join(name)).expect("copy the fake");
     }
+    scaricatore_di_porto_lib::state::ToolContext::in_dir(root)
 }
 
-struct Fixture {
-    dir: TempDir,
-    state: AppState,
-    /// The `queue:update` events the sink collected.
-    events: Arc<Mutex<Vec<QueueUpdate>>>,
-}
-
-/// The settings are written **before** the engine opens, which is the order
-/// `setup` uses (spec §7.2: the lanes come from the settings that were just
-/// read).
-fn fixture(settings: Settings) -> Fixture {
-    let dir = TempDir::new().expect("temp dir");
-
-    let mut ytdlp = dir.path().join("yt-dlp");
-    if cfg!(windows) {
-        ytdlp.set_extension("exe");
-    }
-    std::fs::copy(fake_ytdlp_source(), &ytdlp).expect("copy the fake");
-    scaricatore_di_porto_lib::services::tools::make_executable(&ytdlp).expect("chmod +x");
-
-    let state = AppState::from_path_with_tools(
-        dir.path().join("settings.json"),
-        scaricatore_di_porto_lib::state::ToolContext::in_dir(dir.path()),
-    )
-    .expect("state loads");
-    // Spec §7.2: the lanes come from the settings that were just read, so the
-    // engine is opened **after** them — the order `setup` uses.
-    let lanes = if settings == Settings::default() {
-        LaneConfig::default()
-    } else {
-        state
-            .save_settings(settings)
-            .expect("the settings are saved");
-        state.settings().lane_config()
-    };
-
-    let events: Arc<Mutex<Vec<QueueUpdate>>> = Arc::new(Mutex::new(Vec::new()));
+/// An app with the M1 and M2 commands, the fake tools and a queue that is
+/// **not started** (the tests here never need a running download).
+fn app_in(dir: &Path) -> tauri::App<MockRuntime> {
+    let tools = fake_tool_environment(dir);
+    let state =
+        AppState::from_path_with_tools(dir.join("settings.json"), tools).expect("state loads");
     let engine = QueueEngine::open(EngineConfig {
-        path: dir.path().join("queue.json"),
-        provider: Arc::new(FakeTools {
-            ytdlp,
-            memory: Arc::new(RuntimeMemoryStore::load(
-                dir.path().join("runtime-memory.json"),
-            )),
-        }),
-        sink: {
-            let events = Arc::clone(&events);
-            Arc::new(move |update: &QueueUpdate| {
-                if let Ok(mut events) = events.lock() {
-                    events.push(update.clone());
-                }
-            })
-        },
-        lanes,
+        path: dir.join("queue.json"),
+        provider: Arc::new(Unresolvable),
+        sink: Arc::new(|_: &QueueUpdate| {}),
+        lanes: LaneConfig::default(),
         notify_on_idle: false,
         notifier: None,
     });
     state.set_queue(engine);
 
-    Fixture { dir, state, events }
+    let app = mock_builder()
+        .invoke_handler(tauri::generate_handler![
+            scaricatore_di_porto_lib::commands::inspect::inspect_urls,
+            scaricatore_di_porto_lib::commands::queue::queue_list,
+            scaricatore_di_porto_lib::commands::queue::queue_add,
+            scaricatore_di_porto_lib::commands::queue::queue_cancel,
+            scaricatore_di_porto_lib::commands::queue::queue_pause,
+            scaricatore_di_porto_lib::commands::queue::queue_resume,
+            scaricatore_di_porto_lib::commands::queue::queue_retry,
+            scaricatore_di_porto_lib::commands::queue::queue_remove,
+            scaricatore_di_porto_lib::commands::queue::queue_reorder,
+            scaricatore_di_porto_lib::commands::queue::queue_move_to_top,
+            scaricatore_di_porto_lib::commands::queue::queue_clear_finished,
+            scaricatore_di_porto_lib::commands::queue::queue_lanes,
+            scaricatore_di_porto_lib::commands::queue::read_links_file,
+            scaricatore_di_porto_lib::commands::queue::app_set_language,
+            scaricatore_di_porto_lib::commands::settings::settings_get,
+            scaricatore_di_porto_lib::commands::settings::settings_save,
+        ])
+        .build(mock_context(noop_assets()))
+        .expect("mock app must build");
+    app.manage(state);
+    app
 }
 
-fn request(fx: &Fixture, url: &str, quality: QualityChoice) -> AddRequest {
-    AddRequest {
-        url: url.to_owned(),
-        title: Some("A title".into()),
-        site: Some("Youtube".into()),
-        duration_sec: Some(10),
-        options: ItemOptions {
-            kind: Kind::Video,
-            quality,
-            output_dir: fx.dir.path().join("out"),
-            ..ItemOptions::default()
-        },
-        group_id: None,
+/// A provider that refuses everything: these tests never start a download, and a
+/// provider that *could* would hide a mistake in the arguments.
+struct Unresolvable;
+
+impl scaricatore_di_porto_lib::services::queue::engine::ToolProvider for Unresolvable {
+    fn environment(
+        &self,
+        _options: scaricatore_di_porto_lib::services::queue::model::ItemOptions,
+    ) -> scaricatore_di_porto_lib::services::queue::engine::BoxFuture<
+        Result<
+            scaricatore_di_porto_lib::services::job::JobEnvironment,
+            scaricatore_di_porto_lib::error::ErrorInfo,
+        >,
+    > {
+        Box::pin(std::future::ready(Err(
+            scaricatore_di_porto_lib::error::ErrorInfo::new(
+                scaricatore_di_porto_lib::error::ErrorCode::Unsupported,
+                "this test never runs a download",
+            ),
+        )))
     }
 }
 
+fn webview(app: &tauri::App<MockRuntime>) -> WebviewWindow<MockRuntime> {
+    tauri::WebviewWindowBuilder::new(app, "main", Default::default())
+        .build()
+        .expect("mock webview must build")
+}
+
+fn call(
+    webview: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
+    get_ipc_response(webview, request(cmd, body)).map(|body| {
+        body.deserialize::<serde_json::Value>()
+            .expect("response must be JSON")
+    })
+}
+
+fn settings_file(dir: &Path) -> PathBuf {
+    dir.join("settings.json")
+}
+
+// ---------------------------------------------------------------------------
+// inspect_urls (spec §6.2: three in parallel, answers in order)
+// ---------------------------------------------------------------------------
+
 #[test]
-fn a_state_without_an_engine_says_so_instead_of_crashing() {
-    // Only the settings tests build a bare state; the queue commands must
-    // report the missing engine rather than unwrap a panic.
+fn inspect_urls_answers_one_row_per_url_in_the_order_it_was_sent() {
     let dir = TempDir::new().expect("temp dir");
-    let state = AppState::from_path(dir.path().join("settings.json")).expect("state loads");
-    assert!(state.queue().is_none());
-    let error = match state.require_queue() {
-        Err(error) => error,
-        // `QueueEngine` is not `Debug`, so `expect_err` cannot be used here.
-        Ok(_) => panic!("a bare state must not answer queue commands"),
-    };
-    assert_eq!(error.code, "UNSUPPORTED");
-    assert!(error.detail.unwrap_or_default().contains("queue"));
-}
+    let app = app_in(dir.path());
+    let window = webview(&app);
 
-#[test]
-fn an_empty_queue_lists_nothing_and_says_so() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    let snapshot = queue.snapshot();
-    assert!(snapshot.items.is_empty());
-    assert!(snapshot.groups.is_empty());
-    assert_eq!(snapshot.summary.total, 0);
-    assert!(!snapshot.summary.is_active());
-}
+    let answers = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "inspect_urls",
+            json!({
+                "requestId": 3,
+                "urls": [
+                    "https://youtu.be/first",
+                    "https://youtu.be/second",
+                    "file:///etc/passwd",
+                    "https://youtu.be/third"
+                ]
+            }),
+        )
+    })
+    .expect("inspect_urls must succeed");
 
-#[test]
-fn adding_the_same_link_twice_is_refused_and_can_be_forced() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    let quality = QualityChoice::Exact { height: 1080 };
-
-    let first = queue.add(
-        vec![request(&fx, "https://a.example/1", quality.clone())],
-        false,
+    let rows = answers.as_array().expect("an array of rows");
+    assert_eq!(rows.len(), 4, "one answer per URL, refusals included");
+    // Order is the request order, whatever finished first.
+    let urls: Vec<&str> = rows
+        .iter()
+        .map(|row| row["url"].as_str().expect("a url"))
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://youtu.be/first",
+            "https://youtu.be/second",
+            "file:///etc/passwd",
+            "https://youtu.be/third"
+        ]
     );
-    assert_eq!(first.added.len(), 1);
-    assert!(first.duplicates.is_empty());
-
-    let second = queue.add(
-        vec![request(&fx, "https://a.example/1", quality.clone())],
-        false,
-    );
-    assert!(
-        second.added.is_empty(),
-        "the same link with the same options"
-    );
-    assert_eq!(second.duplicates.len(), 1);
-    assert_eq!(second.duplicates[0].item_id, first.added[0]);
-
-    let forced = queue.add(vec![request(&fx, "https://a.example/1", quality)], true);
-    assert_eq!(forced.added.len(), 1, "the user said yes");
-    assert_eq!(queue.snapshot().items.len(), 2);
-}
-
-#[test]
-fn a_different_quality_makes_a_different_item() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    queue.add(
-        vec![request(&fx, "https://a.example/1", QualityChoice::Best)],
-        false,
-    );
-    let second = queue.add(
-        vec![request(
-            &fx,
-            "https://a.example/1",
-            QualityChoice::AudioOnly,
-        )],
-        false,
-    );
-    assert_eq!(second.added.len(), 1);
-    assert!(second.duplicates.is_empty());
-}
-
-#[test]
-fn the_lane_settings_of_the_document_reach_the_engine_and_survive_a_save() {
-    let fx = fixture(Settings {
-        parallel_downloads: 4,
-        per_host_cap: 3,
-        ..Settings::default()
-    });
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    assert_eq!(queue.lanes().download, 4);
-    assert_eq!(queue.lanes().per_host_cap, 3);
-
-    // Lowering them writes the file and reaches the engine without a restart.
-    let mut settings = fx.state.settings();
-    settings.parallel_downloads = 1;
-    settings.per_host_cap = 1;
-    fx.state.save_settings(settings).expect("the settings save");
-    assert_eq!(queue.lanes().download, 1);
-    assert_eq!(queue.lanes().per_host_cap, 1);
-}
-
-#[test]
-fn out_of_range_caps_are_clamped_by_the_document_before_the_engine_sees_them() {
-    let fx = fixture(Settings {
-        parallel_downloads: 99,
-        per_host_cap: 0,
-        ..Settings::default()
-    });
-    let settings = fx.state.settings();
-    assert_eq!(settings.parallel_downloads, 4, "spec §7.2 caps it at 4");
-    assert_eq!(settings.per_host_cap, 1, "zero would deadlock the queue");
-    // And the engine opened from those settings obeys them too.
-    let lanes = fx.state.require_queue().expect("queue").lanes();
-    assert_eq!(lanes.download, 4);
-    assert_eq!(lanes.per_host_cap, 1);
-}
-
-#[test]
-fn the_actions_are_idempotent_on_an_id_that_does_not_exist() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    assert_eq!(queue.cancel("nope"), Outcome::NotFound);
-    assert_eq!(queue.pause("nope"), Outcome::NotFound);
-    assert_eq!(queue.resume("nope"), Outcome::NotFound);
-    assert_eq!(queue.retry("nope"), Outcome::NotFound);
-    assert_eq!(queue.remove("nope"), Outcome::NotFound);
-    assert_eq!(queue.move_to_top("nope"), Outcome::NotFound);
-    // And the bulk ones answer with what they did, not with a failure.
-    assert!(queue.clear_finished().is_empty());
-    assert!(queue.retry_failed().is_empty());
-    assert!(queue.resume_all().is_empty());
-}
-
-#[test]
-fn a_corrupt_queue_file_keeps_a_backup_and_reports_the_recovery() {
-    let dir = TempDir::new().expect("temp dir");
-    let path = dir.path().join("queue.json");
-    std::fs::write(&path, "{ not json").expect("write");
-    let loaded = scaricatore_di_porto_lib::services::queue::store::load(&path);
-    assert!(loaded.file.items.is_empty(), "spec §7.4: start empty");
-    let recovery = loaded.recovery.expect("a recovery is reported");
-    assert_eq!(recovery.message_key(), "toast.queueRecovered");
-    assert!(
-        recovery.backup_path.is_some_and(|backup| backup.is_file()),
-        "the broken document stays for the human"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn adding_an_item_emits_it_as_an_event_the_frontend_can_patch() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    // The flusher is a task, so the engine has to be started inside a runtime.
-    queue.start();
-    let added = queue.add(
-        vec![request(&fx, "https://a.example/1", QualityChoice::Best)],
-        false,
-    );
-    let id = added.added[0].clone();
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let seen = fx.events.lock().expect("events").clone();
-        if seen
-            .iter()
-            .any(|update| update.items.iter().any(|item| item.id == id))
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the added item never arrived as an event: {seen:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    // Three of them are the canned video document.
+    for row in rows
+        .iter()
+        .filter(|row| row["url"].as_str() != Some("file:///etc/passwd"))
+    {
+        assert_eq!(row["inspected"]["kind"], "video");
+        assert!(row["error"].is_null());
     }
-    queue.shutdown();
+    // The refused one is a row with an error, not a failed batch: a paste of ten
+    // links with one bad one must not lose the other nine (spec §2.2).
+    let refused = &rows[2];
+    assert!(refused["inspected"].is_null());
+    assert_eq!(refused["error"]["code"], "UNSUPPORTED");
 }
 
 #[test]
-fn an_item_added_through_the_state_is_persisted_and_the_file_survives() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    let added = queue.add(
-        vec![request(&fx, "https://a.example/1", QualityChoice::Best)],
-        false,
-    );
-    let id = added.added[0].clone();
-    assert!(fx.dir.path().join("queue.json").is_file());
+fn inspect_urls_of_nothing_is_an_empty_list_not_an_error() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
 
-    // A second engine over the same file is what a restart looks like.
-    let reopened = QueueEngine::open(EngineConfig {
-        path: fx.dir.path().join("queue.json"),
-        provider: Arc::new(FakeTools {
-            ytdlp: PathBuf::from("/nonexistent/yt-dlp"),
-            memory: Arc::new(RuntimeMemoryStore::load(
-                fx.dir.path().join("other-memory.json"),
-            )),
-        }),
-        sink: Arc::new(|_: &QueueUpdate| {}),
-        lanes: LaneConfig::default(),
-        notify_on_idle: false,
-        notifier: None,
-    });
-    let snapshot = reopened.snapshot();
-    assert_eq!(snapshot.items.len(), 1);
-    assert_eq!(snapshot.items[0].id, id);
-    assert_eq!(snapshot.items[0].state, ItemState::Queued);
+    let answers = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "inspect_urls",
+            json!({ "requestId": 1, "urls": [] }),
+        )
+    })
+    .expect("must succeed");
+    assert_eq!(answers.as_array().map(Vec::len), Some(0));
 }
 
-#[test]
-fn the_snapshot_is_the_shape_the_frontend_expects() {
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    queue.add(
-        vec![request(&fx, "https://a.example/1", QualityChoice::Best)],
-        false,
-    );
-    let json = serde_json::to_value(queue.snapshot()).expect("the snapshot is serialisable");
-    assert_eq!(json["seq"], 0);
-    assert_eq!(json["items"][0]["state"], "queued");
-    assert_eq!(json["items"][0]["url"], "https://a.example/1");
-    // The summary is what the footer reads (spec §7.5).
-    assert!(json["summary"]["queued"].is_number());
-    assert!(json["summary"]["parallelDownloads"].is_number());
-    assert_eq!(json["summary"]["parallelDownloads"], 2);
-    // And the frontend never has to guess what a missing optional means.
-    assert!(json["items"][0]["file"].is_null());
-    assert!(json["items"][0]["error"].is_null());
-}
+// ---------------------------------------------------------------------------
+// queue_add / queue_list (spec §7.3)
+// ---------------------------------------------------------------------------
 
 #[test]
-fn the_runtime_mode_and_cookies_are_frozen_into_the_item() {
-    // Spec §7.1: the options are a snapshot, so a later settings change cannot
-    // alter queued work.
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    let mut options = ItemOptions {
-        kind: Kind::Audio,
-        quality: QualityChoice::AudioOnly,
-        output_dir: fx.dir.path().join("out"),
-        ..ItemOptions::default()
-    };
-    options.runtime_mode = JsRuntimeMode::DenoOnly;
-    queue.add(
-        vec![AddRequest {
-            url: "https://a.example/1".into(),
-            title: None,
-            site: None,
-            duration_sec: None,
-            options: options.clone(),
-            group_id: None,
-        }],
-        false,
-    );
+fn queue_add_refuses_a_non_http_url_and_keeps_the_others() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
 
-    let mut settings = fx.state.settings();
-    settings.js_runtime_mode = JsRuntimeMode::QuickJsOnly;
-    fx.state.save_settings(settings).expect("settings save");
+    let result = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [
+                    { "url": "javascript:alert(1)", "kind": "video", "quality": { "kind": "best" } },
+                    {
+                        "url": "https://a.example/1",
+                        "title": "One",
+                        "site": "Example",
+                        "durationSec": 12,
+                        "kind": "video",
+                        "quality": { "kind": "maxHeight", "height": 720 },
+                        "outputDir": out.display().to_string()
+                    }
+                ]
+            }),
+        )
+    })
+    .expect("queue_add must succeed");
 
-    let snapshot = queue.snapshot();
     assert_eq!(
-        snapshot.items[0].options.runtime_mode,
-        JsRuntimeMode::DenoOnly
+        result["added"].as_array().map(Vec::len),
+        Some(1),
+        "the non-http(s) link is ignored, not fatal (spec §2.2)"
     );
-    assert_eq!(snapshot.items[0].options.quality, QualityChoice::AudioOnly);
+    assert!(result["duplicates"].as_array().expect("array").is_empty());
+
+    // And the item really landed, with the options the request carried.
+    let snapshot = call(&window, "queue_list", json!({})).expect("queue_list must succeed");
+    let item = &snapshot["items"][0];
+    assert_eq!(item["url"], "https://a.example/1");
+    assert_eq!(item["title"], "One");
+    assert_eq!(item["site"], "Example");
+    assert_eq!(item["durationSec"], 12);
+    assert_eq!(item["state"], "queued");
+    assert_eq!(item["options"]["quality"]["kind"], "maxHeight");
+    assert_eq!(item["options"]["quality"]["height"], 720);
+    assert_eq!(item["options"]["kind"], "video");
+    assert_eq!(item["options"]["outputDir"], out.display().to_string());
+    assert_eq!(snapshot["summary"]["queued"], 1);
 }
 
 #[test]
-fn a_group_is_upserted_and_survives_the_file() {
-    use scaricatore_di_porto_lib::services::queue::model::QueueGroup;
+fn queue_add_reports_duplicates_and_the_second_call_forces_them() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
 
-    let fx = fixture(Settings::default());
-    let queue = fx.state.require_queue().expect("the queue is registered");
-    queue.upsert_group(QueueGroup {
-        id: "g1".into(),
-        title: "A playlist".into(),
-        folder: Some(fx.dir.path().join("out/A playlist")),
-        index: 0,
+    let item = json!({
+        "url": "https://www.a.example/1",
+        "kind": "video",
+        "quality": { "kind": "best" },
+        "outputDir": out.display().to_string()
     });
-    let snapshot = queue.snapshot();
-    assert_eq!(snapshot.groups.len(), 1);
-    assert_eq!(snapshot.groups[0].title, "A playlist");
+    let first = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({ "force": false, "items": [item] }),
+        )
+    })
+    .expect("must succeed");
+    assert_eq!(first["added"].as_array().map(Vec::len), Some(1));
+    let first_id = first["added"][0].as_str().expect("an id").to_owned();
 
-    let reopened = QueueEngine::open(EngineConfig {
-        path: fx.dir.path().join("queue.json"),
-        provider: Arc::new(FakeTools {
-            ytdlp: PathBuf::from("/nonexistent/yt-dlp"),
-            memory: Arc::new(RuntimeMemoryStore::load(
-                fx.dir.path().join("other-memory.json"),
-            )),
-        }),
-        sink: Arc::new(|_: &QueueUpdate| {}),
-        lanes: LaneConfig::default(),
-        notify_on_idle: false,
-        notifier: None,
-    });
-    assert_eq!(reopened.snapshot().groups.len(), 1);
+    // Same resource, different spelling: a duplicate, with the id that holds it.
+    let again = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [{
+                    "url": "https://a.example/1",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string()
+                }]
+            }),
+        )
+    })
+    .expect("must succeed");
+    assert!(again["added"].as_array().expect("array").is_empty());
+    assert_eq!(again["duplicates"][0]["itemId"], first_id);
+    assert_eq!(again["duplicates"][0]["url"], "https://a.example/1");
+
+    // "Add anyway" is the same call with `force`.
+    let forced = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": true,
+                "items": [{
+                    "url": "https://a.example/1",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string()
+                }]
+            }),
+        )
+    })
+    .expect("must succeed");
+    assert_eq!(forced["added"].as_array().map(Vec::len), Some(1));
+    let snapshot = call(&window, "queue_list", json!({})).expect("queue_list");
+    assert_eq!(snapshot["items"].as_array().map(Vec::len), Some(2));
 }
 
 #[test]
-fn the_runtime_memory_is_shared_between_the_state_and_the_provider() {
-    // The engine's provider is the one thing that talks to the settings, so
-    // this checks the seam itself: the same store, two clones.
-    let fx = fixture(Settings::default());
-    let memory = Arc::new(RuntimeMemoryStore::load(fx.dir.path().join("m.json")));
-    memory.remember("2026.08.19", Some("0.17.0"), RuntimeKind::Deno, 1_000);
+fn an_audio_only_quality_wins_over_the_kind_the_frontend_sent() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    // A row that says `kind: video` with an audio quality is a frontend bug; the
+    // audio selector is what must win, or yt-dlp would be asked for a video
+    // selector on an audio-only request (spec §8.2).
+    let result = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [{
+                    "url": "https://a.example/song",
+                    "kind": "video",
+                    "quality": { "kind": "audioOnly" },
+                    "outputDir": out.display().to_string()
+                }]
+            }),
+        )
+    })
+    .expect("must succeed");
+    assert_eq!(result["added"].as_array().map(Vec::len), Some(1));
+
+    let snapshot = call(&window, "queue_list", json!({})).expect("queue_list");
+    assert_eq!(snapshot["items"][0]["options"]["kind"], "audio");
     assert_eq!(
-        memory.get().map(|entry| entry.preferred),
-        Some(RuntimeKind::Deno)
+        snapshot["items"][0]["options"]["quality"]["kind"],
+        "audioOnly"
     );
+}
+
+#[test]
+fn the_actions_of_an_unknown_id_are_false_not_an_error() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    for cmd in [
+        "queue_cancel",
+        "queue_pause",
+        "queue_resume",
+        "queue_retry",
+        "queue_remove",
+        "queue_move_to_top",
+    ] {
+        let value = call(&window, cmd, json!({ "id": "nope" })).expect("must not fail");
+        assert_eq!(value, json!(false), "{cmd} on an unknown id");
+    }
+    // The bulk ones answer with what they did.
+    assert_eq!(
+        call(&window, "queue_clear_finished", json!({})).expect("must not fail"),
+        json!([])
+    );
+}
+
+#[test]
+fn reorder_and_move_to_top_change_the_order_over_the_wire() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let added = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [
+                    { "url": "https://a.example/1", "quality": { "kind": "best" }, "outputDir": out.display().to_string() },
+                    { "url": "https://a.example/2", "quality": { "kind": "best" }, "outputDir": out.display().to_string() },
+                    { "url": "https://a.example/3", "quality": { "kind": "best" }, "outputDir": out.display().to_string() }
+                ]
+            }),
+        )
+    })
+    .expect("must succeed");
+    let ids: Vec<String> = added["added"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|id| id.as_str().expect("an id").to_owned())
+        .collect();
+    assert_eq!(ids.len(), 3);
+
+    call(
+        &window,
+        "queue_reorder",
+        json!({ "ids": [ids[2], ids[1], ids[0]] }),
+    )
+    .expect("queue_reorder must succeed");
+    let snapshot = call(&window, "queue_list", json!({})).expect("queue_list");
+    let order: Vec<&str> = snapshot["items"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| item["id"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(
+        order,
+        vec![ids[2].as_str(), ids[1].as_str(), ids[0].as_str()]
+    );
+
+    assert_eq!(
+        call(&window, "queue_move_to_top", json!({ "id": ids[0] })).expect("must not fail"),
+        json!(true)
+    );
+    let snapshot = call(&window, "queue_list", json!({})).expect("queue_list");
+    assert_eq!(snapshot["items"][0]["id"], ids[0].as_str());
+}
+
+#[test]
+fn the_lane_settings_travel_to_the_frontend() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let lanes = call(&window, "queue_lanes", json!({})).expect("must succeed");
+    assert_eq!(lanes["parallelDownloads"], 2, "the spec §7.2 default");
+    assert_eq!(lanes["perHostCap"], 2, "the spec §6.4 default");
+}
+
+// ---------------------------------------------------------------------------
+// read_links_file (spec §2.2: drop a .txt of links)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_dropped_text_file_is_read_back_as_text() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let links = dir.path().join("links.txt");
+    std::fs::write(&links, "https://a.example/1\nhttps://b.example/2\n").expect("write");
+    let raw = call(
+        &window,
+        "read_links_file",
+        json!({ "path": links.display().to_string() }),
+    )
+    .expect("must succeed");
+    assert_eq!(raw, json!("https://a.example/1\nhttps://b.example/2\n"));
+}
+
+#[test]
+fn a_dropped_file_that_cannot_be_read_says_why() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let err = call(
+        &window,
+        "read_links_file",
+        json!({ "path": dir.path().join("nope.txt").display().to_string() }),
+    )
+    .expect_err("must fail");
+    assert_eq!(err["code"], "IO");
+    assert!(err["messageKey"].is_string());
+}
+
+// ---------------------------------------------------------------------------
+// app_set_language (spec §11.9 → §7.7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_webview_can_tell_the_backend_which_language_is_in_effect() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    call(&window, "app_set_language", json!({ "lang": "en" })).expect("must succeed");
+    assert_eq!(app.state::<AppState>().ui_lang().get().as_str(), "en");
+    call(&window, "app_set_language", json!({ "lang": "it" })).expect("must succeed");
+    assert_eq!(app.state::<AppState>().ui_lang().get().as_str(), "it");
+    // Nonsense falls back to Italian rather than to an empty notification.
+    call(&window, "app_set_language", json!({ "lang": "klingon" })).expect("must succeed");
+    assert_eq!(app.state::<AppState>().ui_lang().get().as_str(), "it");
+}
+
+// ---------------------------------------------------------------------------
+// The settings that feed the queue (spec §7.2, §6.4, §7.7, §11.3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let saved = call(&window, "queue_lanes", json!({})).expect("must succeed");
+    assert_eq!(saved["parallelDownloads"], 2);
+
+    // The four fields of M2, the way the frontend sends them: the whole
+    // document, read from `settings_get`, changed, saved with `settings_save`.
+    let view = call(&window, "settings_get", json!({})).expect("must succeed");
+    let mut document = view["settings"].clone();
+    assert_eq!(document["parallelDownloads"], 2, "the spec §7.2 default");
+
+    document["parallelDownloads"] = json!(3);
+    document["perHostCap"] = json!(4);
+    document["notifyOnIdle"] = json!(true);
+    document["pasteLinksAnywhere"] = json!(true);
+    let answer =
+        call(&window, "settings_save", json!({ "settings": document })).expect("must succeed");
+    assert_eq!(answer["settings"]["parallelDownloads"], 3);
+    assert_eq!(answer["settings"]["perHostCap"], 4);
+    assert_eq!(answer["settings"]["notifyOnIdle"], true);
+    assert_eq!(answer["settings"]["pasteLinksAnywhere"], true);
+    assert_eq!(answer["settings"]["schemaVersion"], 4, "M2's schema");
+
+    // And the engine was told, without a restart.
+    let lanes = call(&window, "queue_lanes", json!({})).expect("must succeed");
+    assert_eq!(lanes["parallelDownloads"], 3);
+    assert_eq!(lanes["perHostCap"], 4);
+
+    // Out of range is clamped on the way in, so the document can never hold a
+    // value the scheduler would refuse (spec §7.2) — and what comes back is
+    // what was written, so the UI shows the effective value.
+    let mut document =
+        call(&window, "settings_get", json!({})).expect("must succeed")["settings"].clone();
+    document["parallelDownloads"] = json!(99);
+    document["perHostCap"] = json!(0);
+    let answer =
+        call(&window, "settings_save", json!({ "settings": document })).expect("must succeed");
+    assert_eq!(answer["settings"]["parallelDownloads"], 4);
+    assert_eq!(answer["settings"]["perHostCap"], 1);
+
+    // The same document is on disk: a restart reads what the engine is using.
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings_file(dir.path())).expect("read"))
+            .expect("settings.json is JSON");
+    assert_eq!(on_disk["parallelDownloads"], 4);
+    assert_eq!(on_disk["perHostCap"], 1);
+    assert_eq!(on_disk["schemaVersion"], 4);
 }
