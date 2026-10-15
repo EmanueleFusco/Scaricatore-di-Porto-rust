@@ -215,6 +215,31 @@ class QueueStore {
     return this.pendingDuplicates.length > 0;
   }
 
+  /**
+   * Ids that were just added, for the list to scroll to and flash (D104).
+   *
+   * The queue keeps the order the items were added in — FIFO, because a batch
+   * (a playlist, in M3) must not be starved by every link added after it — so a
+   * new item can land below the visible rows and look like it went nowhere.
+   * This is the feedback that fixes that, without touching the order.
+   */
+  flashIds = $state<string[]>([]);
+  #flashTimer: ReturnType<typeof setTimeout> | null = null;
+
+  flash(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    this.flashIds = [...ids];
+    if (this.#flashTimer !== null) clearTimeout(this.#flashTimer);
+    this.#flashTimer = setTimeout(() => {
+      this.flashIds = [];
+      this.#flashTimer = null;
+    }, 2500);
+  }
+
+  isFlashing(id: string): boolean {
+    return this.flashIds.includes(id);
+  }
+
   dismissDuplicates(): void {
     this.pendingDuplicates = [];
   }

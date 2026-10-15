@@ -123,6 +123,7 @@
 <li
   class="item"
   class:item--expanded={expanded}
+  class:item--new={queueStore.isFlashing(item.id)}
   data-state={item.state}
   draggable="true"
   ondragstart={onDragStart}
@@ -263,6 +264,22 @@
     border-color: var(--border-strong);
   }
 
+  /* Just added: a pulse the eye catches where the row appears (D104). */
+  .item--new {
+    border-color: var(--accent);
+    animation: item-flash 1.1s ease-in-out 2;
+  }
+
+  @keyframes item-flash {
+    0%,
+    100% {
+      box-shadow: 0 0 0 2px var(--accent);
+    }
+    50% {
+      box-shadow: 0 0 0 2px transparent;
+    }
+  }
+
   .item__head {
     display: flex;
     gap: var(--space-2);
@@ -371,6 +388,10 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .item--new {
+      animation: none;
+    }
+
     .item__bar-fill {
       transition: none;
       animation: none !important;

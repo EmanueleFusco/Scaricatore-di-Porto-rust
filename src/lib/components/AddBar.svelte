@@ -112,6 +112,7 @@
       if (result.added.length > 0) {
         addBarStore.clearAdded();
         queueStore.dismissDuplicates();
+        queueStore.flash(result.added);
         if (mode === "download") await queueStore.prioritize(result.added);
       }
     } finally {
@@ -122,8 +123,9 @@
   async function addAnyway(): Promise<void> {
     busy = "adding";
     try {
-      await queueStore.addAnyway();
+      const result = await queueStore.addAnyway();
       addBarStore.clearAdded();
+      queueStore.flash(result.added);
     } finally {
       busy = "";
     }

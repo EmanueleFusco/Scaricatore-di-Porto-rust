@@ -672,6 +672,28 @@ export function barPercentFor(item: QueueItem): number {
   return item.state === "done" ? 100 : 0;
 }
 
+/**
+ * Where to scroll so the row at `index` is fully in view, or `null` when it
+ * already is.
+ *
+ * "Nearest" semantics, computed from the virtualiser's own numbers instead of
+ * the DOM: the row being scrolled to is usually **not rendered yet**, so there
+ * is no element to ask. `-1` (an item that rolled off the history cap) is
+ * "nowhere", not "row zero".
+ */
+export function scrollOffsetFor(
+  index: number,
+  pitch: number,
+  scrollTop: number,
+  viewport: number,
+): number | null {
+  if (index < 0 || pitch <= 0) return null;
+  const top = index * pitch;
+  const bottom = top + pitch;
+  if (top >= scrollTop && bottom <= scrollTop + viewport) return null;
+  return Math.max(0, top < scrollTop ? top : bottom - viewport);
+}
+
 /** A finished item whose resolution is lower than requested (spec §11.5). */
 export function heightWarning(
   item: QueueItem,

@@ -29,6 +29,7 @@ import {
   qualityKey,
   qualityLabel,
   secondsToClock,
+  scrollOffsetFor,
   speedMbits,
   stateKey,
   statusKindFor,
@@ -443,6 +444,20 @@ describe("the virtualised list", () => {
   it("does not go below the start when scrolled to the top", () => {
     const range = visibleRange(-50, HEIGHT, ROW, 10);
     expect(range.first).toBe(0);
+  });
+
+  it("scrolls to a new row only when it is out of sight, and to the nearest edge", () => {
+    // Already fully visible: the list must not move under the user's eyes.
+    expect(scrollOffsetFor(2, 100, 150, 400)).toBeNull();
+    // Below the viewport: the row's bottom lands on the viewport's bottom.
+    expect(scrollOffsetFor(6, 100, 0, 400)).toBe(300);
+    // Above it: the row's top goes to the top.
+    expect(scrollOffsetFor(1, 100, 500, 400)).toBe(100);
+    // The first row can never ask for a negative offset.
+    expect(scrollOffsetFor(0, 100, 500, 400)).toBe(0);
+    // An item that rolled off the history cap is nowhere, not row zero.
+    expect(scrollOffsetFor(-1, 100, 0, 400)).toBeNull();
+    expect(scrollOffsetFor(3, 0, 0, 400)).toBeNull();
   });
 });
 

@@ -9,7 +9,7 @@
 <script lang="ts">
   import QueueItemRow from "$lib/components/QueueItem.svelte";
   import { untrack } from "svelte";
-  import { visibleItems, visibleRange } from "$lib/queue";
+  import { scrollOffsetFor, visibleItems, visibleRange } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
 
@@ -71,6 +71,31 @@
     void shown;
     untrack(() => measureRow());
   });
+
+  /**
+   * Bring a freshly added row into view (D104).
+   *
+   * New items keep their place at the end of the queue — FIFO, so a batch is
+   * never starved by the links added after it — which means the row can land
+   * below the visible ones and look like it went nowhere. The row is usually
+   * not rendered yet (the list is virtualised), so the offset comes from the
+   * same numbers the pads use, not from an element.
+   */
+  $effect(() => {
+    const ids = queueStore.flashIds;
+    if (ids.length === 0) return;
+    untrack(() => {
+      const element = scroller;
+      if (element === null) return;
+      const index = items.findIndex((item) => item.id === ids[0]);
+      const offset = scrollOffsetFor(index, rowHeight, element.scrollTop, element.clientHeight);
+      if (offset === null) return;
+      const reduced =
+        typeof window !== "undefined" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      element.scrollTo({ top: offset, behavior: reduced ? "auto" : "smooth" });
+    });
+  });
 </script>
 
 <section class="list" aria-label={tt("a11y.queueList")}>
@@ -90,7 +115,7 @@
   </div>
 
   {#if items.length > 0}
-    <p class="list__count">{ttCount("queue.list.count", items.length)}</p>
+    <p class="list__count" role="status">{ttCount("queue.list.count", items.length)}</p>
   {/if}
 </section>
 
