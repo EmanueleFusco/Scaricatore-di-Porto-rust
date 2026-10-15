@@ -2108,3 +2108,36 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
   1. Push the branch and re-run `ci`: `process tests` must be green on all three
      systems, and `bundle` must show the split Linux artifacts.
   2. Then the PR into `main`.
+
+## 2026-10-15 — CI / only the installable files travel, and a guard for the release
+- **Done**
+  - The user's run showed the split working (D109): three Linux artifacts instead
+    of one. The numbers it printed exposed the real weight problem (D111): the
+    `.deb` artifact was 127 MB for a 42 MB package and the AppImage 251 MB for a
+    148 MB file, because every upload used `bundle/**` and the bundlers leave the
+    **unpacked** package next to the installer (`deb/<name>/data/usr/…`,
+    `<name>.AppDir/`, `squashfs-root/`). A local build measured the trees: 88 MB,
+    359 MB and 46 MB.
+  - The uploads name files now (`deb/*.deb`, `rpm/*.rpm`, `appimage/*.AppImage*`,
+    `nsis/*.exe`, `dmg/*.dmg`, `*.app.zip`).
+  - The `release` job gained the guard **"Only installers reached the release"**:
+    after the flatten step it walks `assets/` and fails when a file that is not
+    an installer, `SHA256SUMS` or `latest.json` is there. Without it a tag would
+    have attached those trees to the draft release too.
+- **Verified by running**
+  - `npx vitest run scripts/ci-steps.test.mjs`: **10 passed** (7 existing + 3
+    new: installers only → ok, the flattened application binary → fails with its
+    name in the message, a nested staging file → fails).
+  - `node scripts/check-ci-syntax.mjs`: 11 `run:` blocks valid (the guard is one
+    of them).
+  - The sizes come from the local build in `src-tauri/target/release/bundle/`:
+    `.deb` 42 MB + 88 MB of staging, AppImage 148 MB + 359 MB of `AppDir`.
+- **Not verified / stubbed**
+  - **The GitHub run**: the artifact sizes on the next run are the proof
+    (expected: `.deb` ≈ 42 MB, `.rpm` ≈ 42 MB, `.AppImage` ≈ 148 MB).
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D111.
+- **Next step**
+  1. Push, re-run `ci` on the branch, check the artifact sizes and that
+     `process tests` is green on all three systems.
+  2. Then the PR into `main` (the D77–D111 order note applies).
