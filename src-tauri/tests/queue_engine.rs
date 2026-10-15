@@ -320,25 +320,54 @@ fn json_id(id: &str) -> serde_json::Value {
 }
 
 /// The state **`queue.json`** gives an item, read from the disk and not from the
-/// engine, waiting for the engine to catch up.
+/// engine.
 ///
-/// The wait is not a fudge: an in-memory state change becomes visible to
-/// `snapshot()` a moment before the write that records it (the state lock is
-/// released before the file is touched, and never held across a write), and a
-/// polling test that woke up in that microsecond would read the *previous*
-/// document. So this waits for the file to leave `queued`, and the caller
-/// asserts the exact value it finds — which is only meaningful because the
-/// item's download is long enough for the read to land inside it.
-async fn state_after_the_start(fx: &Fixture, id: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let last = read_state_on_disk(fx, id);
-        if last.as_deref().is_some_and(|state| state != "queued") {
-            return last.expect("just checked");
-        }
+/// Whoever reads this must have a reason to know the file is up to date: an
+/// in-memory state change becomes visible to `snapshot()` a moment before the
+/// write that records it (the state lock is released before the file is
+/// touched, and never held across a write). Two tests have raced that window —
+/// one reading right after `snapshot()`, one hoping the download outlived the
+/// poller — and the CI won both; the answer is `wait_for_path` below, or a wait
+/// on the value, never a margin.
+fn read_state_on_disk(fx: &Fixture, id: &str) -> Option<String> {
+    let raw = fs::read_to_string(&fx.queue_path).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    document["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"] == json_id(id))?
+        .get("state")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The size **`queue.json`** gives an item, or `None` while the write that
+/// records it is still in flight.
+fn size_on_disk(fx: &Fixture, id: &str) -> Option<u64> {
+    let raw = fs::read_to_string(&fx.queue_path).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    document["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"] == json_id(id))?
+        .get("sizeBytes")?
+        .as_u64()
+}
+
+/// Wait for a file to appear, with a deadline that says what was expected.
+///
+/// The fake tools announce themselves by writing a marker while they are still
+/// running, and waiting for **that** is what makes a test about "what the file
+/// says while an item runs" independent of how busy the machine is. The CI
+/// proved the alternative — a download long enough to be read — is a hope: a
+/// starved poller can wake up after the tool has finished.
+async fn wait_for_path(path: &std::path::Path, what: &str, within: Duration) {
+    let deadline = Instant::now() + within;
+    while !path.is_file() {
         assert!(
             Instant::now() < deadline,
-            "the file never recorded {id} as running; it says {last:?}"
+            "{what}: {} never appeared",
+            path.display()
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -422,18 +451,6 @@ async fn wait_until_quiet(engine: &QueueEngine, id: &str) {
         Duration::from_secs(20),
     )
     .await;
-}
-
-fn read_state_on_disk(fx: &Fixture, id: &str) -> Option<String> {
-    let raw = fs::read_to_string(&fx.queue_path).ok()?;
-    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    document["items"]
-        .as_array()?
-        .iter()
-        .find(|item| item["id"] == json_id(id))?
-        .get("state")?
-        .as_str()
-        .map(str::to_owned)
 }
 
 // ---------------------------------------------------------------------------
@@ -796,22 +813,21 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
         let ids = engine
             .add(
                 vec![
-                    // A download with a **clock** the test sets, so the
-                    // assertions below are never racing a 400 ms fake that can
-                    // finish underneath them. Eight seconds is the margin: it
-                    // has to survive a loaded machine that gets no CPU for a
-                    // while, and the resume at the end waits it out.
-                    fx.request("https://a.example/veryslow-8000"),
-                    fx.request("https://b.example/veryslow-8000"),
+                    // The fake writes a marker while it runs and then sleeps
+                    // (see `.fake-veryslow-started`): the test waits for the
+                    // marker, so the file read below lands inside the run
+                    // whatever the machine is doing. The duration is only how
+                    // long the window stays open.
+                    fx.request("https://a.example/veryslow-1500"),
+                    fx.request("https://b.example/veryslow-1500"),
                 ],
                 false,
             )
             .added;
-        wait_for(
-            &engine,
-            "the first item to start",
-            |snapshot| state_of(snapshot, &ids[0]) == Some(ItemState::Downloading),
-            Duration::from_secs(20),
+        wait_for_path(
+            &fx.out.join(".fake-veryslow-started"),
+            "the first item's tool to start",
+            Duration::from_secs(30),
         )
         .await;
         // The file, read **while the tool runs**: this is what a crash (`kill
@@ -820,8 +836,8 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
         // said "queued" here would come back from the next launch as an item
         // nobody had started, and the queue would download it again by itself.
         assert_eq!(
-            state_after_the_start(&fx, &ids[0]).await,
-            "downloading",
+            read_state_on_disk(&fx, &ids[0]).as_deref(),
+            Some("downloading"),
             "a running item is on disk as running, never as queued"
         );
         // This is what closing the app mid-download looks like: cancel the
@@ -1342,8 +1358,20 @@ async fn a_finished_item_carries_the_size_of_the_file_it_produced() {
         "the size comes from the file on disk"
     );
 
-    // And it survives the round trip through `queue.json`: a fresh engine over
-    // the same file still knows it.
+    // And it survives the round trip through `queue.json`. The write lands a
+    // moment after the state changes in memory, so the round trip waits for it
+    // instead of assuming it: the first version of this test read the file
+    // right away, and the CI won that race.
+    let expected = Some(b"fake media bytes".len() as u64);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while size_on_disk(&fx, &ids[0]) != expected {
+        assert!(
+            Instant::now() < deadline,
+            "queue.json never recorded the size: {:?}",
+            size_on_disk(&fx, &ids[0])
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     let reopened = fx.idle_engine();
     let again = reopened.snapshot();
     let item = again
@@ -1351,7 +1379,7 @@ async fn a_finished_item_carries_the_size_of_the_file_it_produced() {
         .iter()
         .find(|item| item.id == ids[0])
         .expect("still there");
-    assert_eq!(item.size_bytes, Some(b"fake media bytes".len() as u64));
+    assert_eq!(item.size_bytes, expected);
 
     engine.shutdown();
     wait_until_quiet(&engine, &ids[0]).await;

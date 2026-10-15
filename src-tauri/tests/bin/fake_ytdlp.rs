@@ -310,13 +310,17 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         emit_download_line("downloading", 1024, 1024, "vp9");
         sleep_forever();
     }
-    // A download that is slow on a **clock** rather than on progress: long
-    // enough that a test can read the queue file, do its assertions and still
-    // be sure the item is the one it started. The short "slow" downloads are
-    // 400 ms, which is over before a loaded machine has finished a single
-    // assertion, and a test that reads "is it still running?" then has a race
-    // with the tool finishing underneath it. `veryslow-<ms>` is how long it
-    // takes, so the test asks for exactly the margin it needs.
+    // A download that is slow on a **clock** rather than on progress, for the
+    // test that has to read the queue file **while the tool runs**.
+    //
+    // The tool announces itself with a marker in the output folder and then
+    // sleeps: the test waits for the marker instead of hoping the tool is still
+    // alive when it gets around to reading. A margin alone does not work — the
+    // CI starved a poller past an 8 s one and read the file after the run had
+    // finished — while a marker cannot be missed: the app writes the state to
+    // disk *before* spawning us (D91), so any read taken while this process is
+    // alive says `downloading`. `veryslow-<ms>` is how long it then sleeps, and
+    // that is now only about how long the test wants to keep the window open.
     if url.contains("veryslow") {
         let millis = url
             .split("veryslow-")
@@ -330,6 +334,9 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
             })
             .unwrap_or(5_000);
         println!("SDP_FORMAT|137+140|1080|vp9|opus");
+        let home = home_dir(args);
+        let _ = std::fs::create_dir_all(&home);
+        let _ = std::fs::write(home.join(".fake-veryslow-started"), b"");
         // Twenty steps, so the progress line grows like a real download and
         // the watchdog of spec §5.3.2 has something to watch.
         let steps: u64 = 20;
@@ -339,8 +346,6 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         }
         emit_download_line("downloading", millis, millis, "vp9");
         eprintln!("SDP_PP|started|Merger");
-        let home = home_dir(args);
-        let _ = std::fs::create_dir_all(&home);
         let file = home.join(safe_name(url));
         let _ = std::fs::write(&file, b"fake media bytes");
         println!("SDP_FILE|{}", file.display());

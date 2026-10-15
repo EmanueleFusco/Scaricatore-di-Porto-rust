@@ -2599,3 +2599,48 @@ came from reading the code with those tests in hand.
   1. Push `m1-single-video`, `m2-queue` and (optionally) `main`, then the
      manual checks before merging `m2-queue` into `main`.
   2. M3.
+
+## 2026-10-15 — M2 / the first `ci` run on `main`: two tests were racing the disk
+- **Done**
+  - The `check` job on Linux failed two `queue_engine` tests. Both are **test-side
+    races**, not application bugs, and both are the class of D94: an in-memory
+    state change is visible a moment before the write that records it.
+    1. `a_finished_item_carries_the_size_of_the_file_it_produced` read
+       `queue.json` right after seeing the state in memory, so the round trip now
+       **waits for the size to appear on disk** with a deadline — exactly what the
+       other tests do for a state.
+    2. `the_queue_survives_a_restart_and_the_interrupted_item_can_resume` was
+       already a margin, raised 3 s → 8 s when it failed once before, and the CI
+       failed it again the same way (`done` where the test wanted `downloading`):
+       a starved poller read the file after the tool had finished. **No margin can
+       fix that**, so the fake now writes a marker in the output folder while it
+       is alive (`.fake-veryslow-started`) and the test waits for the marker
+       before reading. The app writes the state to disk *before* spawning the
+       tool (D91), so a read taken while the process runs can only say
+       `downloading`: the race is gone by construction.
+  - `state_after_the_start` is gone with it. It was the helper that encoded the
+    hope ("the item's download is long enough for the read to land inside it")
+    that the CI disproved; `read_state_on_disk` now carries the rule instead
+    ("whoever reads this must have a reason to know the file is up to date"),
+    and `wait_for_path` is the answer for "wait for the tool, not for the clock".
+  - The restart test's download is back to 1.5 s: it dropped from ~25 s to ~2 s,
+    and the marker is what makes the window deterministic.
+- **Verified by running**
+  - `cargo test --test queue_engine`: 22 green, 25,04 s; the binary's slowest test
+    is no longer this one.
+  - **Under a simulated CI load** (`taskset -c 0,1` with CPU hogs — the closest a
+    16-core machine gets to a 4-core runner): both tests 3/3 green, and a full
+    run of the binary 22/22 green.
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`: clean.
+    `cargo test`: **415 green**, 3 ignored. `npm test`: **204 green**.
+    `npm run check`: 0 errors, 0 warnings.
+- **Not verified / stubbed**
+  - **The GitHub runner itself**: the proof is the next `ci` run on `main`.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations**: none new. This is the third occurrence of D94's class
+  (D101 was the second), and the fix lives where the next reader meets it — in the
+  test file and in the fake — instead of another stretched margin.
+- **Next step**
+  1. Push, re-run `ci` on `main`: `check` green on the three systems.
+  2. Then the tag `v0.1.0` (the version is 0.1.0 in all three manifests) for the
+     draft release.
