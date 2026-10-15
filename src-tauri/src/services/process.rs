@@ -86,26 +86,76 @@ const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// used, exactly as the spec insists.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// How many times a spawn is retried when the kernel answers `ETXTBSY`.
+/// How long a spawn may be retried when the program is there but is not
+/// runnable **yet** (see [`is_text_file_busy`]).
 ///
-/// "Text file busy" is what Linux returns from `execve` when **anything** still
-/// holds the binary open for writing. It is transient by nature, and this
+/// Unix: "text file busy" is what Linux returns from `execve` when **anything**
+/// still holds the binary open for writing. It is transient by nature, and this
 /// project creates exactly the situation that provokes it: the first launch
-/// copies yt-dlp into the app data dir and runs it a moment later (spec
-/// §5.2.1). It is not hypothetical — the test suite hit it while running the
-/// tools lookup in parallel, and no `/proc` holder survived long enough to be
-/// observed, which is what "transient" looks like from the inside.
+/// copies yt-dlp into the app data dir and runs it a moment later (spec §5.2.1).
+/// It is not hypothetical — the test suite hit it while running the tools lookup
+/// in parallel, and no `/proc` holder survived long enough to be observed, which
+/// is what "transient" looks like from the inside.
 ///
 /// The alternative — reporting "yt-dlp not found" because the filesystem was
 /// busy for a few milliseconds — is the failure mode this avoids.
-pub const ETXTBSY_RETRIES: usize = 5;
+#[cfg(not(windows))]
+pub const SPAWN_BUSY_TOTAL: Duration = Duration::from_millis(100);
 
 /// Pause between those retries. Short: the writer closes in microseconds.
-pub const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+#[cfg(not(windows))]
+pub const SPAWN_BUSY_DELAY: Duration = Duration::from_millis(20);
 
-/// Is this the "the file is being written right now" error?
+/// Windows has no `ETXTBSY`, but it has the same situation under other names
+/// ([`is_text_file_busy`]): a **scanner** — antivirus, indexer — holds a freshly
+/// created or copied executable for a moment, and a scanner does not finish in
+/// 20 ms. The budget is a judgement, not a measurement; see D116.
+#[cfg(windows)]
+pub const SPAWN_BUSY_TOTAL: Duration = Duration::from_millis(1_000);
+
+/// Windows pause between those retries: long enough to let a scan finish, short
+/// enough that a genuinely broken tool still reports within a second.
+#[cfg(windows)]
+pub const SPAWN_BUSY_DELAY: Duration = Duration::from_millis(50);
+
+/// `ETXTBSY`: the binary is still open for writing (Linux and macOS).
+const ETXTBSY: i32 = 26;
+
+/// `ERROR_SHARING_VIOLATION`: another process holds the file open — the Windows
+/// spelling of "not runnable yet".
+#[cfg(windows)]
+const ERROR_SHARING_VIOLATION: i32 = 32;
+
+/// `ERROR_ACCESS_DENIED`: a scanner holds the file with a deny-share mode.
+#[cfg(windows)]
+const ERROR_ACCESS_DENIED: i32 = 5;
+
+/// Is this the "the file is there and not runnable *yet*" error?
+///
+/// Unix says `ETXTBSY` when the executable is still open for writing. Windows
+/// has no such errno, but it has the same situation under other names: a freshly
+/// created or copied executable is read by a scanner and `CreateProcessW`
+/// answers `ERROR_SHARING_VIOLATION`, or `ERROR_ACCESS_DENIED`, until it releases
+/// the file. The app copies yt-dlp and qjs into the app data dir and runs them a
+/// moment later (spec §5.2.1), which is exactly that situation.
+///
+/// The Windows codes are compared only on Windows: 32 and 5 are `EPIPE` and
+/// `EIO` elsewhere, and a real failure retried is a real failure reported later.
 pub fn is_text_file_busy(err: &io::Error) -> bool {
-    err.raw_os_error() == Some(26)
+    if err.raw_os_error() == Some(ETXTBSY) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        matches!(
+            err.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION) | Some(ERROR_ACCESS_DENIED)
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// Exit code handed to every process of a terminated Windows job. On Unix the
@@ -1033,7 +1083,9 @@ pub async fn spawn_with_sinks(cmd: ToolCommand, sinks: LineSinks) -> Result<Runn
     // Build the argv array once and re-create the `Command` per attempt: a
     // `Command` cannot be spawned twice, and the ETXTBSY retry needs a fresh one.
     let argv = cmd.argv();
-    let mut busy_attempts = 0;
+    // A budget, not a count: the same "not runnable yet" window has different
+    // lengths on the two OS families (`SPAWN_BUSY_TOTAL`).
+    let busy_until = Instant::now() + SPAWN_BUSY_TOTAL;
     let mut child = loop {
         let mut command = Command::new(&program);
         command
@@ -1051,9 +1103,10 @@ pub async fn spawn_with_sinks(cmd: ToolCommand, sinks: LineSinks) -> Result<Runn
 
         match command.spawn() {
             Ok(child) => break child,
-            Err(err) if is_text_file_busy(&err) && busy_attempts < ETXTBSY_RETRIES => {
-                busy_attempts += 1;
-                tokio::time::sleep(ETXTBSY_RETRY_DELAY).await;
+            Err(err) if is_text_file_busy(&err) && Instant::now() < busy_until => {
+                // The program is there and something else holds it: the writer
+                // closes, or the scanner finishes, within the budget.
+                tokio::time::sleep(SPAWN_BUSY_DELAY).await;
             }
             Err(err) => {
                 return Err(process_error(&format!("starting {program:?}"), err));
@@ -1512,21 +1565,51 @@ mod tests {
 
     #[test]
     fn text_file_busy_is_recognised_and_nothing_else_is() {
-        // errno 26 on Linux, and nothing else: mistaking another error for it
-        // would turn a real failure into a five-times-slower real failure.
+        // errno 26 on Linux and macOS, and nothing else: mistaking another error
+        // for it would turn a real failure into a slower real failure. 32 and 5
+        // are the *Windows* names of the same situation; here they are EPIPE and
+        // EIO, which must not be retried (the `#[cfg(windows)]` test below is
+        // the other half of this one).
         let busy = io::Error::from_raw_os_error(26);
         assert!(is_text_file_busy(&busy));
-        for other in [2, 13, 22, 27] {
+        for other in [2, 5, 13, 22, 27, 32] {
             assert!(!is_text_file_busy(&io::Error::from_raw_os_error(other)));
         }
         assert!(!is_text_file_busy(&io::Error::other("not an os error")));
     }
 
+    /// The Windows half: a scanner reading a freshly created executable makes
+    /// `CreateProcessW` answer this way, and it is the same "not runnable yet" as
+    /// `ETXTBSY` (D116).
+    #[cfg(windows)]
     #[test]
-    fn the_etxtbsy_retry_is_short_enough_to_stay_invisible() {
-        // The worst case must stay well inside the shortest timeout in the app,
-        // or the retry would buy nothing.
-        let worst = ETXTBSY_RETRY_DELAY * ETXTBSY_RETRIES as u32;
-        assert!(worst <= Duration::from_millis(250), "{worst:?} is too long");
+    fn windows_sharing_violations_are_the_same_not_runnable_yet() {
+        for code in [32, 5] {
+            assert!(
+                is_text_file_busy(&io::Error::from_raw_os_error(code)),
+                "windows error {code} must be retried"
+            );
+        }
+        // And a file that is simply not there is not retried: it is not a scan.
+        for code in [2, 3] {
+            assert!(!is_text_file_busy(&io::Error::from_raw_os_error(code)));
+        }
+    }
+
+    #[test]
+    fn the_spawn_retry_stays_shorter_than_the_user_notices() {
+        // A *real* failure must not hide behind the retry: the budget has to stay
+        // well inside the shortest user-visible timeout in the app, or waiting
+        // would buy nothing. One second is the ceiling, and the Windows budget is
+        // the one that comes close to it.
+        assert!(
+            SPAWN_BUSY_DELAY < SPAWN_BUSY_TOTAL,
+            "the delay must fit the budget"
+        );
+        assert!(
+            SPAWN_BUSY_TOTAL <= Duration::from_secs(1),
+            "{:?} is too long",
+            SPAWN_BUSY_TOTAL
+        );
     }
 }
