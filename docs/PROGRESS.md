@@ -2079,3 +2079,32 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
 - **Next step**
   1. Push the branch, dispatch the workflow on it, check the three artifacts,
      then open the PR into `main`.
+
+## 2026-10-15 — CI / the stall test's margin was shorter than the process launch
+- **Done**
+  - The user's run confirmed the Linux split works: `bundle (linux-x64)` now
+    shows `…-deb`, `…-rpm` and `…-appimage` as three artifacts instead of one
+    heavy archive (D109).
+  - Fixed the one Windows failure, `a_stalled_challenge_switches_runtime_instead
+    _of_failing` (D110): its watchdog margin was 300 ms, shorter than the launch
+    of the freshly copied fake on the Windows runner (loader + Defender scan), so
+    the process was killed before writing its first log line and the test counted
+    one line instead of two. The margin is 5 s now; the assertion is unchanged.
+    Not an app bug: production waits 90 s.
+- **Verified by running**
+  - `cargo test --test ytdlp_job`: **22 passed** in 5.04 s (was 2.9 s: the extra
+    seconds are the bigger margin). `cargo fmt --check` and `cargo clippy
+    --all-targets -- -D warnings`: clean.
+  - Built in a separate worktree with `TAURI_CONFIG={"bundle":{"externalBin":[]}}`
+    (the CI's own trick) and a shared `CARGO_TARGET_DIR`, because the linked
+    worktree has no `src-tauri/binaries/`.
+- **Not verified / stubbed**
+  - **The Windows runner itself.** The fix follows from the diagnosis above and
+    from the fact that it passes on Linux; the proof is the next run of the
+    branch. If it fails again with one line, the next step is written in D110.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D110.
+- **Next step**
+  1. Push the branch and re-run `ci`: `process tests` must be green on all three
+     systems, and `bundle` must show the split Linux artifacts.
+  2. Then the PR into `main`.

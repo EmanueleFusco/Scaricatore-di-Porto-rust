@@ -551,9 +551,19 @@ async fn a_stalled_challenge_switches_runtime_instead_of_failing() {
 
     // The fake produces nothing at all for QuickJS; the watchdog has to end the
     // attempt (spec §5.3.2 "no progress for 90 s", shortened here).
+    //
+    // 5 s, not the 300 ms this test started with: the watchdog has to outlast
+    // the **launch** of the copied fake, not only its stall. On the Windows
+    // runner the first execution of that freshly written file is delayed by the
+    // loader and by Defender's real-time scan, and a 300 ms budget killed the
+    // process before it could write its first log line — the behaviour was right
+    // (it fell back to Deno, which the outcome asserts), the log just had one
+    // line instead of two. Production waits 90 s, so this is a margin for the
+    // test, never a behaviour.
+    let stall = Duration::from_secs(5);
     let outcome = job::run_job(
         &env,
-        &fixture.request_with_stall("https://youtu.be/stall", Duration::from_millis(300)),
+        &fixture.request_with_stall("https://youtu.be/stall", stall),
         CancellationToken::new(),
         sink,
     )

@@ -2091,3 +2091,37 @@ format they want.
 Numbered D109 on purpose: this branch is cut from `main`, which still ends at
 D76, while `m2-queue` carries D77–D108. When the two meet, this entry belongs
 *after* D108.
+
+### D110 — The stall test's margin has to outlast the process launch, not just the stall
+
+The `process tests (windows x64)` job failed on
+`a_stalled_challenge_switches_runtime_instead_of_failing`:
+
+```
+["invoke download runtime=deno format=yes url=https://youtu.be/stall"]
+left: 1   right: 2
+```
+
+The test shortened the production stall watchdog (spec §5.3.2, "no progress for
+90 s") to **300 ms**. On the Windows runner the *first* execution of the freshly
+copied fake is delayed by the loader and by Defender's real-time scan, so the
+watchdog killed the process **before it could write its first log line**: the
+run was correct (it fell back to Deno, which the outcome asserts), and the log
+simply had one line instead of two.
+
+Two things make that the diagnosis and not a guess:
+
+- every other test that asserts on the `runtime=quickjs` line leaves the
+  watchdog at its production 90 s, and all of them passed on the same runner —
+  the log itself is fine on Windows;
+- a `Done { runtime: Deno }` outcome is only reachable by **abandoning a stalled
+  QuickJS attempt**: a spawn failure would have failed the job instead of
+  falling back. The behaviour under test was proven; only the fake's logging
+  raced the kill.
+
+The margin is 5 s now, which costs the test binary about two seconds. The
+assertion stays the strong one (two lines, quickjs then deno). If a future
+runner is slower still, the honest next step is to assert the Deno line and the
+outcome — already asserted — and drop the line count, because the count depends
+on the fake logging before the kill, which is a property of the fake, not of the
+app. Production waits 90 s, so nothing here was a bug in the app.
