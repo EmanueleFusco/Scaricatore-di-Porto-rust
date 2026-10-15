@@ -2563,3 +2563,39 @@ came from reading the code with those tests in hand.
      "Video 1/2" line while it downloads, the size on a finished card.
   2. Then M3 (playlists and other sites). The right-click menu of §11.5 stays
      queued for the polish phase, as agreed.
+
+## 2026-10-15 — M2 / pre-push review: a test artefact was tracked, and the fake tools are fixed
+- **Done**
+  - Pre-push review of the whole branch (what would go to GitHub, file by file):
+    no executables, no bundled tools, no secrets or user data, no binary file in
+    the diff against `main`. One thing was wrong: a **test artefact was tracked**
+    (`src-tauri/Fake title [fakeid].mkv`, committed in the M1 branch and
+    regenerated on every run).
+  - Root cause found and closed (D108): the fixtures copy the one `fake_ytdlp`
+    binary under `yt-dlp`, `qjs` **and** `ffmpeg`; the fake only knew
+    `--version`, so the ffmpeg probe (`-version`) fell through to the download
+    path and wrote its media file into the process's working directory. The fake
+    now answers `-version`, and **refuses** a download without a URL after `--`
+    or without `--paths home:` (exit 2). `home_dir()` replaces the five
+    `unwrap_or_else(|| PathBuf::from("."))` fallbacks so the trap cannot come
+    back inside a branch.
+  - The artefact is out of the index and `.gitignore` has a narrow net
+    (`src-tauri/*.mkv`, `*.opus`, `fake-ytdlp*`) under the fix.
+- **Verified by running**
+  - `cargo test`: **415 passed, 3 ignored**; `cargo fmt --check` and `clippy -D
+    warnings` clean; and after the full run the artefact is **not** recreated
+    (`find` over the repo and `git status`: clean).
+  - `npm test`: **204** green; `npm run check`: 0 errors, 0 warnings.
+  - Pre-push scan, all empty: executables/binaries tracked, `.env`/settings/
+    queue/cookies/keys tracked, API-key-shaped strings, binary files in the diff
+    against `main`.
+- **Not verified / stubbed**
+  - The artefact remains in the **history** of the M1 branch (already pushed).
+    Removing it from the tip is what matters; rewriting the history for sixteen
+    harmless bytes is not worth it.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D108.
+- **Next step**
+  1. Push `m1-single-video`, `m2-queue` and (optionally) `main`, then the
+     manual checks before merging `m2-queue` into `main`.
+  2. M3.

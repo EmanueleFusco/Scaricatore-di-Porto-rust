@@ -2851,3 +2851,34 @@ IPC tests stay. They are the M1 path that spec §14 asks to keep working, they
 cost one module and 0.5 s of tests, and the queue calls into the same
 `services/job.rs` underneath. `services/job.rs`'s own header said "M2 replaces
 this module" — it is the module the queue runs on, and the comment now says so.
+
+### D108 — The fake tools never write into the repository
+
+The pre-push review found `src-tauri/Fake title [fakeid].mkv` **tracked** — sixteen
+bytes of `fake media bytes`, committed in the M1 branch (`91d469d`) and
+regenerated on every `cargo test` since, including one run during the review
+itself.
+
+The cause was a probe being read as a download. The fixtures copy the single
+`fake_ytdlp` binary under three names — `yt-dlp`, `qjs` **and** `ffmpeg` — and
+the tool resolution asks each with its own documented flag (`--version`,
+`--version`, `-version`). The fake only recognised `--version`, so the ffmpeg
+probe fell through to the download path, found no URL after `--` and no
+`--paths home:`, and wrote its media file where its `home` fell back to: `.`,
+the process's working directory, which is `src-tauri/` when cargo runs the
+tests.
+
+Two changes close the class, not the instance:
+
+- the fake answers `-version` with an ffmpeg banner, exactly as it answers
+  `--version` with its own version;
+- a download invocation **without a URL after `--`** or **without
+  `--paths home:`** prints an error and exits 2 instead of guessing.
+  `home_dir()` replaces the five `unwrap_or_else(|| PathBuf::from("."))`
+  fallbacks inside the branches, so the trap cannot come back behind the check
+  in `main`.
+
+The committed file is out of the index (it stays in the history of the M1
+branch: sixteen harmless bytes, not worth rewriting history for), and
+`.gitignore` gained a narrow net (`src-tauri/*.mkv`, `*.opus`, `fake-ytdlp*`)
+under the fix.
