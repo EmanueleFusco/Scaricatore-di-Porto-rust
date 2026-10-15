@@ -2882,3 +2882,96 @@ The committed file is out of the index (it stays in the history of the M1
 branch: sixteen harmless bytes, not worth rewriting history for), and
 `.gitignore` gained a narrow net (`src-tauri/*.mkv`, `*.opus`, `fake-ytdlp*`)
 under the fix.
+
+### D109 — One artifact per Linux format, not one per platform
+
+A manual run (`workflow_dispatch`) is how installers are obtained to try by
+hand, and GitHub hands an artifact back as a single zip. With `bundle/**` in
+one artifact, the 5 MB `.deb` could only be downloaded together with the
+~110 MB AppImage: the three Linux formats were one heavy archive.
+
+The `bundle` job now uploads one artifact per Linux format —
+`scaricatore-di-porto-linux-x64-deb`, `-rpm`, `-appimage` — each with
+`if-no-files-found: error`, so a format that silently stops being produced
+still fails the run. Windows ships one format (`nsis`) and macOS two files of
+the same product (the `.dmg` and the `.app.zip`), so a single artifact stays
+right there.
+
+The release path is untouched: the `release` job collects every
+`scaricatore-di-porto-*` artifact, flattens the folders and attaches the files
+one by one, which is where a user of a published release already picks the
+format they want.
+
+Numbered D109 on purpose: this branch is cut from `main`, which still ends at
+D76, while `m2-queue` carries D77–D108. When the two meet, this entry belongs
+*after* D108.
+
+### D110 — The stall test's margin has to outlast the process launch, not just the stall
+
+The `process tests (windows x64)` job failed on
+`a_stalled_challenge_switches_runtime_instead_of_failing`:
+
+```
+["invoke download runtime=deno format=yes url=https://youtu.be/stall"]
+left: 1   right: 2
+```
+
+The test shortened the production stall watchdog (spec §5.3.2, "no progress for
+90 s") to **300 ms**. On the Windows runner the *first* execution of the freshly
+copied fake is delayed by the loader and by Defender's real-time scan, so the
+watchdog killed the process **before it could write its first log line**: the
+run was correct (it fell back to Deno, which the outcome asserts), and the log
+simply had one line instead of two.
+
+Two things make that the diagnosis and not a guess:
+
+- every other test that asserts on the `runtime=quickjs` line leaves the
+  watchdog at its production 90 s, and all of them passed on the same runner —
+  the log itself is fine on Windows;
+- a `Done { runtime: Deno }` outcome is only reachable by **abandoning a stalled
+  QuickJS attempt**: a spawn failure would have failed the job instead of
+  falling back. The behaviour under test was proven; only the fake's logging
+  raced the kill.
+
+The margin is 5 s now, which costs the test binary about two seconds. The
+assertion stays the strong one (two lines, quickjs then deno). If a future
+runner is slower still, the honest next step is to assert the Deno line and the
+outcome — already asserted — and drop the line count, because the count depends
+on the fake logging before the kill, which is a property of the fake, not of the
+app. Production waits 90 s, so nothing here was a bug in the app.
+
+### D111 — The artifacts, and the release, carried the bundlers' staging trees
+
+The per-format split (D109) put two numbers in front of us: the `linux-x64-deb`
+artifact weighed **127 MB** for a **42 MB** `.deb`, and the AppImage **251 MB**
+for a **148 MB** file. A local build says why — next to the installer the
+bundlers leave the *unpacked* package:
+
+    bundle/deb/<name>/data/usr/…         88 MB
+    bundle/appimage/<name>.AppDir/      359 MB
+    bundle/squashfs-root/                46 MB
+
+and the upload glob was `bundle/**`, so all of it travelled.
+
+The `release` job would have been worse. Its flatten step moves **every** file it
+finds into `assets/`, so a tag would have attached those trees — the application
+binary, the icons, hundreds of files — to the draft release beside the
+installers. Nobody had seen it because no `v*` tag has been cut yet.
+
+Two changes:
+
+- the uploads name **files**, never `**`: `deb/*.deb`, `rpm/*.rpm`,
+  `appimage/*.AppImage*` (which also covers the updater's `.AppImage.tar.gz` and
+  its `.sig` when M7 turns them on), `nsis/*.exe`, `dmg/*.dmg` and the
+  `.app.zip`;
+- the `release` job gained a guard, **"Only installers reached the release"**,
+  which walks `assets/` after the flatten and fails the job when anything is
+  there whose name is not an installer, `SHA256SUMS` or `latest.json`. It has its
+  own tests in `scripts/ci-steps.test.mjs` — run by `npm test` — including the
+  case that matters, the flattened application binary, because a shell step
+  nobody executes is not a check.
+
+What the artifacts should weigh now: `.deb` 42 MB, `.rpm` 42 MB, `.AppImage`
+148 MB (the spec expects the AppImage to be the heavy one: it embeds WebKitGTK
+and the size targets do not apply to it), macOS universal ≈ `.dmg` + `.app.zip`,
+Windows ≈ the NSIS `.exe`.

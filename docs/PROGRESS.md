@@ -2600,6 +2600,101 @@ came from reading the code with those tests in hand.
      manual checks before merging `m2-queue` into `main`.
   2. M3.
 
+## 2026-10-15 — CI / one artifact per Linux format (spec §13.5)
+- **Done**
+  - The `bundle` job used to upload one artifact per platform, with all three
+    Linux formats (`.deb`, `.rpm`, `.AppImage`) inside it. Since GitHub returns
+    an artifact as one zip, getting the 5 MB `.deb` meant downloading the
+    ~110 MB AppImage with it. Linux now gets **one artifact per format**
+    (`scaricatore-di-porto-linux-x64-deb`, `-rpm`, `-appimage`), each with
+    `if-no-files-found: error`. Windows (`nsis`) and macOS (`.dmg` +
+    `.app.zip`) keep their single artifact: one product, one format.
+  - The `release` job needs no change: it collects every
+    `scaricatore-di-porto-*` artifact, flattens the folders and attaches the
+    files one by one, so a published release already offers them separately.
+- **Verified by running**
+  - `node scripts/check-ci-syntax.mjs`: 10 `run:` blocks valid.
+    `node scripts/check-ci-runners.mjs`: no floating or deprecated images, all
+    actions on Node 24. The workflow YAML parses and lists the four upload
+    steps with their names and conditions.
+- **Not verified / stubbed**
+  - **The workflow itself has not run.** The split can only be seen on GitHub:
+    `Actions → ci → Run workflow`, pick this branch, and the `bundle` job's
+    artifacts must appear as three separate entries for `linux-x64`.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D109.
+- **Next step**
+  1. Push the branch, dispatch the workflow on it, check the three artifacts,
+     then open the PR into `main`.
+
+## 2026-10-15 — CI / the stall test's margin was shorter than the process launch
+- **Done**
+  - The user's run confirmed the Linux split works: `bundle (linux-x64)` now
+    shows `…-deb`, `…-rpm` and `…-appimage` as three artifacts instead of one
+    heavy archive (D109).
+  - Fixed the one Windows failure, `a_stalled_challenge_switches_runtime_instead
+    _of_failing` (D110): its watchdog margin was 300 ms, shorter than the launch
+    of the freshly copied fake on the Windows runner (loader + Defender scan), so
+    the process was killed before writing its first log line and the test counted
+    one line instead of two. The margin is 5 s now; the assertion is unchanged.
+    Not an app bug: production waits 90 s.
+- **Verified by running**
+  - `cargo test --test ytdlp_job`: **22 passed** in 5.04 s (was 2.9 s: the extra
+    seconds are the bigger margin). `cargo fmt --check` and `cargo clippy
+    --all-targets -- -D warnings`: clean.
+  - Built in a separate worktree with `TAURI_CONFIG={"bundle":{"externalBin":[]}}`
+    (the CI's own trick) and a shared `CARGO_TARGET_DIR`, because the linked
+    worktree has no `src-tauri/binaries/`.
+- **Not verified / stubbed**
+  - **The Windows runner itself.** The fix follows from the diagnosis above and
+    from the fact that it passes on Linux; the proof is the next run of the
+    branch. If it fails again with one line, the next step is written in D110.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D110.
+- **Next step**
+  1. Push the branch and re-run `ci`: `process tests` must be green on all three
+     systems, and `bundle` must show the split Linux artifacts.
+  2. Then the PR into `main`.
+
+## 2026-10-15 — CI / only the installable files travel, and a guard for the release
+- **Done**
+  - The user's run showed the split working (D109): three Linux artifacts instead
+    of one. The numbers it printed exposed the real weight problem (D111): the
+    `.deb` artifact was 127 MB for a 42 MB package and the AppImage 251 MB for a
+    148 MB file, because every upload used `bundle/**` and the bundlers leave the
+    **unpacked** package next to the installer (`deb/<name>/data/usr/…`,
+    `<name>.AppDir/`, `squashfs-root/`). A local build measured the trees: 88 MB,
+    359 MB and 46 MB.
+  - The uploads name files now (`deb/*.deb`, `rpm/*.rpm`, `appimage/*.AppImage*`,
+    `nsis/*.exe`, `dmg/*.dmg`, `*.app.zip`).
+  - The `release` job gained the guard **"Only installers reached the release"**:
+    after the flatten step it walks `assets/` and fails when a file that is not
+    an installer, `SHA256SUMS` or `latest.json` is there. Without it a tag would
+    have attached those trees to the draft release too.
+- **Verified by running**
+  - `npx vitest run scripts/ci-steps.test.mjs`: **10 passed** (7 existing + 3
+    new: installers only → ok, the flattened application binary → fails with its
+    name in the message, a nested staging file → fails).
+  - `node scripts/check-ci-syntax.mjs`: 11 `run:` blocks valid (the guard is one
+    of them).
+  - The sizes come from the local build in `src-tauri/target/release/bundle/`:
+    `.deb` 42 MB + 88 MB of staging, AppImage 148 MB + 359 MB of `AppDir`.
+- **Not verified / stubbed**
+  - **The GitHub run**: the artifact sizes on the next run are the proof
+    (expected: `.deb` ≈ 42 MB, `.rpm` ≈ 42 MB, `.AppImage` ≈ 148 MB).
+- **A near miss, told rather than hidden**: the first version of this commit
+  carried a `node_modules` **symlink** created in the linked worktree to run
+  vitest. `.gitignore` had `node_modules/`, and a trailing slash matches a
+  directory, not a symlink. It was caught before pushing (the link is out of the
+  index and the pattern is `node_modules`, no slash) — the same class of mistake
+  as the fake-media file of D108, on the machine that wrote the guard for it.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D111.
+- **Next step**
+  1. Push, re-run `ci` on the branch, check the artifact sizes and that
+     `process tests` is green on all three systems.
+  2. Then the PR into `main` (the D77–D111 order note applies).
+
 ## 2026-10-15 — M2 / the first `ci` run on `main`: two tests were racing the disk
 - **Done**
   - The `check` job on Linux failed two `queue_engine` tests. Both are **test-side
