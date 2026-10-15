@@ -174,3 +174,88 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+// The release must carry installers and nothing else (D111).
+//
+// The bundlers leave the *unpacked* package next to the installer
+// (`bundle/deb/<name>/data/usr/…`, `bundle/appimage/<name>.AppDir/`,
+// `bundle/squashfs-root/`), and the upload globs used to be `**`: a local build
+// shows the 42 MB `.deb` arriving as a 127 MB artifact and the 148 MB AppImage
+// as a 251 MB one, and the flatten step would have moved those trees into a
+// draft release as well. The globs name files now; this executes the guard that
+// keeps a release that way.
+describe.skipIf(process.platform === "win32")(
+  'the CI step "Only installers reached the release"',
+  () => {
+    const STEP = "Only installers reached the release";
+
+    /** What the four upload steps produce, plus the updater's files of M7. */
+    const INSTALLERS = [
+      "Scaricatore Di Porto_0.1.0_amd64.deb",
+      "Scaricatore Di Porto-0.1.0-1.x86_64.rpm",
+      "Scaricatore Di Porto_0.1.0_amd64.AppImage",
+      "Scaricatore Di Porto_0.1.0_amd64.AppImage.tar.gz",
+      "Scaricatore Di Porto_0.1.0_amd64.AppImage.tar.gz.sig",
+      "macos-universal-Scaricatore Di Porto.app.zip",
+      "Scaricatore Di Porto_0.1.0_aarch64.dmg",
+      "Scaricatore Di Porto_0.1.0_x64-setup.exe",
+      "SHA256SUMS",
+      "latest.json",
+    ];
+
+    let root;
+    let assets;
+
+    beforeAll(() => {
+      root = mkdtempSync(join(tmpdir(), "sdp-release-step-"));
+      assets = join(root, "assets");
+      writeFileSync(join(root, "step.sh"), stepScript(STEP));
+    });
+
+    afterAll(() => {
+      if (root) rmSync(root, { recursive: true, force: true });
+    });
+
+    /** `assets/` as the upload steps leave it, before the flatten step runs. */
+    function release(files = INSTALLERS) {
+      rmSync(assets, { recursive: true, force: true });
+      for (const name of files) {
+        mkdirSync(dirname(join(assets, name)), { recursive: true });
+        writeFileSync(join(assets, name), "x");
+      }
+      return assets;
+    }
+
+    function runGuard() {
+      const result = spawnSync("bash", [join(root, "step.sh")], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      return { code: result.status, output: `${result.stdout}${result.stderr}` };
+    }
+
+    it("passes when assets/ holds installers and nothing else", () => {
+      release();
+      const { code, output } = runGuard();
+      expect(output).not.toContain("::error::");
+      expect(code).toBe(0);
+    });
+
+    it("fails on the unpacked application binary a bundler leaves behind", () => {
+      // Exactly what the flatten step does to `deb/<name>/data/usr/bin/…` when
+      // the artifact carried the staging tree: the binary ends up beside the
+      // installers, with the name of the application.
+      release([...INSTALLERS, "scaricatore-di-porto"]);
+      const { code, output } = runGuard();
+      expect(code).toBe(1);
+      expect(output).toContain("not installers");
+      expect(output).toContain("scaricatore-di-porto");
+    });
+
+    it("fails on a nested staging file too", () => {
+      release([...INSTALLERS, "usr/share/icons/hicolor/256x256/apps/scaricatore.png"]);
+      const { code, output } = runGuard();
+      expect(code).toBe(1);
+      expect(output).toContain("usr/share/icons/hicolor/256x256/apps/scaricatore.png");
+    });
+  },
+);
