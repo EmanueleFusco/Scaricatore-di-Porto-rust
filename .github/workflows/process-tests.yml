@@ -1,0 +1,74 @@
+# Process tests on Windows and macOS without bundling (spec §4, §13.5).
+#
+# Dedicated workflow for verifying cross-platform process execution
+# (Job Object on Windows, process groups on macOS, tree kill, pipe draining)
+# without running Linux checks (already run on push) and without building
+# installer bundles (.exe, .dmg, etc.).
+#
+# MANUAL DISPATCH ONLY (workflow_dispatch):
+#   In line with DECISIONS.md D12 and D26 ("one workflow, one button, one reason
+#   to run"), this workflow runs on demand from the Actions tab or `gh workflow run`
+#   to avoid burning private repository quota on routine pushes.
+
+name: Process Tests
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: process-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Compiles without externalBin: offline build without needing tool binaries (D48).
+  TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+
+jobs:
+  # ------------------------------------------------------- process tests (2x/10x)
+  process-tests:
+    name: process tests (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            label: windows-x64
+          - os: macos-26
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev libxdo-dev librsvg2-dev \
+            build-essential curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # Runs the test suite against the dependency-free fake_tool test harness.
+      - name: cargo test (real spawn, job object / process group)
+        working-directory: src-tauri
+        run: cargo test --no-fail-fast
