@@ -2424,3 +2424,54 @@ came from reading the code with those tests in hand.
      rest of the list — pause/resume/cancel, restart and Resume, the two caps,
      the notification, the drag-and-drop.
   2. Then M3 (playlists and other sites), which is what the queue was built for.
+
+## 2026-10-15 — M2 / the second hands-on report: card height, page layout, footer
+- **Done**
+  - **The list no longer paints over the page actions** (D102). The viewport's
+    `min-height: 240px` and `max-height: calc(100vh - 320px)` are gone; the page
+    scrolls when its minimum does not fit (`overflow: auto`), the list has a
+    104px floor with a `min-height: 0` viewport, and the Add bar, the actions
+    row and the footer are `flex: none`.
+  - **One status line per card, same shape in every state** (D103): the bar is
+    always drawn (empty when queued, last width when parked/failed, full when
+    done) and the line shows the problem, the progress
+    (`Velocità: … · Tempo rimasto …`, `In attesa dei dati…` while yt-dlp reports
+    nothing) or the quality. The full error and the full warning moved into the
+    details panel. `speedMbits` keeps one decimal below 1 Mbit/s.
+  - **The virtual list measures its rows** (D103): the 92px constant was wrong
+    (a card is ~130px and its height depends on the window width), so the pads
+    stood in the wrong place. The list measures the pitch between two rendered
+    rows and re-measures on resize and on every slice change; `visibleRange` is
+    untouched and still pure.
+  - **Footer** (D103): parked and failed counts instead of a premature `Fatto`,
+    `flex: none`, a red dot for failures, and `footer.nothing` when the queue is
+    empty (it used to say `In attesa`).
+  - Two new pure helpers with tests: `statusKindFor` (every state gets a line)
+    and `barPercentFor` (always a width: 0, the last one, or 100 when done).
+- **Verified by running**
+  - `npm test`: **217** green (215 + `statusKindFor`/`barPercentFor`, plus the
+    sub-1 Mbit/s case). `npm run check`: 0 errors, 0 warnings. `npm run build`:
+    ok (185,52 kB, 56,92 kB gzipped).
+  - Rust untouched; the last full run (`cargo fmt --check`, `clippy -D
+    warnings`, 414 tests, 3 ignored) still stands.
+- **Not verified / stubbed**
+  - **Still not clicked from here**: the fixes are layout and rendering, and no
+    window exists in this environment. The report they answer came from the
+    user's machine, and so must the confirmation. What to look at: resize the
+    window both ways while the Add bar holds several rows, watch a download
+    through a stall, and check the footer with a paused and a failed item.
+  - The row-height measurement is the pragmatic answer for the heights we have
+    (uniform cards, ±one wrapped button row). A variable-size virtualiser stays
+    the answer if a future layout makes rows genuinely different; M7's 5 000
+    item item is where that would show.
+- **Spec items marked "verify" that I checked**: none new (CSS and one display
+  helper).
+- **Decisions/deviations (also in DECISIONS.md)**: D102 (page layout), D103
+  (one status line, measured rows, footer).
+- **Next step**
+  1. The user's re-test of the three points above, plus the rest of the manual
+     list.
+  2. The open items from the M1/M2 audit: the Deno install offer, the "Video
+     1/2" stage detail on the card, `size`, the right-click context menu, the
+     dead M1 frontend code (`jobStore`, `inspectStore`, `job.ts`).
+  3. Then M3 (playlists and other sites).

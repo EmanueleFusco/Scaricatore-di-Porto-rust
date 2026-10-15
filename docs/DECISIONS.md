@@ -2699,3 +2699,68 @@ introduced for. The margin is 8 000 ms now; the resume phase at the end waits
 it out. Four further full runs of the binary and one full `cargo test` are
 green, and the failures that would matter (a file still saying `queued`) fail
 immediately rather than waiting.
+
+### D102 — The queue page never paints over its own actions
+
+Second hands-on report: *"Quando si aggiungono i video la sezione della coda
+diventa più grande e si compenetra con le scritte e i pulsanti di sotto."*
+
+The list viewport carried `min-height: 240px` and
+`max-height: calc(100vh - 320px)`, inside a page pinned to `height: 100%` with
+no overflow policy of its own. As long as everything fit, the flex column
+distributed the space and the magic numbers did nothing. The moment it did not
+fit — the Add bar grows by 260px of pasted rows, or the window is small — the
+viewport's floor won: the list kept its 240px and the overflow painted *over*
+the row below it (`Sospendi tutto`, `Riprova i falliti`), which stayed at its
+flex position because nothing had moved it.
+
+The fix is the shape the layout should have had:
+
+- the page itself scrolls (`overflow: auto`) when its minimum does not fit, so
+  nothing can be painted over;
+- the list keeps a floor (104px) but the *viewport* is `flex: 1 1 auto;
+  min-height: 0` with no `max-height`, so the list scrolls internally whenever
+  there is room;
+- the Add bar, the page actions and the status footer are `flex: none`: on a
+  small window the page scrolls, and none of them is squeezed.
+
+The magic `calc(100vh - 320px)` is gone: it encoded the add bar's height at a
+moment in time and was wrong as soon as the bar changed.
+
+### D103 — One status line per card, and a virtual list that measures its rows
+
+Same report, second half: *"i valori di velocità e di tempo stimato … ci sono
+dei momenti in cui spariscono (forse perché yt-dlp riporta 0 o lavora a pezzi)
+e … il rettangolo della UI … continua a rimpicciolirsi e ingrandirsi … lo trovo
+distrattivo."* yt-dlp does print `NA` between fragments, and the card rendered
+speed and ETA only when they were there: every gap removed a line and moved
+everything below it.
+
+A card now has one shape for every state — head, bar, **one** status line,
+actions — and nothing about it depends on whether a number arrived:
+
+- the bar is always drawn: empty for `queued`, the last reported width for
+  `paused`/`interrupted`/`failed`/`cancelled`, full for `done`, animated only
+  while it runs and no percentage is known;
+- the status line shows, in order of priority: the problem (the error message,
+  or the short "Salvato a 360p invece di 1440p"), the progress
+  (`Velocità: … Mbit/s · Tempo rimasto …`, and `In attesa dei dati…` while
+  yt-dlp has not reported either), or the quality while the item waits. It is
+  clamped to one line with a `title`, and the full error and the full warning
+  moved into the details panel, where there is room for them;
+- `speedMbits` keeps one decimal below 1 Mbit/s: rounding a slow download to `0`
+  reads as "stalled" and it is the number the user is staring at.
+
+The same report exposed a latent bug the fix had to close: the list's
+virtualiser used a 92px constant, commented "the cards are fixed-height by
+construction" — they are not. A card is ~130px and its height depends on the
+window width, because the action buttons wrap. The pads that stand in for the
+off-screen rows were computed from the wrong number, so the window scrolled to
+the wrong place. The list now measures the real pitch between two rendered rows
+(height + flex gap) and re-measures when the window or the rendered slice
+changes; `visibleRange` keeps its pure signature and its tests.
+
+The status footer also learned the difference between "all done" and "not
+finished": with parked or failed items and nothing running it says `1 in pausa`
+or `2 falliti` instead of `Fatto`, and it is `flex: none` so it cannot be
+squeezed.
