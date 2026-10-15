@@ -2511,3 +2511,55 @@ came from reading the code with those tests in hand.
      1/2" stage detail, `size`, the right-click context menu, the dead M1
      frontend code.
   3. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / Deno offer, stream detail, file size, and the dead M1 frontend
+- **Done**
+  - **Deno install offer** (D105) back on the failed card, where it can unblock a
+    real download: Install (with progress and Cancel, the same `tools_install`
+    path as the Tools page), Not now (persisted), the tools error when it
+    fails, and it disappears as soon as Deno is found.
+  - **Stream detail** (D105): "Video 1/2", "Merging…" now open the card's status
+    line while the item runs. `progressLabelKey`/`stageDetail` are pure and
+    tested, and the i18n guard now walks the label tokens too (verified by
+    deleting `job.label.merging` and watching it fail).
+  - **File size** (spec §11.5): `sizeBytes` on the item, read from the file
+    yt-dlp produced when the item finishes, surviving `queue.json`. Shown on the
+    status line of a finished card ("1080p · 480 MB") and as a row in the
+    details panel. `formatBytes` is pure and tested.
+  - **Dead M1 frontend removed** (D107): job store, inspect store, `job.ts` and
+    its tests, the helpers only they used, and the six `job.stage.*` strings.
+    The **backend** M1 commands stay, and `services/job.rs`'s header now says
+    what it is: the module the queue runs on.
+  - **Two behaviours the dead files carried are alive again** (D106): the URL
+    metadata cache of spec §2.9 moved into the add bar (a URL inspected in this
+    session answers without a round-trip; Ricontrolla bypasses it; Svuota la
+    lista clears it) and D76's paste rule too (a paste inspects at once, typing
+    keeps the 500 ms).
+- **Verified by running**
+  - `cargo test`: **415 passed, 3 ignored** (304 lib, 3, 9, 8, 16, 22, 12, 6,
+    13, 22), including the new `a_finished_item_carries_the_size_of_the_file_it
+    _produced` (which also reopens `queue.json` and checks the size is still
+    there). `cargo fmt --check` and `clippy -D warnings`: clean.
+  - `npm test`: **204** green — fewer than before because twenty tests went with
+    the deleted files: what remains covers what the app can still do.
+    `npm run check`: 0 errors, 0 warnings. `npm run build`: ok (186,74 kB,
+    57,16 kB gzipped).
+  - The new i18n guard for the stage tokens was verified by breaking it on
+    purpose (deleting `job.label.merging` from the Italian dictionary) and
+    watching the test name the token.
+- **Not verified / stubbed**
+  - **Still not clicked**: the Deno offer needs a `DENO_MISSING` failure to
+    appear, which needs a real YouTube challenge and no Deno installed. From
+    here it is type-checked and its pieces are tested; seeing it is a manual
+    check for a machine without Deno.
+  - The cache's effect (no second round-trip on a repeated paste) is likewise a
+    behaviour of the running app: the class has its tests, the wiring does not.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D105 (Deno offer, stream
+  detail), D106 (cache and paste rule in the add bar), D107 (what was deleted,
+  what stayed).
+- **Next step**
+  1. The user's next round: paste a link twice (the second must be instant), the
+     "Video 1/2" line while it downloads, the size on a finished card.
+  2. Then M3 (playlists and other sites). The right-click menu of §11.5 stays
+     queued for the polish phase, as agreed.

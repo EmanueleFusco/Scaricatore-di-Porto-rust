@@ -2793,3 +2793,61 @@ remembers the ids it just added (`flash`), and the list:
 Smooth scrolling is skipped under `prefers-reduced-motion`; an id that rolled
 off the history cap is "nowhere" rather than row zero, which `scrollOffsetFor`
 pins with a test.
+
+### D105 — The Deno offer and the stream detail live on the card
+
+The M1 screen carried two things the queue UI did not, and both belong to a
+card:
+
+- **The Deno install offer** (spec §5.3.2 "ask once"). With the screen gone, a
+  download that failed with `DENO_MISSING` left one message and a trip to
+  Settings → Tools: the only hole in the audit that could *block* a real
+  download. The failed card now carries the offer — Install (the same
+  `tools_install` path as the Tools page, with progress and Cancel), Not now
+  (persisted as `denoOfferDismissed`), and the tools error if the install
+  fails. It disappears as soon as Deno is found; retrying the item stays the
+  user's click, because the item's options froze the runtime mode it was added
+  with.
+- **The stream detail** (spec §11.5, "stage detail" next to the stage chip):
+  "Video 1/2", "Merging…". The backend has sent `progress.label` / `subIndex` /
+  `subTotal` since M1, the store read them, and nothing rendered them. They now
+  open the card's status line while the item runs. `progressLabelKey` maps the
+  stable tokens to the `job.label.*` strings of both dictionaries, and the i18n
+  guard walks those tokens too: no literal in the source can name a key that
+  arrives as data.
+
+### D106 — The URL metadata cache and the paste rule moved to the Add bar
+
+Spec §2.9 lists three things together on the URL input: the **metadata cache**,
+the **500 ms debounce**, and "cleared on Clear". M1 implemented them in its
+inspect store; M2 replaced that screen, and the store became unreachable — so
+the cache was dead code holding a required behaviour.
+
+It moved to the add bar, which is where the paste happens now:
+
+- a URL inspected in this session answers from the cache: no yt-dlp process, no
+  network, no spinner. Only complete, non-degraded videos are remembered (the
+  `MetadataCache` refuses playlists, errors and degraded answers on its own, so
+  a short resolution list can never stick), the cap is 50 URLs, "Ricontrolla"
+  bypasses the cache on purpose, "Svuota la lista" clears it, a restart starts
+  empty.
+- **D76 still holds**: a paste is one atomic event, so the inspection starts at
+  once; typing keeps the 500 ms. The component flags the paste, the store asks
+  `inspectDelay()` — the same function M1 tested, instead of a hard-coded
+  literal.
+
+### D107 — The dead M1 frontend is gone; the M1 backend stays
+
+Deleted because nothing could reach them any more: `stores/job.svelte.ts`,
+`stores/inspect.svelte.ts`, `job.ts` and its tests, `App.svelte`'s start/stop of
+that store, the helpers only they used (`resolutionOptions`, `defaultResolution`,
+`speedMbits`, `isDeterminate`, `summarise`/`UrlSummary`), and the six
+`job.stage.*` strings. The behaviour they carried is in D105/D106; the rest was
+duplicate of `$lib/queue`.
+
+The backend M1 commands (`download_start`, `download_cancel`,
+`inspect_url`, `inspect_cancel`, `download_dismiss_deno_offer`) and their eight
+IPC tests stay. They are the M1 path that spec §14 asks to keep working, they
+cost one module and 0.5 s of tests, and the queue calls into the same
+`services/job.rs` underneath. `services/job.rs`'s own header said "M2 replaces
+this module" — it is the module the queue runs on, and the comment now says so.
