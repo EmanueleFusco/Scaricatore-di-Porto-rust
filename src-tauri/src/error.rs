@@ -120,9 +120,38 @@ impl AppError {
 // frontend-facing [`ErrorInfo`].
 pub type AppResult<T> = std::result::Result<T, ErrorInfo>;
 
+/// Is `key` a label in both frontend dictionaries?
+///
+/// A `message_key` the dictionaries do not know is printed as the key itself
+/// (the frontend's `t()` falls back to it), which is how raw keys reached a
+/// screenshot (D98). The backend cannot see the UI; it can check this.
+#[cfg(test)]
+pub(crate) fn message_key_in_dictionaries(key: &str) -> bool {
+    let it: serde_json::Value = serde_json::from_str(include_str!("../../src/lib/i18n/it.json"))
+        .expect("the Italian dictionary parses");
+    let en: serde_json::Value = serde_json::from_str(include_str!("../../src/lib/i18n/en.json"))
+        .expect("the English dictionary parses");
+    [&it, &en].iter().all(|dictionary| {
+        dictionary
+            .get(key)
+            .and_then(|value| value.as_str())
+            .is_some()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every code, so a new one has to be added here and looked at.
+    const CODES: [ErrorCode; 6] = [
+        ErrorCode::Io,
+        ErrorCode::Json,
+        ErrorCode::Tauri,
+        ErrorCode::SettingsCorrupt,
+        ErrorCode::Unsupported,
+        ErrorCode::Process,
+    ];
 
     #[test]
     fn error_info_carries_code_key_and_detail() {
@@ -153,17 +182,22 @@ mod tests {
 
     #[test]
     fn every_code_has_a_distinct_message_key() {
-        let codes = [
-            ErrorCode::Io,
-            ErrorCode::Json,
-            ErrorCode::Tauri,
-            ErrorCode::SettingsCorrupt,
-            ErrorCode::Unsupported,
-            ErrorCode::Process,
-        ];
-        let mut keys: Vec<_> = codes.iter().map(|c| c.message_key()).collect();
+        let mut keys: Vec<_> = CODES.iter().map(|c| c.message_key()).collect();
         keys.sort_unstable();
         keys.dedup();
-        assert_eq!(keys.len(), codes.len());
+        assert_eq!(keys.len(), CODES.len());
+    }
+
+    #[test]
+    fn every_code_has_a_dictionary_entry() {
+        let missing: Vec<_> = CODES
+            .iter()
+            .map(|c| c.message_key())
+            .filter(|key| !message_key_in_dictionaries(key))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "message keys missing from the i18n dictionaries: {missing:?}"
+        );
     }
 }

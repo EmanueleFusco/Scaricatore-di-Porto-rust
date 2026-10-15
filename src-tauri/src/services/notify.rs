@@ -278,6 +278,44 @@ mod tests {
         assert_ne!(it, en, "the two languages must not share one string");
     }
 
+    /// Every string literal that opens the `toast.` namespace.
+    fn toast_keys(source: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut offset = 0;
+        while let Some(found) = source[offset..].find("\"toast.") {
+            let start = offset + found;
+            offset = start + 1;
+            if source.as_bytes()[start - 1] == b'\\' {
+                continue; // an escaped quote inside another literal
+            }
+            let after = &source[start + 1..];
+            let Some(end) = after.find('"') else { break };
+            keys.push(after[..end].to_owned());
+            offset = start + 1 + end;
+        }
+        keys
+    }
+
+    #[test]
+    fn every_backend_toast_key_is_in_the_dictionaries() {
+        // Scanned, not listed: the three files that build `toast.…` keys, so a
+        // new toast without a label fails here instead of in a screenshot
+        // (D98). The keys are what the UI shows and what the OS notification
+        // carries.
+        for source in [
+            include_str!("notify.rs"),
+            include_str!("queue/engine.rs"),
+            include_str!("queue/store.rs"),
+        ] {
+            for key in toast_keys(source) {
+                assert!(
+                    crate::error::message_key_in_dictionaries(&key),
+                    "missing from the i18n dictionaries: {key}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_missing_key_falls_back_to_the_other_language_then_to_itself() {
         assert_eq!(

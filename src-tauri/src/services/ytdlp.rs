@@ -1745,34 +1745,49 @@ mod tests {
         assert!(!YtdlpErrorCode::Format.is_transient());
     }
 
+    /// Every error code, so a new one has to be added here and looked at.
+    const CODES: [YtdlpErrorCode; 15] = [
+        YtdlpErrorCode::FfmpegMissing,
+        YtdlpErrorCode::YtChallenge,
+        YtdlpErrorCode::Auth,
+        YtdlpErrorCode::Unavailable,
+        YtdlpErrorCode::Geo,
+        YtdlpErrorCode::Format,
+        YtdlpErrorCode::Unsupported,
+        YtdlpErrorCode::Drm,
+        YtdlpErrorCode::Antibot,
+        YtdlpErrorCode::Cookies,
+        YtdlpErrorCode::DiskFull,
+        YtdlpErrorCode::Network,
+        YtdlpErrorCode::Extract,
+        YtdlpErrorCode::DenoMissing,
+        YtdlpErrorCode::Unknown,
+    ];
+
     #[test]
     fn error_codes_have_distinct_stable_strings_and_keys() {
-        let codes = [
-            YtdlpErrorCode::FfmpegMissing,
-            YtdlpErrorCode::YtChallenge,
-            YtdlpErrorCode::Auth,
-            YtdlpErrorCode::Unavailable,
-            YtdlpErrorCode::Geo,
-            YtdlpErrorCode::Format,
-            YtdlpErrorCode::Unsupported,
-            YtdlpErrorCode::Drm,
-            YtdlpErrorCode::Antibot,
-            YtdlpErrorCode::Cookies,
-            YtdlpErrorCode::DiskFull,
-            YtdlpErrorCode::Network,
-            YtdlpErrorCode::Extract,
-            YtdlpErrorCode::DenoMissing,
-            YtdlpErrorCode::Unknown,
-        ];
-        let mut strings: Vec<&str> = codes.iter().map(|c| c.as_str()).collect();
-        let mut keys: Vec<&str> = codes.iter().map(|c| c.message_key()).collect();
-        let count = codes.len();
+        let mut strings: Vec<&str> = CODES.iter().map(|c| c.as_str()).collect();
+        let mut keys: Vec<&str> = CODES.iter().map(|c| c.message_key()).collect();
+        let count = CODES.len();
         strings.sort_unstable();
         strings.dedup();
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(strings.len(), count);
         assert_eq!(keys.len(), count);
+    }
+
+    #[test]
+    fn every_error_code_has_a_dictionary_entry() {
+        let missing: Vec<_> = CODES
+            .iter()
+            .map(|c| c.message_key())
+            .filter(|key| !crate::error::message_key_in_dictionaries(key))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "message keys missing from the i18n dictionaries: {missing:?}"
+        );
     }
 
     #[test]
