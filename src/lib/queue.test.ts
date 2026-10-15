@@ -1,0 +1,454 @@
+/**
+ * Tests for the queue's pure helpers (`$lib/queue`, `$lib/stores/addbar`).
+ *
+ * Spec §15 asks for unit tests of the state machine, the retry policy, the
+ * serialisation and the virtualisation arithmetic; the ones that live in Rust
+ * are there, and these are the frontend half: what the payloads become, what
+ * each state offers, and which rows a long list renders.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  actionsFor,
+  detailsText,
+  fileName,
+  heightWarning,
+  isActive,
+  isParked,
+  isTerminal,
+  itemLabel,
+  normaliseAddResult,
+  normaliseItem,
+  normaliseSnapshot,
+  normaliseState,
+  normaliseSummary,
+  normaliseUpdate,
+  qualityKey,
+  secondsToClock,
+  speedMbits,
+  stateKey,
+  visibleItems,
+  visibleRange,
+  type ItemState,
+  type QueueItem,
+} from "$lib/queue";
+import {
+  choiceOf,
+  qualityLabel,
+  qualityOptions,
+  qualityValue,
+  splitLinks,
+} from "$lib/addbar";
+
+/** A backend item with sensible defaults, for the tests to bend. */
+function item(overrides: Partial<QueueItem> = {}): QueueItem {
+  return {
+    id: "q1",
+    url: "https://www.youtube.com/watch?v=abc",
+    title: "A video",
+    site: "Youtube",
+    durationSec: 212,
+    state: "queued",
+    options: {
+      kind: "video",
+      quality: { kind: "best" },
+      outputDir: "/home/user/Videos",
+      cookies: { kind: "none" },
+      runtimeMode: "auto",
+    },
+    groupId: null,
+    progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
+    file: null,
+    runtime: null,
+    requestedHeight: null,
+    actualHeight: null,
+    error: null,
+    logTail: [],
+    autoRetries: 0,
+    retryAt: null,
+    pausedFrom: null,
+    addedAt: 0,
+    updatedAt: 0,
+    startedAt: null,
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// States
+// ---------------------------------------------------------------------------
+
+describe("item states", () => {
+  it("separates running, terminal and parked, like the Rust state machine", () => {
+    const active: ItemState[] = [
+      "inspecting",
+      "downloading",
+      "postProcessing",
+      "encoding",
+      "transcribing",
+      "summarizing",
+    ];
+    for (const state of active) expect(isActive(state)).toBe(true);
+    for (const state of active) expect(isTerminal(state)).toBe(false);
+
+    for (const state of ["done", "failed", "cancelled"] as ItemState[]) {
+      expect(isTerminal(state)).toBe(true);
+      expect(isParked(state)).toBe(true);
+    }
+    for (const state of ["paused", "interrupted"] as ItemState[]) {
+      expect(isTerminal(state)).toBe(false);
+      expect(isParked(state)).toBe(true);
+    }
+    for (const state of ["queued"] as ItemState[]) {
+      expect(isActive(state)).toBe(false);
+      expect(isParked(state)).toBe(false);
+    }
+  });
+
+  it("names an unknown state interrupted rather than trusting it", () => {
+    expect(normaliseState("downloading")).toBe("downloading");
+    expect(normaliseState("writtenByANewerBuild")).toBe("interrupted");
+    expect(normaliseState(undefined)).toBe("interrupted");
+  });
+
+  it("has one i18n key per state", () => {
+    expect(stateKey("postProcessing")).toBe("queue.state.postProcessing");
+    expect(stateKey("interrupted")).toBe("queue.state.interrupted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+describe("the actions a state offers", () => {
+  it("offers pause and cancel while something runs", () => {
+    const actions = actionsFor("downloading", false);
+    expect(actions).toContain("pause");
+    expect(actions).toContain("cancel");
+    expect(actions).not.toContain("retry");
+  });
+
+  it("offers resume for paused and interrupted, retry only for failures", () => {
+    expect(actionsFor("paused", false)).toContain("resume");
+    expect(actionsFor("interrupted", false)).toContain("resume");
+    expect(actionsFor("failed", false)).toContain("retry");
+    expect(actionsFor("cancelled", false)).toContain("retry");
+    // A done item has nothing to retry.
+    expect(actionsFor("done", false)).not.toContain("retry");
+    expect(actionsFor("done", false)).not.toContain("resume");
+  });
+
+  it("adds open and reveal only when there is a file", () => {
+    expect(actionsFor("done", false)).not.toContain("reveal");
+    expect(actionsFor("done", true)).toContain("open");
+    expect(actionsFor("done", true)).toContain("reveal");
+  });
+
+  it("always offers copy link and open page", () => {
+    for (const state of ["queued", "downloading", "done", "failed"] as ItemState[]) {
+      const actions = actionsFor(state, false);
+      expect(actions).toContain("copyLink");
+      expect(actions).toContain("openPage");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Normalisers
+// ---------------------------------------------------------------------------
+
+describe("normalising the backend payloads", () => {
+  it("fills an item with safe defaults when the backend sends almost nothing", () => {
+    const parsed = normaliseItem({});
+    expect(parsed.id).toBe("");
+    expect(parsed.state).toBe("interrupted");
+    expect(parsed.options.quality).toEqual({ kind: "best" });
+    expect(parsed.options.kind).toBe("video");
+    expect(parsed.error).toBeNull();
+    expect(parsed.logTail).toEqual([]);
+  });
+
+  it("keeps what a real item carries", () => {
+    const parsed = normaliseItem({
+      id: "q7",
+      url: "https://a.example/1",
+      title: "T",
+      site: "Vimeo",
+      durationSec: 12,
+      state: "downloading",
+      options: {
+        kind: "audio",
+        quality: { kind: "maxHeight", height: 720 },
+        outputDir: "/out",
+        cookies: { kind: "browser", browser: "firefox" },
+        runtimeMode: "deno",
+      },
+      progress: { percent: 42, speedBps: 3e6, etaSec: 9, label: "video", subIndex: 1, subTotal: 2 },
+      file: "/out/a.mkv",
+      runtime: "deno",
+      error: { code: "NETWORK", messageKey: "error.ytdlp.network", detail: "boom" },
+      logTail: ["line one", 42],
+    });
+    expect(parsed.state).toBe("downloading");
+    expect(parsed.options.kind).toBe("audio");
+    expect(parsed.options.quality).toEqual({ kind: "maxHeight", height: 720 });
+    expect(parsed.options.cookies).toEqual({ kind: "browser", browser: "firefox" });
+    expect(parsed.progress.percent).toBe(42);
+    expect(parsed.error?.code).toBe("NETWORK");
+    // A non-string line in the tail is dropped rather than rendered.
+    expect(parsed.logTail).toEqual(["line one"]);
+  });
+
+  it("gives the summary the documented zeros rather than undefined", () => {
+    const summary = normaliseSummary({ running: 2 });
+    expect(summary.running).toBe(2);
+    expect(summary.total).toBe(0);
+    expect(summary.speedBps).toBeNull();
+    expect(summary.parallelDownloads).toBe(2);
+  });
+
+  it("reads an update with items, removals, order and a toast", () => {
+    const update = normaliseUpdate({
+      seq: 12,
+      items: [{ id: "q1", state: "queued", url: "https://a.example/1" }],
+      removed: ["q9"],
+      order: ["q1"],
+      summary: { total: 1 },
+      toast: { messageKey: "toast.queueRetrying", params: { count: "1" } },
+    });
+    expect(update.seq).toBe(12);
+    expect(update.items).toHaveLength(1);
+    expect(update.removed).toEqual(["q9"]);
+    expect(update.order).toEqual(["q1"]);
+    expect(update.toast?.messageKey).toBe("toast.queueRetrying");
+    expect(update.toast?.params.count).toBe("1");
+  });
+
+  it("treats a missing order as 'unchanged' and a missing toast as none", () => {
+    const update = normaliseUpdate({ seq: 1, items: [], removed: [] });
+    expect(update.order).toBeNull();
+    expect(update.toast).toBeNull();
+  });
+
+  it("reads the initial snapshot with its groups", () => {
+    const snapshot = normaliseSnapshot({
+      seq: 3,
+      items: [{ id: "q1", state: "done" }],
+      groups: [{ id: "g1", title: "A playlist", folder: "/out/A playlist", index: 0 }],
+      summary: { total: 1, done: 1 },
+    });
+    expect(snapshot.items).toHaveLength(1);
+    expect(snapshot.groups[0].title).toBe("A playlist");
+    expect(snapshot.summary.done).toBe(1);
+  });
+
+  it("reads the add result with its duplicates", () => {
+    const result = normaliseAddResult({
+      added: ["q1"],
+      duplicates: [{ url: "https://a.example/1", itemId: "q0", title: "Already" }],
+    });
+    expect(result.added).toEqual(["q1"]);
+    expect(result.duplicates[0].itemId).toBe("q0");
+    expect(normaliseAddResult(null).added).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+describe("the text the cards show", () => {
+  it("converts speed to Mbit/s and refuses the impossible", () => {
+    expect(speedMbits(1024 * 1024 / 8)).toBe(1);
+    expect(speedMbits(5e6)).toBe(38);
+    expect(speedMbits(0)).toBeNull();
+    expect(speedMbits(null)).toBeNull();
+  });
+
+  it("formats a duration and refuses the empty ones", () => {
+    expect(secondsToClock(9)).toBe("0:09");
+    expect(secondsToClock(212)).toBe("3:32");
+    expect(secondsToClock(3725)).toBe("1:02:05");
+    expect(secondsToClock(0)).toBeNull();
+    expect(secondsToClock(null)).toBeNull();
+  });
+
+  it("names an item by its title, then its file, then the url", () => {
+    expect(itemLabel(item())).toBe("A video");
+    expect(itemLabel(item({ title: null }))).toBe("watch?v=abc");
+    expect(itemLabel(item({ title: "  " }))).toBe("watch?v=abc");
+  });
+
+  it("cuts a path on either separator", () => {
+    expect(fileName("/home/user/Videos/a.mkv")).toBe("a.mkv");
+    expect(fileName("C:\\Users\\me\\Videos\\a.mkv")).toBe("a.mkv");
+    expect(fileName("a.mkv")).toBe("a.mkv");
+  });
+
+  it("names the chosen quality", () => {
+    expect(qualityKey(item())).toBe("queue.item.quality.best");
+    expect(
+      qualityKey(
+        item({
+          options: { ...item().options, quality: { kind: "exact", height: 1080 } },
+        }),
+      ),
+    ).toBe("queue.item.quality.exact.1080");
+    expect(
+      qualityKey(
+        item({
+          options: { ...item().options, quality: { kind: "maxHeight", height: 720 } },
+        }),
+      ),
+    ).toBe("queue.item.quality.max.720");
+  });
+
+  it("warns only when a finished item is lower than asked", () => {
+    expect(heightWarning(item({ state: "done" }))).toBeNull();
+    expect(
+      heightWarning(
+        item({ state: "done", requestedHeight: 1440, actualHeight: 360 }),
+      ),
+    ).toEqual({ requested: 1440, actual: 360 });
+    expect(
+      heightWarning(item({ state: "done", requestedHeight: 720, actualHeight: 1080 })),
+    ).toBeNull();
+    expect(
+      heightWarning(item({ state: "downloading", requestedHeight: 1080, actualHeight: 360 })),
+    ).toBeNull();
+  });
+
+  it("builds the copy-details text out of the message, the detail and the log", () => {
+    const text = detailsText(
+      item({
+        error: { code: "NETWORK", messageKey: "error.ytdlp.network", detail: "raw detail" },
+        logTail: ["last line"],
+      }),
+      "Network problem",
+    );
+    expect(text.split("\n")).toEqual(["Network problem", "raw detail", "last line"]);
+    expect(detailsText(item(), null)).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Virtualisation (spec §11.7)
+// ---------------------------------------------------------------------------
+
+describe("the virtualised list", () => {
+  const ROW = 40;
+  const HEIGHT = 400;
+
+  it("renders the first screen plus the overscan", () => {
+    const range = visibleRange(0, HEIGHT, ROW, 1000);
+    expect(range.first).toBe(0);
+    // 400 / 40 = 10 visible rows, +1 for the partial one, +2 overscan.
+    expect(range.last).toBe(12);
+    expect(range.topPad).toBe(0);
+  });
+
+  it("scrolls without losing a row at the edges", () => {
+    // scrollTop 400 = row 10; two rows of overscan above, and the viewport shows
+    // rows 10..20, two more below.
+    const range = visibleRange(400, HEIGHT, ROW, 1000);
+    expect(range.first).toBe(8);
+    expect(range.last).toBe(22);
+    // The pads are what keeps the scrollbar honest.
+    expect(range.topPad).toBe(8 * ROW);
+    expect(range.bottomPad).toBe((1000 - 1 - 22) * ROW);
+    expect(visibleItems(Array.from({ length: 1000 }), range)).toHaveLength(15);
+  });
+
+  it("never runs past the end of a short list", () => {
+    const range = visibleRange(0, HEIGHT, ROW, 3);
+    expect(range.last).toBe(2);
+    expect(range.bottomPad).toBe(0);
+  });
+
+  it("renders nothing for an empty list and survives a zero height", () => {
+    const empty = visibleRange(0, HEIGHT, ROW, 0);
+    expect(empty.last).toBe(-1);
+    expect(visibleItems([1, 2, 3], empty)).toEqual([]);
+    expect(visibleRange(0, HEIGHT, 0, 10).last).toBe(-1);
+  });
+
+  it("keeps a 5 000-item list down to a dozen nodes", () => {
+    const items = Array.from({ length: 5000 }, (_, index) => index);
+    const range = visibleRange(100_000, HEIGHT, ROW, items.length);
+    const shown = visibleItems(items, range);
+    expect(shown.length).toBeLessThan(20);
+    expect(shown[0]).toBe(range.first);
+    expect(shown[shown.length - 1]).toBe(range.last);
+  });
+
+  it("does not go below the start when scrolled to the top", () => {
+    const range = visibleRange(-50, HEIGHT, ROW, 10);
+    expect(range.first).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Add bar
+// ---------------------------------------------------------------------------
+
+describe("splitting a paste into links", () => {
+  it("keeps http(s) links, deduped and in order", () => {
+    expect(
+      splitLinks(
+        "https://a.example/1\nhttps://b.example/2 https://a.example/1\nftp://c.example/3\nnot a url",
+      ),
+    ).toEqual(["https://a.example/1", "https://b.example/2"]);
+  });
+
+  it("strips the punctuation a copy brings along", () => {
+    expect(splitLinks('"https://a.example/1", https://b.example/2;')).toEqual([
+      "https://a.example/1",
+      "https://b.example/2",
+    ]);
+  });
+
+  it("finds nothing in text that is not links", () => {
+    expect(splitLinks("hello world")).toEqual([]);
+    expect(splitLinks("")).toEqual([]);
+  });
+});
+
+describe("the quality options of a link", () => {
+  it("offers Best, every height as max and exact, and Audio only", () => {
+    const options = qualityOptions([1080, 720], false);
+    expect(options.map((option) => option.value)).toEqual([
+      "best",
+      "max1080",
+      "exact1080",
+      "max720",
+      "exact720",
+      "audio",
+    ]);
+  });
+
+  it("hides the video choices in audio mode", () => {
+    const options = qualityOptions([1080], true);
+    expect(options.map((option) => option.value)).toEqual(["best", "audio"]);
+  });
+
+  it("still offers Best and Audio only when there are no heights", () => {
+    // Spec §6.2: a source without heights is not a failure.
+    expect(qualityOptions([], false).map((option) => option.value)).toEqual(["best", "audio"]);
+  });
+
+  it("round-trips a choice through a <select> value", () => {
+    const options = qualityOptions([720], false);
+    for (const option of options) {
+      expect(choiceOf(options, qualityValue(option.choice))).toEqual(option.choice);
+    }
+    expect(choiceOf(options, "nonsense")).toBeNull();
+  });
+
+  it("names every choice with an i18n key", () => {
+    expect(qualityLabel({ kind: "best" })).toBe("queue.item.quality.best");
+    expect(qualityLabel({ kind: "audioOnly" })).toBe("queue.item.quality.audio");
+    expect(qualityLabel({ kind: "exact", height: 720 })).toBe("queue.item.quality.exact.720");
+    expect(qualityLabel({ kind: "maxHeight", height: 720 })).toBe("queue.item.quality.max.720");
+  });
+});

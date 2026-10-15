@@ -2149,3 +2149,149 @@ out of the repository on purpose. What is certain is that a pointer to a missing
 file costs every session that follows it, so the table row now says it is not
 part of this repository, and this decision records why. If the file exists
 somewhere, adding it back is a one-line change to that row.
+
+---
+
+## M2 (English from here on, per the language rule)
+
+### D79 — The queue notification is a plugin, and here is what it costs
+
+Spec §7.7 calls the "system notification when the queue becomes idle"
+**optional**, and spec §14 row M2 lists "notifications" among the phase's
+deliverables. Both are true, so the feature exists — behind a setting that is
+**off by default**, because a notification that always fires is one nobody reads.
+
+`tauri-plugin-notification` 2.4 is therefore a new dependency, and AGENTS.md
+asks for the reason and the binary-size impact. Measured on this machine, same
+release profile, back to back:
+
+| build | app binary |
+| :-- | --: |
+| without the plugin | **6,71 MiB** |
+| with the plugin | **6,88 MiB** |
+
+**+0,17 MiB**, against a budget of 15 MB (spec §1) and a binary that grew from
+4,70 MiB in M0-C to 6,88 MiB now. The gap between those two numbers is the queue
+engine, not the plugin: the whole M2 backend, the persisted model and the
+scheduler, for 2 MiB.
+
+Two things about the dependency that are worth knowing:
+
+* **Pinned to 2.4 on purpose.** `cargo add` picks the newest release whose
+  `rust-version` fits this package's `rust-version = 1.85`, which is 2.4.0; the
+  2.7 line needs 1.90. A dependency the declared toolchain cannot build is not a
+  dependency.
+* **It pulls a second copy of the `windows` crate** (0.61, through
+  `tauri-winrt-notification`, next to the 0.62 that spec §4.2 needs for Job
+  Objects). They are independent crates and coexist; the cost is inside the
+  +0,17 MiB above.
+
+The wording of the notification comes from the **same dictionaries the UI uses**,
+embedded with `include_str!`. Two alternatives were rejected: building the
+sentence in the backend would create a second place where user-visible strings
+live (spec §11.9 forbids it), and letting the webview send it would miss the
+moment the queue goes idle while the window is in the background — which is
+exactly when a notification is worth having.
+
+### D80 — `queue.json` has no separate `order` array
+
+Spec §7.4 lists what the file holds: "schema version, items, groups, **order**".
+The document has the first three; the order is **the order of the `items`
+vector**.
+
+A second array is a second thing that can disagree with the first, and nothing
+needs it: reordering is moving elements inside the vector, and the frontend
+receives the order as a list of ids in the `queue:update` event (only when it
+changed — re-sending 5 000 ids ten times a second would cost more than the items
+themselves). Two sources of truth for one fact is the kind of bug that only
+shows up on someone else's machine.
+
+### D81 — `queue:update` carries whole items, not field-level patches
+
+Spec §7.6 asks for two things: "coalesce progress per item and emit at most
+~10 updates/s" (implemented, in `services/queue/events.rs`) and "send only changed
+fields".
+
+The second is implemented at **item granularity**: a changed item is sent whole,
+an unchanged one is not sent at all. Field-level patches would need
+`Option<Option<T>>` on every field of the payload and a merge step in the
+frontend store, and the win — not sending three unchanged strings — is smaller
+than the risk that the store drifts from the backend after a partial patch that
+nobody tests. A queue item is a few hundred bytes; the coalescing that actually
+matters is the one that decides **whether** it is sent.
+
+The frontend patches single rows either way (a keyed map plus an explicit order,
+`$lib/queue.ts`), which is what spec §11.7 asks for.
+
+### D82 — The lanes are counters in the scheduler, not semaphores
+
+Spec §7.2 says "Resource-aware scheduling with separate semaphores". This engine
+keeps the equivalent as **counters inside the scheduler task**, because the
+scheduler is the only thing that ever starts an item: a permit could not be
+acquired anywhere else, so a semaphore would only duplicate a count that already
+exists.
+
+The argument that decided it is the mid-flight settings change. With a
+semaphore, "2 → 1 parallel downloads" while two items are running has to either
+revoke a live permit (cannot) or be reconciled against the items that hold one
+(a second source of truth). With counters, the next planning pass simply reads
+`capacity - busy` and the truth is always the items themselves.
+
+The observable behaviour spec §15 item 7 asks for — parallel downloads,
+per-host cap — is unchanged and is tested as a **pure function**
+(`services/queue/scheduler.rs`): lanes, the per-host cap of §6.4, retry timers
+and "first runnable first" are all unit tests with no process and no clock.
+
+### D83 — The Add bar inspects; the engine does not
+
+Spec §3's pipeline starts `inspect → download → …`, and spec §2.2 says a pasted
+link is inspected **as it is added**, with the row showing a spinner and then the
+title and the qualities. So in M2 the inspection happens in the Add bar
+(`inspect_urls`, three in parallel, each with its own token and answers in
+order), and the item stores the result in its **options snapshot** together with
+the title, the site and the duration.
+
+The engine therefore starts at the download stage. The state machine still
+declares `Inspecting` (and `Encoding`, `Transcribing`, `Summarizing`, which are
+M4/M5/M6): the persisted documents, the wire values and the i18n keys are already
+the ones those phases need, and an item whose state is `interrupted` in
+`paused_from: inspecting` can be resumed correctly when M3 adds inspection
+inside the queue.
+
+The reason is not laziness but cost: a yt-dlp process costs ~0,46 s to start
+(measured, D75) plus a network round trip. Re-inspecting at enqueue time would
+pay it twice for every link, to learn what the Add bar already knows.
+
+### D84 — A playlist link is refused, not silently added
+
+Spec §6.4 (playlists) is M3. In M2 the Add bar inspects a pasted link and, when
+the answer is a **playlist**, the row says so (`queue.add.playlist.unsupported`)
+instead of adding it as if it were a video. yt-dlp with `--no-playlist` on a
+playlist URL returns the playlist's own metadata, and the app would then
+"download" something the user did not ask for — the behaviour spec §12.12
+records as a bug in the original.
+
+### D85 — The host key strips `www.` and nothing else
+
+The per-host cap of spec §6.4 needs one key per site. The rule is
+**lowercase, minus a leading `www.`**: `www.youtube.com` and `youtube.com` share
+a budget, `m.youtube.com` does not (it is a different host string, and pretending
+otherwise would be a guess about what "the same site" means).
+
+The alternative — folding `m.`, `mobile.` and friends — was considered and
+rejected: it is a per-site mapping that would be wrong somewhere, and a cap that
+is slightly too generous is much less harmful than one that blocks a download the
+user asked for. The rule is a pure function with a test
+(`queue::model::host_key`).
+
+### D86 — The paused item goes back to `Queued`, not to the stage it was in
+
+A first version resumed an interrupted or paused item into the stage recorded in
+`paused_from` (e.g. `downloading` → `downloading`). It looked right and was
+wrong: **only a `Queued` item is eligible for the scheduler**, so a resumed item
+in any other state sat there forever, "downloading" with nothing running. Caught by
+`pause_keeps_the_item_and_resume_finishes_it`, which is exactly the test that
+should exist.
+
+`paused_from` is kept — it is what the lane is taken from, and what the UI shows
+("resumed after a restart") — but the state a resume produces is `Queued`.

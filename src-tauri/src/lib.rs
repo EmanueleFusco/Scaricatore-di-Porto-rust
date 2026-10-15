@@ -50,6 +50,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Spec §7.7: the notification when the queue becomes idle.
         .plugin(tauri_plugin_notification::init())
+        // Spec §7.7: the notification when the queue becomes idle.
         .setup(|app| {
             let handle = app.handle().clone();
             let state = AppState::load(&handle)?;

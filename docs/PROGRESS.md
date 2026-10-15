@@ -2052,3 +2052,127 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
   1. Prova manuale dell'interfaccia sulla macchina di sviluppo (URL, altezza,
      audio, cartella, annulla) — è l'unica cosa che qui non si può fare.
   2. Merge del branch dopo la revisione; poi M2 (coda).
+
+---
+
+## 2026-10-15 — M2 / The queue (spec §7, §11.2, §11.5, §11.7)
+
+Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
+
+- **Done**
+  - **`services/queue/`**, in five files with one job each:
+    - `model.rs` — the state machine of spec §3 (all twelve states, including
+      the `Encoding`/`Transcribing`/`Summarizing` of M4/M5/M6 and the
+      `Interrupted` of §7.4), the immutable options snapshot of §7.1, groups,
+      the counters of §7.5, duplicate detection, the retry policy and the
+      500-item history cap of §7.3. Pure, 34 unit tests;
+    - `store.rs` — `queue.json`: atomic writes, `.bak` on corruption, active
+      items come back `Interrupted` keeping their temp dir (§7.4, §4.10);
+    - `scheduler.rs` — the planning function: lanes (download 2, encode 1,
+      transcribe 1), the per-host cap of §6.4, retry timers, first-runnable
+      first. 12 unit tests, no process and no clock;
+    - `events.rs` — the `queue:update` payload and the ≤ 10/s per-item
+      coalescing of §7.6;
+    - `engine.rs` — a scheduler task, one task per item (which runs **the M1
+      pipeline unchanged**, `job::run_job`), a flusher, the actions and the
+      persistence triggers.
+  - **`services/notify.rs`** — the system notification when the queue goes
+      idle (§7.7), off by default, text taken from the same dictionaries the UI
+      uses.
+  - **Commands** — `queue_list`, `queue_add`, `queue_cancel`, `queue_pause`,
+      `queue_resume`, `queue_retry`, `queue_remove`, `queue_pause_all`,
+      `queue_resume_all`, `queue_retry_failed`, `queue_reorder`,
+      `queue_move_to_top`, `queue_clear_finished`, `queue_lanes`,
+      `read_links_file`, `app_set_language`, plus **`inspect_urls`** (three in
+      parallel, own tokens, answers in order, §6.2's last bullet).
+  - **Settings** (schema 4): `parallel_downloads` (1–4), `per_host_cap` (1–8),
+      `notify_on_idle`, `paste_links_anywhere`, all clamped on both sides, and
+      the Downloads section of Settings → General now really edits them.
+  - **Startup** — the queue opens before the window, the orphan-temp sweep of
+      §4.10 now knows **which temp dirs the queue still owns** (an interrupted
+      item keeps its `.part` files) and looks in every output folder a live item
+      writes to, not only in the default one. The exit hook cancels the items
+      before killing the trees.
+  - **Frontend** — `lib/queue.ts` and `lib/addbar.ts` (pure, tested),
+      `lib/stores/queue.svelte.ts` (a keyed map + explicit order; a tick with one
+      changed item patches one row), the new **Add bar** (multi-link paste,
+      drop of text or `.txt`, per-row quality picker, inline errors with Retry,
+      "add anyway" for duplicates), the **virtualised list**, the **item cards**
+      (stage chip, progress, speed/ETA, actions per state, expandable details
+      with Copy details, drag to reorder) and a footer that now says
+      "N running · M queued · speed".
+  - **i18n** — 79 new keys in IT and EN; the M1 placeholders
+      (`queue.comingSoon`, `settings.downloads.comingSoon`) are gone.
+- **Verified by running**
+  - `cargo test`: **327 tests** green (296 lib, 17 `queue_engine`, 14
+      `queue_ipc`, 3 bundled_tools, 9 download, 8 m1_ipc, 16 process_tree, 6
+      settings_ipc, 13 tools, 22 ytdlp_job) + the 3 `#[ignore]` real-tool tests.
+      `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+  - `cargo test --test queue_engine` — **17 integration tests on the fake
+      yt-dlp**, all offline:
+      * ten links, **exactly 2 at a time** measured from the fake's own
+        start/end log (peak concurrency, by interval overlap);
+      * one parallel download means one; four means four;
+      * the per-host cap: never three from YouTube, while a different host is
+        not held back;
+      * pause keeps the item (and no error), resume finishes it, pause-all stops
+        the scheduler;
+      * cancel removes the temp dir and nothing else;
+      * a transient network failure is retried by the queue (1 automatic retry,
+        `auto_retries == 1`), a permanent one is never retried by itself, AUTH is
+        never retried and keeps its raw detail;
+      * a crash-style `queue.json` (an item still `downloading`) comes back
+        `Interrupted` with its temp dir, and Resume finishes it;
+      * a graceful shutdown comes back parked and Retry finishes it;
+      * a corrupt file is kept as `.bak`, the queue starts empty and the toast
+        reaches the sink;
+      * the footer counters and **one** idle notification for the transition;
+      * clear-finished, reorder, move-to-top, the events and their coalescing,
+        the settings' lanes (including 0 → clamped to 1).
+  - `npm test`: **197** green (162 of M0/M1 + 35 new for `queue.ts` and
+      `addbar.ts`). `npm run check` 0 errors 0 warnings; `npm run build` ok.
+  - `cargo build --release`: app binary **6,88 MiB** (budget 15 MB). The
+      notification plugin's own cost was measured separately for D79: **+0,17
+      MiB** (6,71 → 6,88).
+- **Not verified / stubbed**
+  - **The GUI has not been clicked.** From here there is no way to drive the
+      window: no manual check of the Add bar, the cards, the context actions or
+      the drag-and-drop. Recorded rather than implied.
+  - **The real network path through the queue is untested.** Every queue test
+      uses the fake yt-dlp; a real end-to-end (paste → 2 in parallel → files) is
+      the manual check above.
+  - **The system notification has not been seen.** The plugin is wired, the
+      strings resolve in both languages (unit-tested), and the engine calls it on
+      the idle transition; whether the OS shows it, and what it looks like, is
+      for the manual check.
+  - **Playlist links are refused with a message** (D84); M3 brings the selection
+      panel.
+  - **Not implemented in M2, on purpose**: per-row "start immediately", the
+      "More options" drawer, user presets, the thumbnail column, the group
+      actions of §11.5 (the model and the grouping exist, M3 creates groups),
+      Ctrl/Cmd+F filtering, the 2 000+ item load test (the arithmetic is tested,
+      a real 5 000-item queue is M7's performance item).
+  - **Auto-resume on start** (spec §7.4's "or auto-resume if the setting is on")
+      is not implemented: the items come back `Interrupted` with a Resume button,
+      which is the spec's first-listed behaviour.
+  - **"Keep the computer awake"** (§7.7, optional, per-OS API) is not
+      implemented.
+- **Spec items marked "verify" that I checked**
+  - **Tauri v2 exposes no OS locale to Rust.** `Manager` has no `locale()`, and
+      neither `Window` nor `Webview` has one (read in the 2.12.3 sources, then
+      in the docs.rs page for `tauri::Manager`, `tauri::window::Window`). That is
+      why the language for the notification travels from the webview
+      (`app_set_language`), and why the backend falls back to `LANG`/`LC_ALL`.
+  - **`tauri-plugin-notification` 2.7 requires Rust 1.90** and this package
+      declares `rust-version = 1.85`, so 2.4.0 is the newest usable release;
+      `cargo add` picks it for that reason (D79).
+- **Decisions/deviations (also in DECISIONS.md)**: D79–D86.
+  - The two deliberate deviations from the spec's wording are D81 (item-granular
+    event diffs instead of field-level patches) and D82 (lane counters instead
+    of semaphores); D83–D86 are decisions of scope, not of behaviour.
+- **Next step**
+  1. Manual check on the development machine: paste several links, watch two
+     downloads run at once, pause/resume/cancel one, clear finished, restart the
+     app mid-download and Resume; then Settings → Downloads with the two caps,
+     and the notification with the switch on.
+  2. Merge the branch after the review; then M3 (playlist and other sites).

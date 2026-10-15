@@ -4,6 +4,7 @@
    * The window itself is sized in `tauri.conf.json` (980x680, min 640x520).
    */
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import FooterStatus from "$lib/components/FooterStatus.svelte";
   import SetupWizard from "$lib/components/SetupWizard.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -11,13 +12,28 @@
   import QueuePage from "$lib/pages/QueuePage.svelte";
   import SettingsPage from "$lib/pages/SettingsPage.svelte";
   import { router } from "$lib/router.svelte";
-  import { isTauriRuntime, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { isTauriRuntime, settingsStore, tt, activeLang } from "$lib/stores/settings.svelte";
   import { jobStore } from "$lib/stores/job.svelte";
+  import { queueStore } from "$lib/stores/queue.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { themeStore } from "$lib/stores/theme.svelte";
 
   /** Spec §11.1: the wizard shows once. */
   let wizardOpen = $state(false);
+
+  /**
+   * Tell the backend which language is actually in effect.
+   *
+   * The system notification of spec §7.7 is built in Rust, and Tauri v2 exposes
+   * no OS locale to Rust (checked against the 2.12 sources), so the webview —
+   * which resolves `navigator.languages` properly — is the one that can say.
+   * Best effort: a failed call only leaves the notification in the persisted
+   * language.
+   */
+  async function pushLanguage(): Promise<void> {
+    if (!isTauriRuntime()) return;
+    await invoke("app_set_language", { lang: activeLang() }).catch(() => {});
+  }
 
   onMount(() => {
     router.start();
@@ -32,13 +48,20 @@
         wizardOpen = true;
       }
       void toolsStore.refresh();
+      // Spec §11.9: the backend needs the resolved language for the system
+      // notification (spec §7.7), and the webview is the only place that can
+      // resolve "System" against `navigator.languages`. Sent after the settings
+      // load, because `activeLang()` reads them.
+      await pushLanguage();
     })();
-    // `job:progress` / `job:done` (spec §3) are app-wide, not QueuePage-local:
-    // the footer will read them in M2, and a component that unmounts must not
-    // be able to lose a completion event.
+    // `job:progress` / `job:done` (spec §3) and `queue:update` (spec §7.6) are
+    // app-wide, not QueuePage-local: the footer reads the queue, and a
+    // component that unmounts must not be able to lose a completion event.
     void jobStore.start();
+    void queueStore.start();
     return () => {
       void jobStore.stop();
+      void queueStore.stop();
     };
   });
 </script>
