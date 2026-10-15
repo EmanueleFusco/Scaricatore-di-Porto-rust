@@ -2591,3 +2591,111 @@ The store keeps **per-field** reactivity on purpose: the state is one value,
 but `#write` assigns only the fields the reducer changed, because replacing the
 whole object would invalidate every reader and repaint the footer on every
 item tick — the thing spec §11.7 asks the UI not to do.
+
+### D98 — The queue extends the standard download; it does not replace it
+
+The first hands-on feedback on the M2 build (verbatim): *"L'app si avvia ma non
+capisco onestamente le modifiche effettuate, il download non parte e il tasto
+non riesco ad avviarlo"*, *"Questa modalità coda non ha senso, ti fa scegliere
+solo una risoluzione di picco e non è granulare"*, *"La modalità di download di
+coda deve essere un'estensione del download standard, non deve sostituirla.
+L'utilità principale è mettere in coda altri download e ha senso più che altro
+per le playlist, salvo altri casi."*
+
+Two defects were behind it, both in the Add bar, none in the engine:
+
+1. **The button could not work.** `toRequests()` is built from the *rows* of the
+   Add bar; rows were created only by `submit()`, which ran only on
+   Ctrl/Cmd+Enter or a drop. Typing or pasting — what the original's URL entry
+   did — left the rows empty, the button disabled (`readyCount === 0`), and the
+   click a silent no-op. Spec §11.3 asks for inspection "debounced 500 ms as in
+   the original" (`on_url_change` → `after(500, init_submit)`); it had simply
+   never been implemented.
+2. **The only action was "Aggiungi alla coda"**, and the only quality control
+   visible without rows was the coarse preset: the standard download was gone
+   from the app, and the queue's real utility (many links, playlists later) was
+   unreachable.
+
+What changed:
+
+- Inspection starts on its own, debounced 500 ms, as the original; the pasted
+  text becomes rows with spinner → title, site, duration.
+- Two actions, and **both check whatever is still in the box and wait for it
+  before adding**, so a click is never a no-op: **Scarica** (primary) and
+  **Aggiungi alla coda** (secondary).
+- **Scarica** puts the new items at the top of the queue — the "Start
+  immediately" side of §11.3; **Aggiungi alla coda** leaves them at the end.
+  With nothing ahead of them the two are the same by construction.
+- Both go through `queue_add`. Reviving the M1 `download_start` path for the
+  primary button would have been a second engine with no lanes, no per-host
+  cap, no retry policy and no persistence — the point of M2 is one path.
+- Quality: the preset is a **cap** (`MaxHeight`) over the six common heights,
+  Best and Audio only; the **per-row** picker lists the resolutions that video
+  actually reports as *exact* heights (the original's `1080p` list and its
+  exact-with-fallback selector, spec §8.2). The separate "audio only" checkbox
+  is gone — it was the missing `queue.add.audio` label (D99) and a second way
+  to say what the preset already says.
+
+Spec §11.2 (Queue as home) and §11.3 ("Add to queue") stay as written; what
+changed is which verb is primary, on the product owner's explicit instruction.
+
+### D99 — i18n keys are guarded by a test on both sides of the IPC
+
+`t()` falls back to the key itself, deliberately: a missing label is neither a
+crash nor a compiler error, it is raw text on screen. That is how
+`queue.add.audio`, `settings.general.behaviour` and
+`settings.general.notifyIdle` shipped. A fourth, `queue.add.playlist.unsupported`,
+was found by machine, not by eye: the Add bar sets it as a row's `errorKey` and
+it existed in no dictionary.
+
+Three changes:
+
+- **Heights are parameters.** `queue.item.quality.exact.{144…2160}` and
+  `queue.item.quality.max.{144…2160}` (16 keys per language) became
+  `queue.item.quality.exact` / `queue.item.quality.max` + `{height}`.
+  `qualityLabel()` returns `{ key, params }` and `qualityKey(item)` is the same
+  function now; a video reporting 576p or 4320p gets a label instead of a raw
+  key, and no future height can reopen the hole.
+- **Frontend guard**: `src/lib/i18n/usage.test.ts` scans every `.ts`/`.svelte`
+  under `src/` (tests excluded — some of them ask for missing keys on purpose)
+  for literal keys in `tt`/`ttCount`/`errorText`/`t`, for keys *assigned* to
+  `key:`/`errorKey:`/… fields, for all 12 item states and 10 item actions, and
+  for quality labels at heights no list covers.
+- **Rust guard**: `error::message_key_in_dictionaries` (test-only, reads both
+  dictionaries with `include_str!`), used by `error.rs` for every `ErrorCode`,
+  by `services/ytdlp.rs` for every `YtdlpErrorCode`, and by
+  `services/notify.rs` for **every `toast.` literal of the three files that
+  build those keys** (`notify.rs`, `queue/engine.rs`, `queue/store.rs`) —
+  scanned rather than listed, so a new toast fails the test.
+
+Both guards were verified by breaking them on purpose (a key renamed in the
+store, a toast renamed in the engine) and watching the test fail, then
+restoring. Small wording fixes came with them: "Qualità predefinita", "Svuota
+la lista", the list counter is the whole queue (`tCount`, not the rows in the
+viewport), the notification checkbox moved to a new "Comportamento" section
+(the heading it borrowed did not exist), and the stale first-run text ("La coda
+arriva con M2") became a plain hint.
+
+### D100 — Priority uses the commands that exist; no new flag on `queue_add`
+
+"Scarica" needs the new items ahead of the queue, and there were two ways: a
+`priority: bool` on `queue_add` (engine, model, IPC and its 12 tests), or the
+frontend calling `queue_move_to_top` per new id. The loop won: it changes no
+IPC surface, and it is **skipped entirely** when no *other* item is `queued` —
+the common case of an idle queue — so the usual single download costs one
+`queue_add` and nothing else. The calls go back to front, so a batch keeps the
+order it was pasted in. A backend flag remains an option if a future UI ever
+needs priority without the queue being non-empty.
+
+### D101 — The restart test's download margin: 3 s → 8 s
+
+`the_queue_survives_a_restart_and_the_interrupted_item_can_resume` reads
+`queue.json` *while the fake tool runs* and asserts it says `downloading`, the
+value a crash would leave behind (D91). One run out of the ~130 so far failed
+with `done` on the right: the test task was starved past the fake's 3 000 ms
+window, so the read landed after the tool had finished — a race in the *test*,
+not in the engine, and the same class of thing the `veryslow-<ms>` URL was
+introduced for. The margin is 8 000 ms now; the resume phase at the end waits
+it out. Four further full runs of the binary and one full `cargo test` are
+green, and the failures that would matter (a file still saying `queued`) fail
+immediately rather than waiting.

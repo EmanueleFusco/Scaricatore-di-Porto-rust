@@ -2362,3 +2362,65 @@ came from reading the code with those tests in hand.
      caps, the notification) — still the only thing missing before the phase
      can be called done. **S7** was added for the crash case (D91).
   2. Then M3 (playlists and other sites).
+
+## 2026-10-15 — M2 / the Add bar, the labels and an M1-parity pass after the first hands-on feedback
+- **Done**
+  - The Add bar is the standard download again, on the queue's single path (D98).
+    Inspection starts on its own after 500 ms (the original's `on_url_change` →
+    `after(500, init_submit)`), so pasting a link produces a row with title,
+    site, duration and the resolutions that video really reports; the two
+    actions are **Scarica** (primary: new items go on top, only when some other
+    item is queued — D100) and **Aggiungi alla coda** (appended). Both check
+    whatever is still in the box *and wait for it* before adding, which is the
+    defect the first build shipped: the button was disabled and the click a
+    silent no-op whenever the rows were not there yet.
+  - Quality: preset = cap (`MaxHeight`) over 2160/1440/1080/720/480/360 + Best +
+    Solo audio; per row = the video's own heights as *exact* choices (the
+    original's `1080p` semantics, spec §8.2) + Best + Solo audio. The "audio
+    only" checkbox is gone: it was the missing `queue.add.audio` (D99) and a
+    second way to say what the preset already says.
+  - Labels: the three missing keys, a fourth found by machine
+    (`queue.add.playlist.unsupported`, set as a row's `errorKey`), heights as
+    parameters instead of 16 fixed keys, "Qualità predefinita", "Svuota la
+    lista", the list counter is the whole queue (`tCount`) and not the rows in
+    the viewport, the notification checkbox moved to a new "Comportamento"
+    section, the stale first-run text ("La coda arriva con M2") replaced.
+  - Guards (D99), all three verified by breaking them on purpose and watching
+    the test fail, then restoring: `src/lib/i18n/usage.test.ts` (frontend scan:
+    literal keys, *assigned* keys, every state and action, quality labels at
+    heights no list covers), `error.rs`/`ytdlp.rs` (every backend error code),
+    `services/notify.rs` (every `toast.` literal of the three files that build
+    them, scanned rather than listed).
+  - Test-only: the restart test's download margin 3 s → 8 s (D101) after one
+    observed flake where the file said `done` and the test asserted
+    `downloading`, i.e. the test task was starved past the fake's window.
+- **Verified by running**
+  - `cargo fmt --all -- --check`: ok. `cargo clippy --all-targets -- -D warnings`: clean.
+  - `cargo test`: **414 passed, 3 ignored** (304 lib, 3 bundled_tools, 9 download,
+    8 m1_ipc, 16 process_tree, 21 queue_engine, 12 queue_ipc, 6 settings_ipc,
+    13 tools, 22 ytdlp_job); `cargo test --test queue_engine` alone: 21 green,
+    three more runs green before the margin change.
+  - `npm test`: **215** green (206 + the 9 new i18n/usages tests). `npm run
+    check`: 0 errors, 0 warnings. `npm run build`: ok (183,54 kB, 56,35 kB gzipped).
+  - The two guards, broken on purpose: a renamed key in
+    `stores/addbar.svelte.ts` and a renamed toast in `queue/engine.rs` both made
+    the new tests fail with the key named; restored, green.
+- **Not verified / stubbed**
+  - **Still not clicked**: the GUI. The new flow (paste → row → per-row quality →
+    Scarica) is type-checked, unit-tested where it is pure, and built, but no
+    window has shown it. The manual list at the end of the previous M2 block
+    still stands, with item 1 and 2 rewritten for the two actions.
+  - Playlists remain M3: a playlist link is refused with a message that says so
+    (the message is now a real dictionary entry).
+- **Spec items marked "verify" that I checked**: none new — no new tool flag,
+  URL, crate API or asset name. The 500 ms figure is the original's own
+  (`on_url_change`), not a guess.
+- **Decisions/deviations (also in DECISIONS.md)**: D98 (the queue extends the
+  standard download), D99 (i18n guards, parameterised heights), D100 (priority
+  via `queue_move_to_top`, no flag on `queue_add`), D101 (test margin 3 s → 8 s).
+- **Next step**
+  1. The manual check list (the window): paste one link and press **Scarica**;
+     paste several and compare **Scarica** with **Aggiungi alla coda**; then the
+     rest of the list — pause/resume/cancel, restart and Resume, the two caps,
+     the notification, the drag-and-drop.
+  2. Then M3 (playlists and other sites), which is what the queue was built for.
