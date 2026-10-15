@@ -2068,3 +2068,26 @@ caso parte subito (`inspectDelay(true) === 0`). È una deviazione piccola e
 deliberata dalla parità con l'originale, che debounceva anche l'incolla perché
 aveva un solo percorso di input; qui l'incolla è l'interazione dominante
 (spec §2.3), e con la cache di D75 il tempo che resta è tutto estrazione.
+
+### D109 — One artifact per Linux format, not one per platform
+
+A manual run (`workflow_dispatch`) is how installers are obtained to try by
+hand, and GitHub hands an artifact back as a single zip. With `bundle/**` in
+one artifact, the 5 MB `.deb` could only be downloaded together with the
+~110 MB AppImage: the three Linux formats were one heavy archive.
+
+The `bundle` job now uploads one artifact per Linux format —
+`scaricatore-di-porto-linux-x64-deb`, `-rpm`, `-appimage` — each with
+`if-no-files-found: error`, so a format that silently stops being produced
+still fails the run. Windows ships one format (`nsis`) and macOS two files of
+the same product (the `.dmg` and the `.app.zip`), so a single artifact stays
+right there.
+
+The release path is untouched: the `release` job collects every
+`scaricatore-di-porto-*` artifact, flattens the folders and attaches the files
+one by one, which is where a user of a published release already picks the
+format they want.
+
+Numbered D109 on purpose: this branch is cut from `main`, which still ends at
+D76, while `m2-queue` carries D77–D108. When the two meet, this entry belongs
+*after* D108.

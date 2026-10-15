@@ -379,7 +379,47 @@ jobs:
             echo "pacchettato e rimosso: $out"
           done
 
+      # One artifact per format on Linux, instead of one per platform.
+      #
+      # A manual run (`workflow_dispatch`) is how files are obtained to try by
+      # hand, and GitHub hands an artifact back as a single zip. With
+      # `bundle/**` in one artifact, taking the 5 MB `.deb` meant downloading
+      # the ~110 MB AppImage together with it. Each Linux format now travels on
+      # its own. Windows ships one format (`nsis`) and macOS two files of the
+      # same product (the `.dmg` and the `.app.zip`), so a single artifact stays
+      # right there.
+      #
+      # The `release` job is unaffected: it collects every
+      # `scaricatore-di-porto-*` artifact and attaches the files one by one.
+      - name: Upload the .deb
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: scaricatore-di-porto-${{ matrix.label }}-deb
+          path: src-tauri/target/release/bundle/deb/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the .rpm
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: scaricatore-di-porto-${{ matrix.label }}-rpm
+          path: src-tauri/target/release/bundle/rpm/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: scaricatore-di-porto-${{ matrix.label }}-appimage
+          path: src-tauri/target/release/bundle/appimage/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload the bundle
+        if: runner.os != 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: scaricatore-di-porto-${{ matrix.label }}

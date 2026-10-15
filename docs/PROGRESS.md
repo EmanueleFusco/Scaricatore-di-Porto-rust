@@ -2052,3 +2052,30 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
   1. Prova manuale dell'interfaccia sulla macchina di sviluppo (URL, altezza,
      audio, cartella, annulla) — è l'unica cosa che qui non si può fare.
   2. Merge del branch dopo la revisione; poi M2 (coda).
+
+## 2026-10-15 — CI / one artifact per Linux format (spec §13.5)
+- **Done**
+  - The `bundle` job used to upload one artifact per platform, with all three
+    Linux formats (`.deb`, `.rpm`, `.AppImage`) inside it. Since GitHub returns
+    an artifact as one zip, getting the 5 MB `.deb` meant downloading the
+    ~110 MB AppImage with it. Linux now gets **one artifact per format**
+    (`scaricatore-di-porto-linux-x64-deb`, `-rpm`, `-appimage`), each with
+    `if-no-files-found: error`. Windows (`nsis`) and macOS (`.dmg` +
+    `.app.zip`) keep their single artifact: one product, one format.
+  - The `release` job needs no change: it collects every
+    `scaricatore-di-porto-*` artifact, flattens the folders and attaches the
+    files one by one, so a published release already offers them separately.
+- **Verified by running**
+  - `node scripts/check-ci-syntax.mjs`: 10 `run:` blocks valid.
+    `node scripts/check-ci-runners.mjs`: no floating or deprecated images, all
+    actions on Node 24. The workflow YAML parses and lists the four upload
+    steps with their names and conditions.
+- **Not verified / stubbed**
+  - **The workflow itself has not run.** The split can only be seen on GitHub:
+    `Actions → ci → Run workflow`, pick this branch, and the `bundle` job's
+    artifacts must appear as three separate entries for `linux-x64`.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D109.
+- **Next step**
+  1. Push the branch, dispatch the workflow on it, check the three artifacts,
+     then open the PR into `main`.
