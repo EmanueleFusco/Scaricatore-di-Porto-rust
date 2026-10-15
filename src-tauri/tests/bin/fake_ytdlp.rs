@@ -28,8 +28,16 @@ fn main() {
 
     write_pid();
 
+    // The fixtures copy this one binary under the `yt-dlp`, `qjs` **and**
+    // `ffmpeg` names, and the probe asks each tool with its own documented
+    // flag: `--version` for yt-dlp and qjs, `-version` for ffmpeg. An
+    // unrecognised probe must never fall through to the download path.
     if args.first().map(String::as_str) == Some("--version") {
         println!("{VERSION}");
+        return;
+    }
+    if args.first().map(String::as_str) == Some("-version") {
+        println!("ffmpeg version 9.9.9-fake");
         return;
     }
 
@@ -51,6 +59,20 @@ fn main() {
     let code = if inspect {
         inspect_url(&url, &runtime)
     } else {
+        // A download has a URL after `--` and a folder to write into, and both
+        // come from the app. Neither is guessed: refusing here is what keeps a
+        // probe (or a mistake) from writing a fake media file into the
+        // process's working directory — which is how one of those files once
+        // landed in the repository root and was committed.
+        if url.is_empty() {
+            eprintln!("ERROR: not a download: no URL after `--`");
+            std::process::exit(2);
+        }
+        let home = paths_value(&args, "home:");
+        if home.as_ref().is_none_or(|path| path.as_os_str().is_empty()) {
+            eprintln!("ERROR: not a download: no `--paths home:` folder");
+            std::process::exit(2);
+        }
         download_url(&args, &url, &runtime)
     };
     std::process::exit(code);
@@ -317,7 +339,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         }
         emit_download_line("downloading", millis, millis, "vp9");
         eprintln!("SDP_PP|started|Merger");
-        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
         let file = home.join(safe_name(url));
         let _ = std::fs::write(&file, b"fake media bytes");
@@ -339,7 +361,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         println!("SDP_FORMAT|137+140|1080|vp9|mp4a.40.2");
         emit_download_line("downloading", 2048, 4096, "vp9");
         emit_download_line("finished", 4096, 4096, "vp9");
-        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");
         let _ = std::fs::write(&file, b"fake media bytes");
@@ -362,7 +384,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         println!("SDP_FORMAT|137+140|720|avc1|mp4a.40.2");
         emit_download_line("downloading", 2048, 4096, "avc1");
         emit_download_line("finished", 4096, 4096, "avc1");
-        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
         let file = home.join("Fake title [fakeid].mkv");
         let _ = std::fs::write(&file, b"fake media bytes");
@@ -382,7 +404,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         }
         emit_download_line("downloading", total, total, "vp9");
         eprintln!("SDP_PP|started|Merger");
-        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let home = home_dir(args);
         let _ = std::fs::create_dir_all(&home);
         let file = home.join(safe_name(url));
         let _ = std::fs::write(&file, b"fake media bytes");
@@ -402,7 +424,7 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
 
     // Write the output where `--paths home:` says, with a name that is never
     // guessed by the app (it must read SDP_FILE).
-    let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+    let home = home_dir(args);
     let _ = std::fs::create_dir_all(&home);
     let opus = args.iter().any(|arg| arg == "-x");
     if opus {
@@ -450,6 +472,17 @@ fn paths_value(args: &[String], prefix: &str) -> Option<PathBuf> {
         .filter(|pair| pair[0] == "--paths")
         .map(|pair| pair[1].clone())
         .find_map(|value| value.strip_prefix(prefix).map(PathBuf::from))
+}
+
+/// Where a download writes, from `--paths home:`.
+///
+/// `main` refuses a download invocation without it, so the `expect` documents
+/// an invariant rather than a guess: falling back to the process's working
+/// directory here is exactly the accident this file must not repeat.
+fn home_dir(args: &[String]) -> PathBuf {
+    paths_value(args, "home:")
+        .filter(|path| !path.as_os_str().is_empty())
+        .expect("main rejects a download without --paths home:")
 }
 
 fn sleep_forever() -> ! {
