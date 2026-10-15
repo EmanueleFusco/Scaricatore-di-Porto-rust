@@ -798,10 +798,11 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
                 vec![
                     // A download with a **clock** the test sets, so the
                     // assertions below are never racing a 400 ms fake that can
-                    // finish underneath them. Three seconds is the margin; the
-                    // resume at the end waits it out.
-                    fx.request("https://a.example/veryslow-3000"),
-                    fx.request("https://b.example/veryslow-3000"),
+                    // finish underneath them. Eight seconds is the margin: it
+                    // has to survive a loaded machine that gets no CPU for a
+                    // while, and the resume at the end waits it out.
+                    fx.request("https://a.example/veryslow-8000"),
+                    fx.request("https://b.example/veryslow-8000"),
                 ],
                 false,
             )
