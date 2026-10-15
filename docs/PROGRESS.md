@@ -2181,3 +2181,184 @@ Branch `m2-queue` (from `m1-single-video`, which is not in `main` yet).
      app mid-download and Resume; then Settings → Downloads with the two caps,
      and the notification with the switch on.
   2. Merge the branch after the review; then M3 (playlist and other sites).
+
+## 2026-10-15 — M2 / The queue's IPC layer as real IPC tests, and four real bugs
+
+Still branch `m2-queue`. Same phase: the queue was done, this step is the pass
+that makes its **claims** true rather than merely asserted in prose. Two of the
+four bugs below came out of a test that failed once in ten runs; the other two
+came from reading the code with those tests in hand.
+
+- **Done**
+  - **`tests/queue_ipc.rs` rewritten as real IPC tests.** The 14 tests it had
+      were placeholders that only proved the file compiled; they now go through
+      `tauri::test::MockRuntime` with the real `App`, the real handlers and the
+      real argument deserialisation (the `m1_ipc.rs` pattern). **12 tests**:
+    - `inspect_urls` answers one row per URL, **in the order the URLs were sent**,
+      and an empty list is not an error (three in parallel, answers in order,
+      §6.2);
+    - `queue_add` refuses a non-HTTP URL and keeps the others, reports duplicates
+      as `{url, itemId, title}` and adds them anyway on the second call with
+      `force`;
+    - an audio-only **quality** wins over the `kind` the frontend sent (§8.4);
+    - the actions on an unknown id answer `false`, they do not raise (§15: a
+      stale click must not be an error);
+    - `queue_reorder` / `queue_move_to_top` change the order over the wire;
+    - `queue_lanes` returns the lanes the settings actually clamped to;
+    - `read_links_file` reads a dropped `.txt` and refuses a directory **with a
+      message**, not a panic;
+    - `app_set_language` travels from the webview to the backend (D79's
+      fallback) and the queue settings survive `settings_save`/`settings_get`
+      clamped at both ends (this one goes through the real `AppState`, the
+      document on disk and the engine that reads it).
+  - **Four more `queue_engine` tests** (21 in all) and **three more unit tests**
+      (300 in the lib), covering what the previous pass left untested:
+    - the add → `queue_list` → event → `queue.json` path the frontend actually
+      walks, checked at all three points;
+    - the snapshot's **wire shape**: the states as strings, `options.kind`,
+      `options.quality`, and every optional an explicit `null` rather than a
+      missing key (the frontend's normaliser would default it, the wire has one
+      shape);
+    - the options are **frozen into the item**, so a later settings change
+      cannot alter what the runner will use (§7.1);
+    - a group is upserted (replaced, not appended) and survives the file;
+    - pausing an item that is not running parks it (D90);
+    - **the file says an item is running while the tool runs** (D91), read from
+      the disk and not from the engine, and a restart over that file parks it;
+    - **concurrent writes of one path are each a whole document** (D92): eight
+      threads, twelve rounds, ~40 KB payloads;
+    - **the frontend reducer**: `applyUpdate` and `applySnapshot` in
+      `queue.ts`, nine new tests (197 → 206), covering the per-row identity a
+      tick must preserve, the removal, the order, and the stale event.
+  - **Seven fixes** (D89–D93, D96, D97). D91, D92 and D96 came out of the
+      flaky runs; D89, D93, D95 and D97 out of reading the same code with the
+      new tests in hand:
+    - a **running** item that is cancelled or removed now has its temp
+      directory deleted **before** the row records it, and with the queue's lock
+      released. It used to be deleted after, which left a window where
+      "Cancelled" and "its directory is gone" were not the same statement — the
+      startup sweep of §4.10 lists what the queue still owns, so a directory
+      that outlives its row is invisible to it. `QueueEngine::signal` no longer
+      deletes anything while holding the state mutex either;
+    - `queue_pause` on an item that is **not running** used to **cancel** it — a
+      queued row would come back as "Cancelled" (Retry), and a row that had just
+      finished would lose its progress and read "Cancelled" while keeping its
+      file. The UI never offers Pause there and `pause_all` never reaches it,
+      but the command is public IPC: it now parks the item as `Paused`, so the
+      row says Resume, and leaves an already parked item alone;
+    - **an item is written to `queue.json` as running before yt-dlp is spawned**
+      (D91). `start_item` set the state in memory and never wrote the file, so
+      for the whole life of a download the document claimed the item had not
+      started. Spec §7.4's recovery can only park what it can see was in an
+      active stage, so **a crash left the item in `Queued` and the next launch
+      downloaded it again by itself** — no Resume, no question asked. The
+      invariant is now: a file that says `Queued` never has a tool behind it.
+      One extra write per item, on top of the one at the end;
+    - **the temp file of an atomic write is per write, not per process** (D92).
+      `.<file>.tmp-<pid>` was shared by every concurrent write to the same
+      destination inside one process, so "temp + rename" was not atomic at all:
+      two writers overwrote each other's bytes through two file descriptors,
+      the first rename published the other's half-written document, and the
+      second failed with `ENOENT`. The next reader found unparseable JSON and —
+      as §7.4 asks — moved it to `.bak` and carried on with **defaults**: an
+      empty queue, or default settings, because two threads happened to save at
+      once. Now `.<file>.tmp-<pid>-<counter>` with a process-wide `AtomicU64`.
+      This one predates M2 (`paths.rs` is M0) and the queue is simply the first
+      thing that writes concurrently by design;
+    - **`save_settings` and `RuntimeMemoryStore::remember` move the file and the
+      in-memory copy under one lock** (D93). Two saves can overlap — the
+      settings page saves on every change and the app saves again on the way out
+      — and each one carries a whole document, so the old "write the file, then
+      update the copy" could leave the engine scheduling with settings that were
+      never on disk. The runtime memory has the same shape: two yt-dlp jobs can
+      learn a degraded runtime at the same moment. Both still write the file
+      **first**, so a failed write leaves the copy on the last saved values;
+    - **nothing starts after `shutdown()`** (D96). The scheduler checks
+      `stopped` at the top of each pass, but a pass already in flight went on to
+      `start_item` for everything it had planned: an item could be spawned
+      *after* the app began tearing down, escaping the exit hook's kill, and it
+      would rewrite `queue.json` while the next launch was reading it. The
+      check moved into `start_item`, before it takes the lock;
+    - **the frontend never walks a row back** (D97). `load()` replaced the whole
+      queue with the snapshot; a `queue_list` overtaken by an event in flight
+      put a *running* item back to `queued`, and an idle queue emits nothing
+      that would correct it — the row stayed wrong until the user touched
+      something. The store remembers the `seq` it had when the read went out
+      and, if the answer was overtaken, takes only the rows it is missing. To
+      make that testable at all, the reducer moved from the store into
+      `$lib/queue` as a pure function: a `$state` field needs the Svelte
+      compiler, which the vitest config deliberately does not use, so the
+      store's own "testable without an event bus" claim had never been true.
+- **Verified by running**
+  - `cargo test`: **411 tests** green (301 lib, 21 `queue_engine`, 12
+      `queue_ipc`, 3 bundled_tools, 9 download, 8 m1_ipc, 16 process_tree, 6
+      settings_ipc, 13 tools, 22 ytdlp_job) + the 3 `#[ignore]` real-tool tests.
+      `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+  - **The flakes were chased, not retried away.** `cargo test --test
+      queue_engine` failed about one run in ten on the first binary. The log
+      named `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`
+      with the recovered state `Queued` (and, in another run, `Downloading`),
+      and `an_added_item_is_persisted_patched_and_gone_from_a_restart` with an
+      **empty** queue plus `cannot write the queue file: No such file or
+      directory` in stderr. Those two symptoms are D91 and D92 — how a
+      crash-recovery bug and a data-loss bug in the same file path announce
+      themselves. Each new test was checked to **fail without its fix**: the
+      D91 unit test prints `Queued`, the D92 test fails with the old name on the
+      first round.
+  - **The suite was soaked 30 times, three times over**, and each soak found
+      something: the first the two product bugs above, the second and third five
+      test-side races. That is the whole reason for a soak — the tests that only
+      fail on a loaded machine are the ones that would have failed in CI
+      intermittently and been re-run until green.
+  - `the_queue_settings_travel_through_the_settings_ipc_and_are_clamped` now
+      goes through the **real** `settings_get` / `settings_save` commands and
+      reads the document back off disk, instead of calling `AppState` directly:
+      it is the only test in the file that proves the frontend's shape of the
+      request (a whole camelCase document) deserialises into `Settings`.
+  - **Five of the flakes were the tests themselves, and are fixed without being
+      weakened.** Each was a test observing a task's output
+      the instant the *state* said it should be there, and each is now a poll
+      with a deadline, which is what the other waits in the file already do:
+    - a test that read `queue.json` right after seeing a state in memory was
+      reading the **previous** document: the state lock is released before the
+      file is touched, so there is a microsecond in which the engine says
+      `downloading` and the disk still says `queued`. It now waits for the file
+      to leave `queued`. And the fake grew a `veryslow-<ms>` URL whose download
+      takes exactly as long as the test asks, so the assertion pins the real
+      value (`downloading`) instead of "not queued": a 400 ms download can
+      finish while a loaded machine is still running the assertion;
+    - two tests corrupted or inspected the file while a `shutdown()`-ed engine
+      could still write to it, which a real app cannot do (exiting kills the
+      tasks). They now wait until the queue is quiet, where "quiet" also covers
+      an item still `Queued` because the stopped scheduler never got to it;
+    - the idle-notification test read the notifications as soon as the
+      counters said idle, but the notifier is called *after* the state is
+      updated. It waits for the first notification and then 500 ms more, because
+      "exactly one" is a claim about absence and absence has to be waited for
+      too;
+    - the coalescing test's fixed 300 ms sleep became the same wait, on the last
+      event reporting a settled queue.
+  - `npm test`: **206** green (197 + the nine reducer tests). `npm run check`:
+      0 errors, 0 warnings; `npm run build` ok (184 kB, 56 kB gzipped).
+  - The count in the M2 block above (328 tests, 14 `queue_ipc`, and its claim
+      that writes happen "exactly on the state changes spec §7.4 lists (add,
+      remove, finish)") is what that earlier run reported and is left as
+      written: a **start** writes too, now, and that is D91.
+- **Not verified / stubbed**
+  - **Still not clicked**: the GUI, the real network path and the system
+      notification are as unverified as in the M2 block above.
+  - **The fixes were not exercised against a real crash.** D91 is proven by
+      reading the file while a tool runs and by reopening it, not by `kill -9`.
+      The real kill is the new spike **S7** in `docs/SPIKES.md` (a table to
+      fill in per OS), added to the manual list for exactly this reason.
+- **Spec items marked "verify" that I checked**: none new. No new tool flag,
+      URL, crate API or asset name was used in this step: the fixes are
+      re-orderings of existing paths, one temp-file name and one lock.
+- **Decisions/deviations (also in DECISIONS.md)**: D89, D90, D91, D92, D93,
+      D94, D95, D96, D97.
+- **Next step**
+  1. The manual check listed at the end of the M2 block (paste several links,
+     watch two downloads, pause/resume/cancel, restart and Resume, the two
+     caps, the notification) — still the only thing missing before the phase
+     can be called done.
+  2. Then M3 (playlists and other sites).

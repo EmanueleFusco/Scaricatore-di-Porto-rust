@@ -163,6 +163,22 @@ impl Fixture {
         self.engine_with(LaneConfig::default(), false)
     }
 
+    /// An engine whose tasks were never started: nothing runs, so what it says
+    /// about an item is only what `add()` put there.
+    fn idle_engine(&self) -> QueueEngine {
+        QueueEngine::open(EngineConfig {
+            path: self.queue_path.clone(),
+            provider: Arc::new(FakeTools {
+                ytdlp: self.ytdlp.clone(),
+                memory: Arc::clone(&self.memory),
+            }),
+            sink: Arc::new(|_: &QueueUpdate| {}),
+            lanes: LaneConfig::default(),
+            notify_on_idle: false,
+            notifier: None,
+        })
+    }
+
     fn request(&self, url: &str) -> AddRequest {
         AddRequest {
             url: url.to_owned(),
@@ -296,6 +312,128 @@ fn state_of(snapshot: &QueueSnapshot, id: &str) -> Option<ItemState> {
         .iter()
         .find(|item| item.id == id)
         .map(|item| item.state)
+}
+
+/// A `serde_json::Value` of an id, to compare an item read off the file.
+fn json_id(id: &str) -> serde_json::Value {
+    serde_json::Value::String(id.to_owned())
+}
+
+/// The state **`queue.json`** gives an item, read from the disk and not from the
+/// engine, waiting for the engine to catch up.
+///
+/// The wait is not a fudge: an in-memory state change becomes visible to
+/// `snapshot()` a moment before the write that records it (the state lock is
+/// released before the file is touched, and never held across a write), and a
+/// polling test that woke up in that microsecond would read the *previous*
+/// document. So this waits for the file to leave `queued`, and the caller
+/// asserts the exact value it finds — which is only meaningful because the
+/// item's download is long enough for the read to land inside it.
+async fn state_after_the_start(fx: &Fixture, id: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let last = read_state_on_disk(fx, id);
+        if last.as_deref().is_some_and(|state| state != "queued") {
+            return last.expect("just checked");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the file never recorded {id} as running; it says {last:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Wait for something the engine's tasks deliver to the sink — an event, a
+/// notification, a toast — the same way [`wait_for`] waits for a state: by
+/// polling, with a deadline that fails the test with the reason.
+async fn wait_until(
+    fx: &Fixture,
+    what: &str,
+    within: Duration,
+    ready: impl Fn(&[QueueUpdate]) -> bool,
+) {
+    let deadline = Instant::now() + within;
+    loop {
+        let seen = fx.updates.lock().expect("updates").clone();
+        if ready(&seen) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {within:?} waiting for {what}; {} events so far",
+            seen.len()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The recovery toast of spec §7.4 reaching the sink: the flusher is a task, so
+/// "it arrived" is a wait, not an instant.
+async fn wait_for_recovery_toast(fx: &Fixture) {
+    wait_until(
+        fx,
+        "the recovery toast to reach the UI",
+        Duration::from_secs(10),
+        |seen| {
+            seen.iter().any(|update| {
+                update
+                    .toast
+                    .as_ref()
+                    .is_some_and(|toast| toast.message_key == "toast.queueRecovered")
+            })
+        },
+    )
+    .await;
+}
+
+/// The first event that carries a given item, the way the frontend's store
+/// patches one row.
+async fn wait_for_item_event(fx: &Fixture, id: &str) {
+    let wanted = id.to_owned();
+    wait_until(
+        fx,
+        "the item to arrive over the event channel",
+        Duration::from_secs(10),
+        move |seen| {
+            seen.iter().any(|update| {
+                update.removed.contains(&wanted)
+                    || update.items.iter().any(|item| item.id == wanted)
+            })
+        },
+    )
+    .await;
+}
+
+/// Wait until an engine is really quiet after `shutdown()`: the item is either
+/// parked (it was running and has now stopped) or still `Queued`, which is not
+/// parked but can no longer move — the scheduler that would have started it is
+/// gone. A test that returns before this point leaves a task writing into a
+/// `TempDir` that is about to be deleted, which is how a whole suite ends up
+/// with a flaky neighbour.
+async fn wait_until_quiet(engine: &QueueEngine, id: &str) {
+    wait_for(
+        engine,
+        "the item to settle",
+        |snapshot| {
+            state_of(snapshot, id)
+                .is_some_and(|state| state.is_parked() || state == ItemState::Queued)
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+}
+
+fn read_state_on_disk(fx: &Fixture, id: &str) -> Option<String> {
+    let raw = fs::read_to_string(&fx.queue_path).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    document["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"] == json_id(id))?
+        .get("state")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 // ---------------------------------------------------------------------------
@@ -658,8 +796,12 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
         let ids = engine
             .add(
                 vec![
-                    fx.request("https://a.example/slow-first"),
-                    fx.request("https://b.example/slow-second"),
+                    // A download with a **clock** the test sets, so the
+                    // assertions below are never racing a 400 ms fake that can
+                    // finish underneath them. Three seconds is the margin; the
+                    // resume at the end waits it out.
+                    fx.request("https://a.example/veryslow-3000"),
+                    fx.request("https://b.example/veryslow-3000"),
                 ],
                 false,
             )
@@ -671,6 +813,16 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
             Duration::from_secs(20),
         )
         .await;
+        // The file, read **while the tool runs**: this is what a crash (`kill
+        // -9`, a power cut) would leave behind, and it is the reason the state
+        // is written before the process is spawned (D91). A file that still
+        // said "queued" here would come back from the next launch as an item
+        // nobody had started, and the queue would download it again by itself.
+        assert_eq!(
+            state_after_the_start(&fx, &ids[0]).await,
+            "downloading",
+            "a running item is on disk as running, never as queued"
+        );
         // This is what closing the app mid-download looks like: cancel the
         // token of everything still running and stop.
         engine.shutdown();
@@ -680,7 +832,6 @@ async fn the_queue_survives_a_restart_and_the_interrupted_item_can_resume() {
     // Closing the app takes a moment: the kill is `SIGTERM` first, and the item
     // records itself as cancelled only once the process is really gone. Waiting
     // for that is also what a real exit hook would have to do.
-    eprintln!("FIRST_ID={first_id}");
     wait_for(
         &engine,
         "the killed item to settle",
@@ -804,8 +955,18 @@ async fn the_queue_file_survives_a_corruption_with_a_backup() {
     let fx = fixture();
     {
         let engine = fx.engine();
-        engine.add(vec![fx.request("https://a.example/slow-one")], false);
+        let id = engine
+            .add(vec![fx.request("https://a.example/slow-one")], false)
+            .added[0]
+            .clone();
+        // The item has to be finished before the file is corrupted. `shutdown`
+        // asks the running task to stop, and that task still writes the file
+        // once the process is really gone: a real app exits the process and
+        // nothing writes afterwards, a test cannot. Corrupting the document
+        // while a write is still in flight would be testing a race instead of
+        // the recovery.
         engine.shutdown();
+        wait_until_quiet(&engine, &id).await;
     }
     fs::write(&fx.queue_path, "{ not json at all").expect("corrupt it");
 
@@ -817,25 +978,9 @@ async fn the_queue_file_survives_a_corruption_with_a_backup() {
         "the broken document is kept for the human (spec §7.4)"
     );
 
-    // And the toast that says so reached the sink. The flusher is a task, so
-    // "it arrived" is a wait, not an instant.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let seen = fx.updates.lock().expect("updates").clone();
-        if seen.iter().any(|update| {
-            update
-                .toast
-                .as_ref()
-                .is_some_and(|toast| toast.message_key == "toast.queueRecovered")
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the UI has to be told, not left to find out: {seen:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    // And the toast that says so reached the sink: the UI has to be told, not
+    // left to find out.
+    wait_for_recovery_toast(&fx).await;
     engine.shutdown();
 }
 
@@ -858,6 +1003,28 @@ async fn the_footer_counters_and_the_idle_notification_follow_the_queue() {
     assert_eq!(snapshot.summary.running, 0);
     assert_eq!(snapshot.summary.queued, 0);
     assert_eq!(snapshot.summary.total, 3);
+
+    // The counters are visible a moment before the notification is sent: the
+    // state is updated under the lock and the notifier is called after it, so
+    // a test that read the notifications as soon as the queue looked idle would
+    // sometimes see none. Wait for the one, then give the others a chance to
+    // show up — "exactly one" is the claim, and a claim about absence has to
+    // wait too.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if !fx.notifications.lock().expect("notifications").is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the queue went idle and said nothing (spec §7.7)"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // The flusher's own task is what would send a second one, and it has a
+    // coalescing delay; a queue that is already idle cannot re-trigger the
+    // transition, so this only has to outlast the in-flight batch.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let notifications = fx.notifications.lock().expect("notifications").clone();
     assert_eq!(
@@ -960,8 +1127,18 @@ async fn the_events_carry_the_items_and_the_summary_and_are_coalesced() {
         Duration::from_secs(60),
     )
     .await;
-    // Give the flusher a moment to send the last batch.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The flusher is a task: "the last batch has been sent" is a wait, not an
+    // instant, and a fixed sleep would be a flake on a loaded machine.
+    wait_until(
+        &fx,
+        "the last event to report a settled queue",
+        Duration::from_secs(10),
+        |seen| {
+            seen.last()
+                .is_some_and(|update| update.summary.done == 4 && !update.summary.is_active())
+        },
+    )
+    .await;
 
     let seen = fx.updates.lock().expect("updates").clone();
     assert!(!seen.is_empty(), "something was emitted");
@@ -1051,4 +1228,151 @@ async fn out_of_range_lane_settings_are_clamped_rather_than_deadlocking() {
     .await;
     assert_eq!(snapshot.summary.done, 1);
     engine.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_added_item_is_persisted_patched_and_gone_from_a_restart() {
+    let fx = fixture();
+
+    // The frontend's three sources, in the order it meets them: the initial
+    // `queue_list`, the events, and the file after a restart.
+    let queue = fx.engine();
+    let added = queue.add(vec![fx.request("https://a.example/slow-one")], false);
+    let id = added.added[0].clone();
+    assert!(fx.dir.path().join("queue.json").is_file());
+
+    // 1. `queue_list` right after the add (what the store calls to fill the list).
+    let snapshot = queue.snapshot();
+    assert_eq!(snapshot.items.len(), 1);
+    assert_eq!(snapshot.items[0].id, id);
+    assert_eq!(snapshot.summary.total, 1);
+    // The scheduler is already free to pick the item up, so "queued" is only
+    // true for as long as it has not: the invariant is that the footer counts
+    // it exactly once, in whichever bucket it happens to be.
+    assert_eq!(
+        snapshot.summary.queued + snapshot.summary.running,
+        1,
+        "the new item must be counted: {snapshot:?}"
+    );
+
+    // 2. The event that patches the row.
+    wait_for_item_event(&fx, &id).await;
+
+    // 3. The file: a fresh engine over it finds the same item.
+    let reopened = fx.idle_engine();
+    assert_eq!(reopened.snapshot().items.len(), 1);
+    assert_eq!(reopened.snapshot().items[0].id, id);
+
+    // Let the running item really stop before the fixture's directory goes:
+    // a task that writes into a deleted temp dir is noise in the log of the
+    // next run, and "the test ended" is not the same moment as "the process is
+    // gone".
+    queue.shutdown();
+    wait_until_quiet(&queue, &id).await;
+}
+
+#[test]
+fn the_snapshot_is_the_shape_the_frontend_expects() {
+    // No scheduler, no flusher: this is about the *shape* of the wire, and a
+    // running engine would be racing the very fields under test.
+    let fx = fixture();
+    let queue = fx.idle_engine();
+    queue.add(vec![fx.request("https://a.example/slow-one")], false);
+    let json = serde_json::to_value(queue.snapshot()).expect("the snapshot is serialisable");
+    // `seq` is 0 because nothing has been emitted yet; the frontend only needs
+    // it to be there and to grow.
+    assert_eq!(json["seq"], 0);
+    assert_eq!(json["items"][0]["state"], "queued");
+    assert_eq!(json["items"][0]["url"], "https://a.example/slow-one");
+    assert_eq!(json["items"][0]["options"]["kind"], "video");
+    assert_eq!(json["items"][0]["options"]["quality"]["kind"], "maxHeight");
+    // Every optional is an explicit null, never a missing key: the frontend's
+    // normaliser would default it, but the wire has one shape.
+    for key in [
+        "file",
+        "runtime",
+        "requestedHeight",
+        "actualHeight",
+        "error",
+        "retryAt",
+    ] {
+        assert!(json["items"][0][key].is_null(), "{key} must be null");
+    }
+    assert!(
+        json["items"][0]["logTail"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "a new item has no log yet, but the key is there"
+    );
+    assert_eq!(json["items"][0]["autoRetries"], 0);
+    assert!(json["summary"]["parallelDownloads"].is_number());
+    assert_eq!(json["summary"]["perHostCap"], 2);
+    assert!(json["groups"].as_array().expect("an array").is_empty());
+}
+
+#[test]
+fn the_options_are_frozen_into_the_item_so_later_settings_cannot_change_them() {
+    use scaricatore_di_porto_lib::services::jsruntime::JsRuntimeMode;
+
+    let fx = fixture();
+    let queue = fx.idle_engine();
+    let mut options = ItemOptions {
+        kind: scaricatore_di_porto_lib::services::queue::model::Kind::Audio,
+        quality: QualityChoice::AudioOnly,
+        output_dir: fx.out.clone(),
+        ..ItemOptions::default()
+    };
+    options.runtime_mode = JsRuntimeMode::DenoOnly;
+    let added = queue.add(
+        vec![AddRequest {
+            url: "https://a.example/song".into(),
+            title: None,
+            site: None,
+            duration_sec: None,
+            options,
+            group_id: None,
+        }],
+        false,
+    );
+    let id = added.added[0].clone();
+
+    // Whatever happens to the settings afterwards (this test cannot change
+    // them: it has no settings store, and that is the point — the item carries
+    // its own snapshot), the item is what the runner will use.
+    let item = queue
+        .snapshot()
+        .items
+        .into_iter()
+        .find(|item| item.id == id)
+        .expect("the item");
+    assert_eq!(item.options.runtime_mode, JsRuntimeMode::DenoOnly);
+    assert_eq!(item.options.quality, QualityChoice::AudioOnly);
+    let spec = item.options.to_download_spec();
+    assert!(spec.quality.extracts_audio());
+    assert!(!spec.needs_merge(), "an audio-only item does not merge");
+}
+
+#[test]
+fn a_group_is_upserted_and_survives_the_file() {
+    use scaricatore_di_porto_lib::services::queue::model::QueueGroup;
+
+    let fx = fixture();
+    let queue = fx.idle_engine();
+    let group = QueueGroup {
+        id: "g1".into(),
+        title: "A playlist".into(),
+        folder: Some(fx.out.join("A playlist")),
+        index: 0,
+    };
+    queue.upsert_group(group.clone());
+    queue.upsert_group(QueueGroup {
+        title: "A playlist, renamed".into(),
+        ..group
+    });
+
+    let reopened = fx.idle_engine();
+    let groups = reopened.snapshot().groups;
+    assert_eq!(groups.len(), 1, "an upsert replaces, it does not append");
+    assert_eq!(groups[0].title, "A playlist, renamed");
 }

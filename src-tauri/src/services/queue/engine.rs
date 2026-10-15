@@ -134,6 +134,11 @@ impl State {
         self.items.iter().position(|item| item.id == id)
     }
 
+    fn item(&self, id: &str) -> Option<&QueueItem> {
+        let index = self.index_of(id)?;
+        self.items.get(index)
+    }
+
     fn item_mut(&mut self, id: &str) -> Option<&mut QueueItem> {
         let index = self.index_of(id)?;
         self.items.get_mut(index)
@@ -474,7 +479,7 @@ impl QueueEngine {
     /// Ask a running item to stop, or apply the signal right away when nothing
     /// is running.
     fn signal(&self, id: &str, signal: ControlSignal) -> Outcome {
-        let token = {
+        let (token, temp) = {
             let mut state = lock(&self.inner.state);
             let Some(index) = state.index_of(id) else {
                 return Outcome::NotFound;
@@ -485,30 +490,54 @@ impl QueueEngine {
                 .map(|entry| entry.token.clone());
             if let Some(token) = running_token {
                 state.items[index].control = signal;
-                Some(token)
+                (Some(token), None)
             } else {
-                let temp = state.items[index].temp_dir();
                 match signal {
                     ControlSignal::Remove => {
+                        let temp = state.items[index].temp_dir();
                         state.items.remove(index);
                         state.order_dirty = true;
                         note_removed(&self.inner, id);
+                        (None, Some(temp))
                     }
-                    _ => {
+                    ControlSignal::Cancel => {
+                        let temp = state.items[index].temp_dir();
                         let item = &mut state.items[index];
                         item.state = ItemState::Cancelled;
+                        item.control = ControlSignal::None;
                         item.error = None;
                         item.progress = ItemProgress::empty();
                         item.finished_at = Some(now_unix());
                         item.updated_at = now_unix();
+                        (None, Some(temp))
                     }
+                    // Pausing something that is not running can only come from a
+                    // stale view of the row — the engine pauses running items
+                    // through the token above. It parks the item rather than
+                    // pretending it was running: a queued item the user paused
+                    // must come back with Resume, not with Retry.
+                    ControlSignal::Pause => {
+                        let item = &mut state.items[index];
+                        if !item.state.is_parked() {
+                            item.paused_from = Some(item.state);
+                            item.state = ItemState::Paused;
+                            item.control = ControlSignal::None;
+                            item.progress.speed_bps = None;
+                            item.progress.eta_sec = None;
+                            item.updated_at = now_unix();
+                        }
+                        (None, None)
+                    }
+                    ControlSignal::None => (None, None),
                 }
-                // Spec §7.3: a cancelled item's temp dir goes, its finished
-                // outputs do not.
-                job::cleanup_job_dir(&temp);
-                None
             }
         };
+        // Spec §7.3: a cancelled item's temp dir goes, its finished outputs do
+        // not — and it goes with the lock released, because deleting a folder
+        // is not something to hold the queue still for.
+        if let Some(temp) = &temp {
+            job::cleanup_job_dir(temp);
+        }
         if let Some(token) = token {
             token.cancel();
         }
@@ -840,13 +869,23 @@ fn start_item(inner: &Arc<Inner>, id: String) {
     let now = now_unix();
     let token = CancellationToken::new();
     {
+        // Spec §4.2: "On app exit cancel all running items". An item the
+        // scheduler planned a moment before the exit must not start **after**
+        // it either: spawning yt-dlp while the app is tearing down is a
+        // process the exit hook cannot see, and it rewrites the queue file
+        // underneath whatever the next launch reads. Checked before the state
+        // lock, so nothing is left holding it if we bail.
+        if inner.stopped.load(Ordering::SeqCst) {
+            return;
+        }
         let mut state = lock(&inner.state);
         let Some(item) = state.item_mut(&id) else {
             return;
         };
         // The scheduler is the only writer of this transition, but the state
-        // can have moved between the plan and now (a cancel, a retry): a second
-        // look is cheaper than starting an item twice.
+        // can have moved between the plan and now (a cancel, a retry, the
+        // shutdown above): a second look is cheaper than starting an item
+        // twice.
         if !matches!(item.state, ItemState::Queued | ItemState::Interrupted) {
             return;
         }
@@ -865,6 +904,18 @@ fn start_item(inner: &Arc<Inner>, id: String) {
             },
         );
     }
+    // **The file is written before the tool is spawned**, and this is the whole
+    // point: a `queue.json` that still says `Queued` while yt-dlp runs comes
+    // back from a crash as "not started yet", and spec §7.4's recovery only
+    // knows how to park items it can see were in an active stage. The queue
+    // would then quietly download the item again by itself, with no Resume and
+    // no question asked (D91).
+    //
+    // The one thing this can get wrong is dying between here and the spawn: the
+    // file says `Downloading` while nothing ran, so the item comes back
+    // `Interrupted` and waits for a Resume it did not need. That is the cheap
+    // direction to be wrong in.
+    self_persist(inner);
     mark_dirty(inner, &id, true);
     tokio::spawn(run_item(Arc::clone(inner), id, token));
 }
@@ -969,7 +1020,25 @@ fn on_progress(inner: &Arc<Inner>, id: &str, progress: &JobProgress) {
 /// Record the end of an item: done, failed, cancelled, paused, removed.
 fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
     let now = now_unix();
-    let mut temp_to_clean: Option<PathBuf> = None;
+    // An item that is being cancelled or removed loses its temp directory
+    // **before** the row says so, and with the lock released: nothing may
+    // observe "Cancelled" and then look for a folder that is still being
+    // deleted — the startup sweep trusts that the two go together (spec §4.10).
+    //
+    // No TOCTOU here: the item is finished, so the scheduler will not start it
+    // again, and its temp path does not depend on the state being written.
+    let doomed = {
+        let state = lock(&inner.state);
+        state.item(id).and_then(|item| {
+            let doomed = matches!(item.control, ControlSignal::Cancel | ControlSignal::Remove)
+                || matches!(&outcome, JobOutcome::Cancelled);
+            doomed.then(|| item.temp_dir())
+        })
+    };
+    if let Some(temp) = &doomed {
+        job::cleanup_job_dir(temp);
+    }
+
     let mut toast: Option<QueueToast> = None;
     let notify;
     {
@@ -978,7 +1047,6 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
             return;
         };
         let control = state.items[index].control;
-        let temp = state.items[index].temp_dir();
 
         match control {
             ControlSignal::Pause => {
@@ -1005,7 +1073,8 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
                     item.updated_at = now;
                     item.progress = ItemProgress::empty();
                 }
-                temp_to_clean = Some(temp);
+                // The temp directory is already gone: see the top of the
+                // function.
             }
             ControlSignal::None => match outcome {
                 JobOutcome::Done {
@@ -1063,7 +1132,7 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
                     item.finished_at = Some(now);
                     item.updated_at = now;
                     item.progress = ItemProgress::empty();
-                    temp_to_clean = Some(temp);
+                    // Temp directory already gone, see above.
                 }
             },
         }
@@ -1081,9 +1150,6 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
     };
 
     lock(&inner.running).remove(id);
-    if let Some(temp) = temp_to_clean {
-        job::cleanup_job_dir(&temp);
-    }
     if let Some(toast) = toast {
         push_toast(inner, toast);
     }
@@ -1527,6 +1593,148 @@ mod tests {
         engine.pause_all();
         let reopened = self::tests::engine(&dir);
         assert!(reopened.snapshot().summary.paused_all);
+    }
+
+    /// A provider whose tool lookup never finishes, so an item started against
+    /// it stays in its first running state and nothing can finish it by
+    /// accident.
+    struct HangingProvider;
+
+    impl ToolProvider for HangingProvider {
+        fn environment(
+            &self,
+            _options: ItemOptions,
+        ) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_file_says_an_item_is_running_before_the_tool_is_spawned() {
+        let dir = TempDir::new().expect("temp dir");
+        let (sink, _seen) = collector();
+        let engine = QueueEngine::open(EngineConfig {
+            path: dir.path().join("queue.json"),
+            provider: Arc::new(HangingProvider),
+            sink,
+            lanes: LaneConfig::default(),
+            notify_on_idle: false,
+            notifier: None,
+        });
+        let id = engine
+            .add(vec![request("https://a.example/1", dir.path())], false)
+            .added[0]
+            .clone();
+
+        // What the scheduler does, without the scheduler: the item is running
+        // and a tool may be about to exist.
+        start_item(&engine.inner, id.clone());
+
+        // Read the **file**, not the engine. The invariant is about what a
+        // restart would find: a document that still says `Queued` for an item
+        // with yt-dlp behind it comes back from a crash as "not started yet",
+        // and the scheduler would run it again by itself (spec §7.4, D91).
+        let on_disk = read_queue_file(&dir);
+        let recorded = on_disk
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .expect("the item is in the file")
+            .state;
+        assert!(
+            recorded.lane().is_some(),
+            "a running item is recorded as active, never as queued: {recorded:?}"
+        );
+
+        // And the recovery of spec §7.4 works off that: the next launch parks
+        // it and waits for the user instead of downloading it again.
+        let reopened = self::tests::engine(&dir);
+        assert_eq!(state_of_id(&reopened, &id), ItemState::Interrupted);
+        assert_eq!(
+            reopened.owned_temp_names(),
+            vec![id],
+            "its temp dir is still its own (spec §4.10)"
+        );
+        engine.shutdown();
+    }
+
+    /// Spec §4.2: "On app exit cancel all running items" — and an item the
+    /// scheduler planned a moment before the exit must not start *after* it.
+    ///
+    /// The assertion is the item's state, not "the test survived": on the old
+    /// code this test reached `tokio::spawn` from a synchronous `#[test]` and
+    /// panicked with "there is no reactor running". The panic **is** the bug,
+    /// seen from a test that has no runtime to spawn into.
+    #[test]
+    fn nothing_starts_after_the_engine_is_shut_down() {
+        let dir = TempDir::new().expect("temp dir");
+        let engine = engine(&dir);
+        let id = engine
+            .add(vec![request("https://a.example/1", dir.path())], false)
+            .added[0]
+            .clone();
+        engine.shutdown();
+
+        // Exactly what the scheduler's loop does with a plan it computed a
+        // moment earlier.
+        start_item(&engine.inner, id.clone());
+
+        let item = engine
+            .snapshot()
+            .items
+            .into_iter()
+            .find(|item| item.id == id)
+            .expect("the item is still there");
+        assert_eq!(item.state, ItemState::Queued, "it never started");
+        assert!(
+            lock(&engine.inner.running).is_empty(),
+            "and no process is registered for it"
+        );
+    }
+
+    fn read_queue_file(dir: &TempDir) -> crate::services::queue::store::QueueFile {
+        let raw = std::fs::read_to_string(dir.path().join("queue.json"))
+            .expect("the queue file is there");
+        serde_json::from_str(&raw).expect("the queue file is valid JSON")
+    }
+
+    #[test]
+    fn pausing_an_item_that_is_not_running_parks_it_instead_of_cancelling_it() {
+        let dir = TempDir::new().expect("temp dir");
+        let engine = engine(&dir);
+        let id = engine
+            .add(vec![request("https://a.example/1", dir.path())], false)
+            .added[0]
+            .clone();
+
+        // Only reachable from a stale view of the row (the engine pauses running
+        // items through their token), and it must not pretend the item was
+        // running: a queued item the user paused comes back with Resume.
+        assert_eq!(engine.pause(&id), Outcome::Ok);
+        let item = engine
+            .snapshot()
+            .items
+            .into_iter()
+            .find(|item| item.id == id)
+            .expect("still there");
+        assert_eq!(item.state, ItemState::Paused);
+        assert_eq!(item.paused_from, Some(ItemState::Queued));
+        assert_eq!(engine.resume(&id), Outcome::Ok);
+        assert_eq!(state_of_id(&engine, &id), ItemState::Queued);
+
+        // And a parked item is not paused again into something else.
+        engine.pause(&id);
+        assert_eq!(state_of_id(&engine, &id), ItemState::Paused);
+    }
+
+    fn state_of_id(engine: &QueueEngine, id: &str) -> ItemState {
+        engine
+            .snapshot()
+            .items
+            .into_iter()
+            .find(|item| item.id == id)
+            .expect("the item")
+            .state
     }
 
     #[test]

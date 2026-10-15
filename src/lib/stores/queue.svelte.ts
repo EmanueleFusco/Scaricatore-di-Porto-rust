@@ -14,6 +14,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  applySnapshot,
+  applyUpdate,
+  emptyQueueState,
   isActive,
   isParked,
   normaliseAddResult,
@@ -24,38 +27,54 @@ import {
   type ItemAction,
   type QueueGroup,
   type QueueItem,
-  type QueueSnapshot,
+  type QueueState,
   type QueueSummary,
   type QueueToast,
   type QueueUpdate,
 } from "$lib/queue";
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 
-const EMPTY_SUMMARY: QueueSummary = {
-  total: 0,
-  queued: 0,
-  running: 0,
-  paused: 0,
-  interrupted: 0,
-  done: 0,
-  failed: 0,
-  cancelled: 0,
-  speedBps: null,
-  pausedAll: false,
-  parallelDownloads: 2,
-  perHostCap: 2,
-};
-
 class QueueStore {
+  /**
+   * The queue as **one value**, so the reducer in `$lib/queue` can stay pure
+   * and be tested without a Svelte compiler — the store is a shell that hands
+   * the value in and takes the result out.
+   *
+   * The components still read single fields (`summary`, `items`, `order`),
+   * through the getters below, and Svelte 5's fine-grained reactivity follows
+   * the reads: a tick that changes one item gives that item a new object and
+   * leaves the others identical, so one row repaints and the list does not
+   * (spec §11.7).
+   */
+  #state = $state<QueueState>(emptyQueueState());
+  #loaded = $state(false);
+
   /** Keyed by item id: the patch target of every event. */
-  items = $state<Record<string, QueueItem>>({});
+  get items(): Record<string, QueueItem> {
+    return this.#state.items;
+  }
   /** The queue order, as ids. The backend owns it; we only mirror it. */
-  order = $state<string[]>([]);
-  groups = $state<QueueGroup[]>([]);
-  summary = $state<QueueSummary>({ ...EMPTY_SUMMARY });
-  loaded = $state(false);
+  get order(): string[] {
+    return this.#state.order;
+  }
+  get groups(): QueueGroup[] {
+    return this.#state.groups;
+  }
+  get summary(): QueueSummary {
+    return this.#state.summary;
+  }
+  /** The newest `seq` already shown, so an older event is dropped. */
+  get summarySeq(): number {
+    return this.#state.seq;
+  }
+  get loaded(): boolean {
+    return this.#loaded;
+  }
   /** The last toast, already resolved to a key + params by the backend. */
-  toast = $state<QueueToast | null>(null);
+  get toast(): QueueToast | null {
+    return this.#state.toast;
+  }
+
   errorKey = $state<string | null>(null);
   errorDetail = $state<string | null>(null);
   /** Duplicates refused by the last `queue_add` (spec §7.3 "add anyway?"). */
@@ -90,74 +109,53 @@ class QueueStore {
   /** The initial read (spec §3 `queue_list`). */
   async load(): Promise<void> {
     if (!isTauriRuntime()) {
-      this.loaded = true;
+      this.#loaded = true;
       return;
     }
+    // What the UI already knows when the request goes out. A `queue_list` that
+    // comes back having been overtaken by events describes a queue that has
+    // already moved on, and applying it wholesale would put a row back to
+    // `queued` — possibly for good, if the queue went idle before the next
+    // event (D97).
+    const seq = this.#state.seq;
     try {
       const snapshot = normaliseSnapshot(await invoke<unknown>("queue_list"));
-      this.#applySnapshot(snapshot);
+      const previous = this.#state;
+      this.#write(applySnapshot(previous, snapshot, previous.seq > seq), previous);
     } catch (err) {
       this.#fail(err);
     } finally {
-      this.loaded = true;
+      this.#loaded = true;
     }
+  }
+
+  /**
+   * Write a new state back, **field by field**.
+   *
+   * Assigning `this.#state = next` would replace the whole object and
+   * invalidate every reader of every field, which is exactly the granularity
+   * spec §11.7 asks the UI not to lose: a tick that changes one item would
+   * repaint the footer too. Only the fields the reducer actually changed are
+   * assigned, so the reactivity stays per field.
+   */
+  #write(next: QueueState, previous: QueueState): void {
+    if (next.items !== previous.items) this.#state.items = next.items;
+    if (next.order !== previous.order) this.#state.order = next.order;
+    if (next.groups !== previous.groups) this.#state.groups = next.groups;
+    if (next.summary !== previous.summary) this.#state.summary = next.summary;
+    if (next.seq !== previous.seq) this.#state.seq = next.seq;
+    if (next.toast !== previous.toast) this.#state.toast = next.toast;
   }
 
   /**
    * Fold one event in.
    *
-   * Exported as a plain method (not inline in the listener) so the reducer is
-   * testable without a Tauri event bus.
+   * A method (not the listener body) so the reducer in `$lib/queue` is the one
+   * thing that decides, and it is tested there.
    */
   apply(update: QueueUpdate): void {
-    if (update.seq !== 0 && update.seq <= this.summarySeq) return;
-    if (update.seq !== 0) this.summarySeq = update.seq;
-
-    if (update.items.length > 0) {
-      // Patch only what changed: a new object per changed row, the same object
-      // for every other row.
-      const next = { ...this.items };
-      for (const item of update.items) {
-        next[item.id] = item;
-      }
-      this.items = next;
-      // An item the store has never seen arrives without an `order` event on a
-      // restart (the list came from `queue_list`), so only add what is missing.
-      const known = new Set(this.order);
-      const fresh = update.items.filter((item) => !known.has(item.id)).map((item) => item.id);
-      if (fresh.length > 0) this.order = [...this.order, ...fresh];
-    }
-
-    if (update.removed.length > 0) {
-      const gone = new Set(update.removed);
-      const next: Record<string, QueueItem> = {};
-      for (const [id, item] of Object.entries(this.items)) {
-        if (!gone.has(id)) next[id] = item;
-      }
-      this.items = next;
-      this.order = this.order.filter((id) => !gone.has(id));
-    }
-
-    if (update.order !== null) {
-      this.order = update.order.filter((id) => this.items[id] !== undefined);
-    }
-
-    this.summary = update.summary;
-    if (update.toast !== null) this.toast = update.toast;
-  }
-
-  /** The newest sequence seen, so an event that arrives out of order is ignored. */
-  summarySeq = 0;
-
-  #applySnapshot(snapshot: QueueSnapshot): void {
-    const next: Record<string, QueueItem> = {};
-    for (const item of snapshot.items) next[item.id] = item;
-    this.items = next;
-    this.order = snapshot.items.map((item) => item.id);
-    this.groups = snapshot.groups;
-    this.summary = snapshot.summary;
-    this.summarySeq = snapshot.seq;
-    if (snapshot.toast !== null) this.toast = snapshot.toast;
+    const previous = this.#state;
+    this.#write(applyUpdate(previous, update), previous);
   }
 
   /** Add links. Without `force` the duplicates come back to ask about. */
@@ -201,7 +199,7 @@ class QueueStore {
   }
 
   dismissToast(): void {
-    this.toast = null;
+    this.#state.toast = null;
   }
 
   /** One entry point for every per-item action (spec §11.5). */
@@ -240,7 +238,9 @@ class QueueStore {
   /** Reorder from the visible list: the new order of the ids on screen. */
   async reorder(ids: string[]): Promise<void> {
     if (!isTauriRuntime()) return;
-    this.order = ids;
+    // Shown immediately, the way a drag should feel; the backend owns the real
+    // order and sends it back in the next event.
+    this.#state.order = ids;
     await this.#invoke("queue_reorder", { ids });
   }
 

@@ -38,6 +38,14 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// The wire value, for tests and for anything that has to name a language.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::It => "it",
+            Self::En => "en",
+        }
+    }
+
     /// Resolve the persisted preference against a locale tag.
     ///
     /// Same rule as the frontend (`resolveLanguage`): an Italian or English

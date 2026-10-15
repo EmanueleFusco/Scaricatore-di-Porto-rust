@@ -2338,3 +2338,256 @@ Recorded because it is the second time in this project that "the tests pass"
 and "the app starts" are different claims (the first was the Windows CI run that
 found the `Path::is_absolute` difference, D20-ish). Starting the app is cheap
 and is worth doing before declaring a phase done.
+
+### D89 — A cancelled item's temp directory goes *before* the row says so
+
+Spec §7.3: "Cancel: kill the tree, **delete the item's temp dir**, never touch
+finished outputs." The first implementation deleted the directory a few lines
+*after* setting `state = Cancelled`, which is a real (if narrow) hole: anything
+that sees "Cancelled" and then looks for the directory can find it still there.
+
+Two things depend on the two going together. The startup sweep of spec §4.10
+lists the temp dirs the queue still **owns** and deletes what is left over, so a
+directory that outlives its row is invisible to it. And the frontend's own
+"the item is cancelled, so nothing is being written any more" reading is only
+true if the writer has really stopped.
+
+The order is now, on the path that matters — a **running** item that is
+cancelled or removed: kill the tree → delete the temp dir (with the queue's
+lock released, because deleting a folder is not something to hold the whole
+queue still for) → record the terminal state. There is no time-of-check /
+time-of-use window there: the item is already finished when `finish_item` runs,
+so the scheduler will not start it again, and its temp path does not depend on
+the state being written.
+
+The other path — cancelling an item that is not running (nothing to kill) —
+deletes the directory immediately after the mutation instead, again outside the
+lock. It cannot be reordered without a window of its own: the scheduler could
+start that item in between, and deleting the temp directory of a job that is
+about to run would be worse than the one it closes.
+
+Found by a **flaky** integration test — `assert!(!temp.exists())` right after the
+poll saw `Cancelled` — which failed roughly one run in ten. The test was not
+weakened: the code was made to keep the promise the test was making.
+
+### D90 — Pausing an item that is not running parks it, it does not cancel it
+
+`queue_pause` on a `Queued` item used to set it to `Cancelled`: the
+"nothing is running" branch of `QueueEngine::signal` treated every signal that
+was not `Remove` as a cancel. The same branch also hit a **finished** item —
+`pause` on a row that had just completed turned `Done` into `Cancelled`, with
+its progress wiped and its file pointer kept. The UI never offers Pause on
+either (only on rows with a lane), and `pause_all` only touches items with a
+lane, so it was unreachable — but the command is public IPC, and a stale view of
+a row is exactly the case where the user clicks Pause on something that has
+meanwhile finished or not started yet.
+
+Cancelling is a lie the user then has to undo: a queued item shows "Cancelled"
+(Retry) for something that was never downloaded, and its partial files — if any
+— were deleted. Pausing now parks the item as `Paused` with `paused_from` set,
+which is the state the spec already has for "stopped, waits for the user" and
+which `queue_resume` returns to `Queued` (D86). An item that is already parked
+is left exactly as it is.
+
+### D91 — An item is written to `queue.json` as *running* **before** the tool is spawned
+
+Found by a flaky integration test, one run in about ten:
+`the_queue_survives_a_restart_and_the_interrupted_item_can_resume` came back
+from its simulated restart with the item in state **`Queued`** — and, in another
+run, `Downloading`. Both are the same bug seen at two moments.
+
+Spec §7.4 says: "On startup items in an active stage become **Interrupted**
+and are shown with a 'Resume' button". That recovery can only see what the file
+says, and the file said `Queued`, because `QueueEngine::start_item` set the
+state to `Downloading` in memory, marked the item dirty for the flusher and
+spawned the task — and **never wrote the file**. The only writes were the ones
+`after_mutation` and `finish_item` do. So for the whole life of a download the
+document claimed the item had not started yet.
+
+A clean exit hid it: `finish_item` persisted `Cancelled` at the end, and the
+test reopened the file after the item had settled. A crash — `kill -9`, a power
+cut, an OOM kill, the window being closed with the process killed — leaves the
+file as it was, and the next launch **downloads the item again by itself**, with
+no Resume, no question asked and no sign that anything had happened. The `.part`
+files it starts from are still there, so it mostly resumes, but the user was
+never asked and the row never said `Interrupted`.
+
+The fix is one line and one place: `start_item` persists **after** taking the
+state lock and **before** `tokio::spawn`. The invariant now holds by
+construction:
+
+> a `queue.json` that says `Queued` never has a tool behind it.
+
+The only thing the new order can get wrong is dying between the write and the
+spawn: the file says `Downloading` while nothing ran, so the item comes back
+`Interrupted` and waits for a Resume it did not need. That is the cheap
+direction — one unnecessary click instead of a silent re-download — and it is
+the direction spec §7.4 chooses.
+
+**Cost:** one extra write of the queue document per item, on top of the one at
+the end. The §7.4 bound of "≤ 1 write/s while running" is about *progress*, and
+progress still never reaches the file; a start is a state change, not a
+progress tick, and it is the state change the crash case depends on.
+
+Covered by two tests that assert it: a unit test that reads `queue.json` (not
+the engine) while an item runs, and an assertion inside the restart integration
+test that reads the file while the fake yt-dlp is running. The unit test was
+checked against the old code and fails there, printing `Queued`.
+
+### D92 — The temp file of an atomic write is per **write**, not per process
+
+`paths::atomic_write` named its temp file `.<file>.tmp-<pid>`. Inside one
+process that name is **shared by every concurrent write to the same
+destination**, which makes "temp + rename" stop being atomic:
+
+1. writer A creates the file (truncating it) and starts writing;
+2. writer B creates the same file — a second file descriptor, its own offset —
+   and writes over A's bytes;
+3. A renames it over the destination: `queue.json` now holds whatever mixture
+   the two writes left, possibly truncated mid-document;
+4. B renames: `ENOENT`, and `settings.json`/`queue.json` silently kept the
+   broken version.
+
+Step 3 is the data loss: the next reader sees unparseable JSON, and both
+`Settings::load` and the queue's `store::load` answer a corrupt document the way
+the spec asks (§7.4) — move it to `.bak` and carry on with **defaults**. So the
+user's whole queue, or their settings, is replaced by an empty document because
+two threads wrote at the same moment.
+
+The M2 queue is the first thing that writes concurrently by design: its
+scheduler task, its flusher and each running item all persist, and the
+`queue:update` events, the actions and the item transitions can land together.
+The flaky test that led here printed it plainly in stderr —
+`cannot write the queue file: No such file or directory (os error 2)`, which is
+step 4, and the empty queue that followed is step 3.
+
+The name is now `.<file>.tmp-<pid>-<counter>` with a process-wide `AtomicU64`,
+so two writes can never meet. Cost: one static and one `fetch_add`. The test
+that proves it runs eight threads × twelve rounds over ~40 KB documents and
+fails immediately with the old name.
+
+### D93 — `save_settings` moves the file and the in-memory copy under one lock
+
+`settings_save` replaces the **whole** document, and two saves can overlap: the
+settings page saves on every change and the app saves again on the way out. The
+old order was "write the file, then take the lock and update the copy", so a
+second save could land its file between the two steps — and the engine, which
+reads the lanes and the notification switch from the in-memory copy, would then
+be scheduling with settings that were never on disk.
+
+Now the file write and the in-memory update happen under the same lock, file
+first: a failed write still leaves the engine on the last saved settings.
+
+### D94 — Every wait in `queue_engine.rs` is a poll with a deadline, never a fixed sleep
+
+The soak (30 runs of `cargo test --test queue_engine`, three times) found five
+separate flakes, all of the same shape: a test that looked at what a **task**
+produces the instant the **state** said it should be there.
+
+- the state is updated under the lock; the file write and the notifier call
+  happen after it, with no lock held;
+- the flusher is a task: "the last event has been sent" is a wait;
+- a `shutdown()`-ed engine's running task still writes the file once the
+  process is really gone — a real app cannot hit this, because exiting kills
+  the tasks, but a test that returns early can.
+
+Each is now a poll with a deadline that fails with the reason, which is what
+`wait_for` has done for states since the first version. Two claims needed care
+because they are claims about **absence**:
+
+- "exactly one idle notification": wait for the first, then wait again, or the
+  test proves nothing about the second through the third;
+- "the file never said `queued` while running": wait for the file to leave
+  `queued`, and assert `!= "queued"` rather than `== "downloading"`, because
+  the fake's download is 400 ms and a loaded machine can be slow enough that the
+  read lands after it finished. Every state except `queued` is one the item can
+  only reach **by having started**, and that is the invariant. The exact value
+  is pinned by a unit test whose tool lookup never returns.
+
+Recorded because the tempting alternative — "the test was flaky, let me just add
+a sleep" — is how a suite ends up with a 500 ms wait that hides a real
+interleaving. Five of the six flakes in this phase were the tests, and the two
+that were not (D91, D92) were the worst bugs of the phase.
+
+### D95 — The same lock discipline applies to the runtime memory, not only to the settings
+
+D93 was about `AppState::save_settings`; the same read-then-write pair exists in
+`RuntimeMemoryStore::remember` (spec §5.3.3: which runtime to start with, per
+pair of versions), so it is fixed the same way rather than left as the one place
+where the pattern still disagrees with itself.
+
+Two yt-dlp jobs can find the same degraded runtime at the same moment — two
+downloads of a YouTube link is the normal case, not an edge case — and each
+carries a whole document. The window between "the file is written" and "the
+copy is updated" is short, but the consequence is that the file and the memory
+disagree about which runtime to start with, and only one of them is read back
+after a restart.
+
+Both still write the file **first**: a failed write must leave the engine on the
+last settings that were actually saved, not on ones that exist only in memory.
+
+### D96 — Nothing starts after `shutdown()`, and the check is in `start_item`
+
+Found by the soak, through the corruption test: it shuts an engine down, waits
+for the item to settle, corrupts `queue.json` and expects the next launch to
+start empty. It intermittently saw items instead.
+
+The cause is a real window, not a test artefact. `scheduler_loop` checks
+`stopped` at the top of each pass, but a pass already in flight when
+`shutdown()` lands goes on to `start_item` for everything it planned. So an
+item the scheduler had chosen **before** the app started tearing down could be
+spawned **after** it, and then write the queue file — over the document the test
+had just corrupted, and over whatever the next launch is about to read.
+
+Two problems in one, both real:
+
+- a yt-dlp process that the exit hook has already walked past, so spec §4.2's
+  "on app exit cancel all running items" does not hold for it;
+- a `queue.json` written during teardown, which is the file the next launch
+  trusts.
+
+`start_item` now returns immediately when `stopped` is set, before it takes the
+state lock. The check belongs there rather than only in the loop because the
+loop is exactly the caller that can be mid-plan; a caller that arrives *after*
+the exit is not a scheduler decision any more. Covered by a unit test that calls
+`start_item` directly after `shutdown()` and asserts nothing moved — which
+fails on the old code, though not for the reason one would guess: without the
+guard the test reaches `tokio::spawn` from a synchronous `#[test]` and panics
+with "there is no reactor running". The panic *is* the bug, seen from a test
+that has no runtime to spawn into.
+
+### D97 — A `queue_list` that was overtaken by events never walks a row back
+
+The frontend's `load()` (spec §3's initial read) replaces the whole queue with
+the snapshot's contents. That is right when nothing else has happened, and
+**wrong** in one real case: the read is in flight, a `queue:update` arrives
+describing an item that has started downloading, and *then* the read lands
+with a snapshot taken a moment earlier. The row goes back to `queued` and the
+footer counts it again.
+
+It is not a flicker. Once the queue goes idle the next event is the one that
+would have corrected it, and an idle queue does not emit one: the row would say
+"queued" for a download that is really running, until the user does something
+else. The window is the time between `invoke("queue_list")` being sent and its
+answer being reduced — tens of milliseconds on a loaded machine, and the
+restored-queue case (an item that starts the instant the app opens) is exactly
+when it is most likely to be hit.
+
+The store now remembers the `seq` it had when the request went out. If the
+answer comes back with events already applied (`seq` has moved on), the
+snapshot is **not** applied wholesale: only the rows the UI is missing are
+taken from it, and the newer summary and sequence are kept. `groups` are still
+taken from the snapshot — they travel nowhere else.
+
+The same class of problem, one layer down, decided the shape of the fix: the
+reducer moved out of the store into `$lib/queue` as a pure function, because
+the store's own comment claimed it was "testable without a Tauri event bus" and
+it was not — a `$state` field needs the Svelte compiler, and the vitest config
+deliberately does not use it. `applyUpdate` and `applySnapshot` are now nine
+tests, including "drops an event that is not newer" and "never walks a row back
+when events overtook the read".
+
+The store keeps **per-field** reactivity on purpose: the state is one value,
+but `#write` assigns only the fields the reducer changed, because replacing the
+whole object would invalidate every reader and repaint the footer on every
+item tick — the thing spec §11.7 asks the UI not to do.

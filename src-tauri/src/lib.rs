@@ -25,6 +25,10 @@ use crate::state::AppState;
 /// registry of live process trees. On Windows the Job Objects carry
 /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so even a crash of the app kills the
 /// trees; on Unix this explicit pass is what leaves no orphan behind.
+///
+/// The order matters and is now enforced by the engine as well: `shutdown()`
+/// stops the scheduler from starting anything, so nothing can be spawned
+/// between this pass and the end of the process (D96).
 fn on_exit(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<AppState>()
         && let Some(queue) = state.queue()
@@ -50,7 +54,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Spec §7.7: the notification when the queue becomes idle.
         .plugin(tauri_plugin_notification::init())
-        // Spec §7.7: the notification when the queue becomes idle.
         .setup(|app| {
             let handle = app.handle().clone();
             let state = AppState::load(&handle)?;

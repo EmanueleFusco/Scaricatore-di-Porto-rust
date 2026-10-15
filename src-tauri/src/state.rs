@@ -650,15 +650,26 @@ impl AppState {
     pub fn save_settings(&self, settings: Settings) -> Result<Settings, AppError> {
         let mut settings = settings;
         settings.normalise();
-        Settings::save(&self.settings_path, &settings)?;
-
+        // The file and the in-memory copy move together, under one lock.
+        //
+        // Two saves can overlap — the settings page saves on every change and
+        // the app also saves on the way out — and each one carries a whole
+        // document. Writing the file first and only then updating the copy
+        // leaves a window in which a second save could land the file between
+        // the two steps, and the engine would then be running on different
+        // settings than the ones on disk (D93).
         let stored = match self.settings.write() {
             Ok(mut guard) => {
+                // File first: a failed write must not leave the engine on
+                // settings that were never saved.
+                Settings::save(&self.settings_path, &settings)?;
                 *guard = settings.clone();
                 settings
             }
             Err(poisoned) => {
-                *poisoned.into_inner() = settings.clone();
+                let mut guard = poisoned.into_inner();
+                Settings::save(&self.settings_path, &settings)?;
+                *guard = settings.clone();
                 settings
             }
         };

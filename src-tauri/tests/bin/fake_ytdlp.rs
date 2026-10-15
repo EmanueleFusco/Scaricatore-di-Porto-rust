@@ -288,6 +288,42 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         emit_download_line("downloading", 1024, 1024, "vp9");
         sleep_forever();
     }
+    // A download that is slow on a **clock** rather than on progress: long
+    // enough that a test can read the queue file, do its assertions and still
+    // be sure the item is the one it started. The short "slow" downloads are
+    // 400 ms, which is over before a loaded machine has finished a single
+    // assertion, and a test that reads "is it still running?" then has a race
+    // with the tool finishing underneath it. `veryslow-<ms>` is how long it
+    // takes, so the test asks for exactly the margin it needs.
+    if url.contains("veryslow") {
+        let millis = url
+            .split("veryslow-")
+            .nth(1)
+            .and_then(|raw| {
+                raw.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(5_000);
+        println!("SDP_FORMAT|137+140|1080|vp9|opus");
+        // Twenty steps, so the progress line grows like a real download and
+        // the watchdog of spec §5.3.2 has something to watch.
+        let steps: u64 = 20;
+        for step in 1..=steps {
+            emit_download_line("downloading", step * (millis / steps), millis, "vp9");
+            thread::sleep(Duration::from_millis(millis / steps));
+        }
+        emit_download_line("downloading", millis, millis, "vp9");
+        eprintln!("SDP_PP|started|Merger");
+        let home = paths_value(args, "home:").unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&home);
+        let file = home.join(safe_name(url));
+        let _ = std::fs::write(&file, b"fake media bytes");
+        println!("SDP_FILE|{}", file.display());
+        return 0;
+    }
 
     // A degraded extraction: the separate streams are missing, so yt-dlp's own
     // fallback chain lands on the **muxed** 360p format (no `+` in the id).

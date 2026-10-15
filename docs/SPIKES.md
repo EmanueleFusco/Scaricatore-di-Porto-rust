@@ -243,3 +243,40 @@ come fatto.
 Il termine dominante non cambia e non può cambiare da qui: `yt-dlp` è un asset
 **scaricato**, non compilato. Il suo contributo all'installer dipende da GitHub,
 non dal runner.
+
+---
+
+## S7 — A crash mid-download: the queue comes back `Interrupted` (D91)
+
+*Added 2026-10-15, in English per the repository language rule (AGENTS.md,
+D77); the spikes above were written before it.*
+
+Spec §7.4 asks for different outcomes depending on **how** the app stopped, and
+the automated tests can only produce the one that ends in a clean write. This is
+the check for the row that matters most, because it is the one a user meets the
+first time the app dies on them: no question is asked, the machine is
+mid-download, and the next launch has to be careful.
+
+| how the app stopped | what `queue.json` says | what the next launch must do |
+| :-- | :-- | :-- |
+| quit from the menu, window closed | `cancelled` | **Retry** (nothing to continue) |
+| `kill -9`, power cut, OOM kill | `downloading` | `Interrupted` + a **Resume** button, and it must **not** start by itself |
+| killed between the write and the spawn | `downloading` | `Interrupted` + Resume — one unnecessary click, the cheap direction to be wrong in (D91) |
+
+**How.** Start a real download of something long enough to watch, wait until the
+row shows a speed and some progress, then `kill -9` the app on Linux/macOS, or
+**End task** on the app in the Task Manager on Windows. Relaunch it.
+
+**What to fill in.**
+
+| system | state in `queue.json` right after the kill | row after relaunch | did it start again on its own? | `.part` files still there? |
+| :-- | :-- | :-- | :-- | :-- |
+| Linux x64 | | | | |
+| Windows x64 | | | | |
+| macOS arm64 | | | | |
+
+Then press **Resume**: it must continue from the partial file rather than
+starting over (spec §7.3), and the temp directory must still belong to that
+item (spec §4.10 — the startup sweep must not delete it). The second half of
+this is covered by `queue_engine.rs` and needs no machine; only the first half
+does.

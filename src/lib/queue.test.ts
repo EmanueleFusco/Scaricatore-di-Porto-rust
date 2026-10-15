@@ -9,7 +9,10 @@
 import { describe, expect, it } from "vitest";
 import {
   actionsFor,
+  applySnapshot,
+  applyUpdate,
   detailsText,
+  emptyQueueState,
   fileName,
   heightWarning,
   isActive,
@@ -30,6 +33,9 @@ import {
   visibleRange,
   type ItemState,
   type QueueItem,
+  type QueueState,
+  type QueueSummary,
+  type QueueUpdate,
 } from "$lib/queue";
 import {
   choiceOf,
@@ -450,5 +456,167 @@ describe("the quality options of a link", () => {
     expect(qualityLabel({ kind: "audioOnly" })).toBe("queue.item.quality.audio");
     expect(qualityLabel({ kind: "exact", height: 720 })).toBe("queue.item.quality.exact.720");
     expect(qualityLabel({ kind: "maxHeight", height: 720 })).toBe("queue.item.quality.max.720");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reducer (spec §7.6, §11.7)
+// ---------------------------------------------------------------------------
+
+/** A summary with the documented zeros, to bend. */
+function summary(overrides: Partial<QueueSummary> = {}): QueueSummary {
+  return {
+    total: 0,
+    queued: 0,
+    running: 0,
+    paused: 0,
+    interrupted: 0,
+    done: 0,
+    failed: 0,
+    cancelled: 0,
+    speedBps: null,
+    pausedAll: false,
+    parallelDownloads: 2,
+    perHostCap: 2,
+    ...overrides,
+  };
+}
+
+function update(overrides: Partial<QueueUpdate> = {}): QueueUpdate {
+  return {
+    seq: 1,
+    items: [],
+    removed: [],
+    order: null,
+    summary: summary(),
+    toast: null,
+    ...overrides,
+  };
+}
+
+describe("folding an event into what the UI shows", () => {
+  it("patches one row and leaves every other row's object alone", () => {
+    // The point of the keyed map: a tick with one changed item must repaint
+    // one row, not the list (spec §11.7).
+    const first = item({ id: "a", state: "downloading" });
+    const second = item({ id: "b", state: "queued" });
+    const before: QueueState = {
+      ...emptyQueueState(),
+      items: { a: first, b: second },
+      order: ["a", "b"],
+      seq: 1,
+    };
+
+    const after = applyUpdate(before, update({ seq: 2, items: [item({ id: "b", state: "done" })] }));
+
+    expect(after.order).toEqual(["a", "b"]);
+    expect(after.items.b.state).toBe("done");
+    // Same object: a row that did not change cannot have re-rendered.
+    expect(after.items.a).toBe(first);
+    expect(after.seq).toBe(2);
+  });
+
+  it("adds an item it has never seen, and forgets one that was removed", () => {
+    const before: QueueState = { ...emptyQueueState(), items: { a: item({ id: "a" }) }, order: ["a"] };
+    const added = applyUpdate(before, update({ seq: 2, items: [item({ id: "c" })] }));
+    expect(added.order).toEqual(["a", "c"]);
+
+    const removed = applyUpdate(added, update({ seq: 3, removed: ["a"] }));
+    expect(removed.order).toEqual(["c"]);
+    expect(removed.items.a).toBeUndefined();
+  });
+
+  it("takes the order when the event carries one, and ignores unknown ids", () => {
+    const before: QueueState = {
+      ...emptyQueueState(),
+      items: { a: item({ id: "a" }), b: item({ id: "b" }) },
+      order: ["a", "b"],
+    };
+    const after = applyUpdate(before, update({ seq: 2, order: ["b", "ghost", "a"] }));
+    expect(after.order).toEqual(["b", "a"]);
+  });
+
+  it("drops an event that is not newer than what is already shown", () => {
+    // The window between the initial read and the first event can deliver them
+    // out of order, and a stale tick must not walk a row backwards.
+    const before: QueueState = { ...emptyQueueState(), seq: 7, items: { a: item({ id: "a", state: "done" }) } };
+    const after = applyUpdate(before, update({ seq: 3, items: [item({ id: "a", state: "queued" })] }));
+    expect(after).toBe(before);
+    expect(after.items.a.state).toBe("done");
+  });
+
+  it("keeps the last toast when an event carries none", () => {
+    const toast = { messageKey: "toast.queueRecovered", params: { count: "2" } };
+    const before = applyUpdate(emptyQueueState(), update({ seq: 1, toast }));
+    const after = applyUpdate(before, update({ seq: 2 }));
+    expect(after.toast).toBe(toast);
+  });
+});
+
+describe("folding the initial read in", () => {
+  it("replaces everything when nothing newer has arrived", () => {
+    const before = applyUpdate(emptyQueueState(), update({ seq: 4, items: [item({ id: "a" })] }));
+    const after = applySnapshot(before, {
+      seq: 1,
+      items: [item({ id: "a" }), item({ id: "b" })],
+      groups: [{ id: "g1", title: "A playlist", folder: null, index: 0 }],
+      summary: summary({ total: 2, queued: 2 }),
+      toast: null,
+    });
+    expect(after.order).toEqual(["a", "b"]);
+    expect(after.summary.total).toBe(2);
+    expect(after.seq).toBe(1);
+    expect(after.groups).toHaveLength(1);
+  });
+
+  it("never walks a row back when events overtook the read", () => {
+    // A `queue_list` that was in flight while a download started describes a
+    // queue that has already moved on. Applying it wholesale would show
+    // `queued` again — and if the queue then goes idle, no event may ever
+    // come to correct it.
+    const moved = applyUpdate(
+      emptyQueueState(),
+      update({ seq: 9, items: [item({ id: "a", state: "downloading" })], summary: summary({ total: 1, running: 1 }) }),
+    );
+    const after = applySnapshot(
+      moved,
+      {
+        seq: 3,
+        items: [item({ id: "a", state: "queued" })],
+        groups: [],
+        summary: summary({ total: 1, queued: 1 }),
+        toast: null,
+      },
+      true,
+    );
+
+    expect(after.items.a.state).toBe("downloading");
+    expect(after.summary.running).toBe(1);
+    expect(after.seq).toBe(9);
+  });
+
+  it("still takes the rows the read has and the UI does not", () => {
+    // The read is the only source for an item that no event has mentioned yet.
+    const after = applySnapshot(
+      emptyQueueState(),
+      { seq: 2, items: [item({ id: "a" }), item({ id: "b" })], groups: [], summary: summary(), toast: null },
+      true,
+    );
+    expect(after.order).toEqual(["a", "b"]);
+  });
+
+  it("takes the groups, which only ever travel in the read", () => {
+    const after = applySnapshot(
+      emptyQueueState(),
+      {
+        seq: 1,
+        items: [],
+        groups: [{ id: "g1", title: "A playlist", folder: "/home/user/A playlist", index: 0 }],
+        summary: summary(),
+        toast: null,
+      },
+      true,
+    );
+    expect(after.groups[0].title).toBe("A playlist");
   });
 });

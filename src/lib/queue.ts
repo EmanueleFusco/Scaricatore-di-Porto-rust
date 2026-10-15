@@ -133,6 +133,42 @@ export interface QueueToast {
   params: Record<string, string>;
 }
 
+/** Everything the queue UI shows, as one value. */
+export interface QueueState {
+  items: Record<string, QueueItem>;
+  order: string[];
+  groups: QueueGroup[];
+  summary: QueueSummary;
+  /** The newest `seq` the UI has already shown. */
+  seq: number;
+  toast: QueueToast | null;
+}
+
+/** An empty queue, the state the UI starts from. */
+export function emptyQueueState(): QueueState {
+  return {
+    items: {},
+    order: [],
+    groups: [],
+    summary: {
+      total: 0,
+      queued: 0,
+      running: 0,
+      paused: 0,
+      interrupted: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+      speedBps: null,
+      pausedAll: false,
+      parallelDownloads: 2,
+      perHostCap: 2,
+    },
+    seq: 0,
+    toast: null,
+  };
+}
+
 /** What `queue_add` answers (spec §7.3 duplicate detection). */
 export interface AddResult {
   added: string[];
@@ -348,6 +384,114 @@ export function normaliseAddResult(raw: unknown): AddResult {
           };
         })
       : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The reducer
+// ---------------------------------------------------------------------------
+
+/**
+ * Fold one `queue:update` event into what the UI shows (spec §7.6, §11.7).
+ *
+ * Pure, and kept here rather than in the store, so it can be tested without a
+ * Svelte compiler: the store is a thin shell that holds the value and hands it
+ * back out. Two rules it exists to keep:
+ *
+ * 1. **Only the rows that changed get a new object.** Every other item keeps
+ *    its identity, so a tick that touches one item repaints one row and not the
+ *    list (spec §11.7).
+ * 2. **An event that is not newer is dropped.** `seq` is the backend's
+ *    counter; the window between the initial `queue_list` and the first event
+ *    can deliver them out of order.
+ */
+export function applyUpdate(state: QueueState, update: QueueUpdate): QueueState {
+  if (update.seq !== 0 && update.seq <= state.seq) return state;
+
+  let items = state.items;
+  let order = state.order;
+  const next: QueueState = {
+    ...state,
+    seq: update.seq === 0 ? state.seq : update.seq,
+    summary: update.summary,
+    toast: update.toast === null ? state.toast : update.toast,
+  };
+
+  if (update.items.length > 0) {
+    items = { ...items };
+    const known = new Set(order);
+    const fresh: string[] = [];
+    for (const item of update.items) {
+      items[item.id] = item;
+      // An item the UI has never seen arrives without an `order` event on a
+      // restart (the list came from `queue_list`), so only add what is missing.
+      if (!known.has(item.id)) fresh.push(item.id);
+    }
+    if (fresh.length > 0) order = [...order, ...fresh];
+  }
+
+  if (update.removed.length > 0) {
+    const gone = new Set(update.removed);
+    const kept: Record<string, QueueItem> = {};
+    for (const [id, item] of Object.entries(items)) {
+      if (!gone.has(id)) kept[id] = item;
+    }
+    items = kept;
+    order = order.filter((id) => !gone.has(id));
+  }
+
+  if (update.order !== null) {
+    order = update.order.filter((id) => items[id] !== undefined);
+  }
+
+  next.items = items;
+  next.order = order;
+  return next;
+}
+
+/**
+ * Fold the initial `queue_list` snapshot in.
+ *
+ * `stale` is what the store knows: a `queue_list` that was in flight while
+ * events arrived describes a queue that has already moved on, so applying it
+ * wholesale would put a row back to `queued` and leave it there — the next
+ * event may be a long way off, or never come if the queue went idle. In that
+ * case only the rows the UI is missing are taken from it, and the newer
+ * summary and sequence are kept.
+ */
+export function applySnapshot(state: QueueState, snapshot: QueueSnapshot, stale = false): QueueState {
+  const byId: Record<string, QueueItem> = {};
+  for (const item of snapshot.items) byId[item.id] = item;
+
+  // `groups` travel only in the snapshot, never in an event.
+  const groups = snapshot.groups;
+
+  if (!stale) {
+    return {
+      items: byId,
+      order: snapshot.items.map((item) => item.id),
+      groups,
+      summary: snapshot.summary,
+      seq: snapshot.seq,
+      toast: snapshot.toast === null ? state.toast : snapshot.toast,
+    };
+  }
+
+  const items = { ...state.items };
+  const fresh: string[] = [];
+  for (const [id, item] of Object.entries(byId)) {
+    if (items[id] === undefined) {
+      items[id] = item;
+      fresh.push(id);
+    }
+  }
+  return {
+    items,
+    order: fresh.length > 0 ? [...state.order, ...fresh] : state.order,
+    groups,
+    summary: state.summary,
+    seq: state.seq,
+    toast: snapshot.toast === null ? state.toast : snapshot.toast,
   };
 }
 
