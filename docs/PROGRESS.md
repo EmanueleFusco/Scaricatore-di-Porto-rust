@@ -2135,6 +2135,12 @@ Branch `m1-single-video` (da `m0-tools`, che a sua volta non è ancora in `main`
 - **Not verified / stubbed**
   - **The GitHub run**: the artifact sizes on the next run are the proof
     (expected: `.deb` ≈ 42 MB, `.rpm` ≈ 42 MB, `.AppImage` ≈ 148 MB).
+- **A near miss, told rather than hidden**: the first version of this commit
+  carried a `node_modules` **symlink** created in the linked worktree to run
+  vitest. `.gitignore` had `node_modules/`, and a trailing slash matches a
+  directory, not a symlink. It was caught before pushing (the link is out of the
+  index and the pattern is `node_modules`, no slash) — the same class of mistake
+  as the fake-media file of D108, on the machine that wrote the guard for it.
 - **Spec items marked "verify" that I checked**: none new.
 - **Decisions/deviations (also in DECISIONS.md)**: D111.
 - **Next step**

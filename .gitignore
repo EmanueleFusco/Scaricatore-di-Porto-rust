@@ -1,5 +1,8 @@
 # --- Node / frontend ---
-node_modules/
+# No trailing slash: a symlink to `node_modules` is a file, not a directory, and
+# `node_modules/` did not match one — which is how a local convenience link got
+# staged into a commit during the CI work of 2026-10-15.
+node_modules
 dist/
 .vite/
 *.local
