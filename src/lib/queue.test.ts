@@ -26,11 +26,13 @@ import {
   normaliseState,
   normaliseSummary,
   normaliseUpdate,
+  progressLabelKey,
   qualityKey,
   qualityLabel,
   secondsToClock,
   scrollOffsetFor,
   speedMbits,
+  stageDetail,
   stateKey,
   statusKindFor,
   visibleItems,
@@ -376,6 +378,49 @@ describe("the text the cards show", () => {
         item({ state: "failed", progress: { ...item().progress, percent: 37 } }),
       ),
     ).toBe(37);
+  });
+
+  it("names the stream of a running item, index and total", () => {
+    const running = item({
+      state: "downloading",
+      progress: {
+        percent: 42,
+        speedBps: 1_000_000,
+        etaSec: 30,
+        label: "video",
+        subIndex: 1,
+        subTotal: 2,
+      },
+    });
+    expect(stageDetail(running)).toEqual({
+      key: "job.label.video",
+      params: { index: 1, total: 2 },
+    });
+    expect(
+      stageDetail(
+        item({
+          state: "downloading",
+          progress: { ...item().progress, label: "audio", subIndex: 2, subTotal: 2 },
+        }),
+      ),
+    ).toEqual({ key: "job.label.audio", params: { index: 2, total: 2 } });
+  });
+
+  it("says nothing before the tool reports a stage", () => {
+    expect(stageDetail(item({ state: "queued" }))).toBeNull();
+    expect(stageDetail(item({ progress: { ...item().progress, label: "" } }))).toBeNull();
+    // A bare token with no index is a whole step, not "Video 1/1".
+    expect(
+      stageDetail(
+        item({ state: "postProcessing", progress: { ...item().progress, label: "merging" } }),
+      ),
+    ).toEqual({ key: "job.label.merging" });
+  });
+
+  it("sends an unknown token to the generic step", () => {
+    expect(progressLabelKey("somethingNew")).toBe("job.label.postProcessing");
+    expect(progressLabelKey("verifying")).toBe("job.label.preparing");
+    expect(progressLabelKey("extractingAudio")).toBe("job.label.extractingAudio");
   });
 
   it("builds the copy-details text out of the message, the detail and the log", () => {

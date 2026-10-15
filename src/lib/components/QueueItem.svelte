@@ -18,6 +18,7 @@
     itemLabel,
     qualityKey,
     speedMbits,
+    stageDetail,
     stateKey,
     statusKindFor,
     type ItemAction,
@@ -25,7 +26,8 @@
   } from "$lib/queue";
   import { secondsToClock } from "$lib/inspect";
   import { queueStore } from "$lib/stores/queue.svelte";
-  import { errorText, tt } from "$lib/stores/settings.svelte";
+  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { toolsStore } from "$lib/stores/tools.svelte";
 
   let { item }: { item: QueueItem } = $props();
 
@@ -47,10 +49,13 @@
    *
    * The card keeps the same shape while a download runs: the slot is always
    * there, so a speed that arrives, disappears (yt-dlp reports `NA` between
-   * fragments) and comes back cannot resize the card. The full text lives in
-   * the details panel; this line is clamped with a `title` for the same reason.
+   * fragments) and comes back cannot resize the card. While it runs, the line
+   * opens with the stage detail — "Video 1/2", "Merging…" (spec §11.5). The
+   * full text lives in the details panel; this line is clamped with a `title`
+   * for the same reason.
    */
   const statusKind = $derived(statusKindFor(item));
+  const stage = $derived(stageDetail(item));
   const statusText = $derived.by(() => {
     if (statusKind === "error" && item.error !== null) {
       return errorText(item.error.messageKey, null);
@@ -63,6 +68,7 @@
     }
     if (statusKind === "progress") {
       const parts = [
+        stage !== null ? tt(stage.key, stage.params) : null,
         speed !== null ? tt("queue.speed", { value: speed }) : null,
         eta !== null ? tt("queue.eta", { value: eta }) : null,
       ].filter((part) => part !== null);
@@ -70,6 +76,34 @@
     }
     return detail;
   });
+
+  /**
+   * The Deno install offer of spec §5.3.2 ("ask once"), on the card that failed
+   * for it.
+   *
+   * M1 showed it on its own screen; the queue has to show it now that the
+   * screen is gone, or a real download stays blocked with a message and no way
+   * out but Settings → Tools. Deno is the one tool the app installs for the
+   * user, and the item's options froze `auto`, which is exactly the mode that
+   * wanted it.
+   */
+  const denoAvailable = $derived(
+    toolsStore.view.tools.some((tool) => tool.name === "deno" && tool.path !== null),
+  );
+  const denoOffer = $derived(
+    item.state === "failed" &&
+      item.error?.code === "DENO_MISSING" &&
+      !settingsStore.settings.denoOfferDismissed &&
+      !denoAvailable,
+  );
+
+  async function installDeno(): Promise<void> {
+    await toolsStore.install("deno");
+  }
+
+  async function dismissDeno(): Promise<void> {
+    await settingsStore.update({ denoOfferDismissed: true });
+  }
 
   async function act(action: ItemAction): Promise<void> {
     switch (action) {
@@ -204,6 +238,51 @@
   >
     {statusText}
   </p>
+
+  {#if denoOffer}
+    <div class="item__offer" role="status">
+      <p class="item__offer-title">{tt("job.deno.title")}</p>
+      <p class="item__offer-body">{tt("job.deno.body")}</p>
+      <div class="item__offer-actions">
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={toolsStore.installingTool !== null}
+          onclick={() => void installDeno()}
+        >
+          {#if toolsStore.installingTool === "deno"}
+            {toolsStore.installPercent !== null
+              ? tt("tools.action.installing", { percent: toolsStore.installPercent })
+              : tt("tools.action.installingUnknown")}
+          {:else}
+            {tt("job.deno.install")}
+          {/if}
+        </button>
+        {#if toolsStore.installingTool === "deno"}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void toolsStore.cancelInstall()}
+          >
+            {tt("tools.action.cancel")}
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={toolsStore.installingTool === "deno"}
+          onclick={() => void dismissDeno()}
+        >
+          {tt("job.deno.dismiss")}
+        </button>
+      </div>
+      {#if toolsStore.errorKey !== null}
+        <p class="item__offer-error">
+          {errorText(toolsStore.errorKey, toolsStore.errorDetail)}
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if expanded}
     <div class="item__details">
@@ -431,6 +510,36 @@
 
   .item__note--warning {
     color: var(--accent);
+  }
+
+  /* The Deno offer of spec §5.3.2: a way out, right where the failure is. */
+  .item__offer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    font-size: 12px;
+  }
+
+  .item__offer-title {
+    font-weight: 600;
+  }
+
+  .item__offer-body {
+    color: var(--text-muted);
+  }
+
+  .item__offer-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .item__offer-error {
+    color: var(--danger);
   }
 
   .item__details {

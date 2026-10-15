@@ -614,17 +614,17 @@ export function itemLabel(item: QueueItem): string {
 /**
  * An i18n key plus the parameters it needs.
  *
- * Heights are parameters, never part of the key: a video can report any height
- * (`576`, `4320`, …), and a dictionary of fixed keys would print the raw key
- * for every one that is missing (D98).
+ * Heights, stream indices and counts are parameters, never part of the key: a
+ * video can report any height (`576`, `4320`, …), and a dictionary of fixed
+ * keys would print the raw key for every one that is missing (D99).
  */
-export interface QualityLabel {
+export interface Label {
   key: string;
   params?: Record<string, string | number>;
 }
 
 /** The label of a quality choice (spec §8.2, §11.9). */
-export function qualityLabel(choice: QualityChoice): QualityLabel {
+export function qualityLabel(choice: QualityChoice): Label {
   switch (choice.kind) {
     case "exact":
       return { key: "queue.item.quality.exact", params: { height: choice.height } };
@@ -640,8 +640,57 @@ export function qualityLabel(choice: QualityChoice): QualityLabel {
 }
 
 /** What the details panel shows as the chosen quality (spec §11.5). */
-export function qualityKey(item: QueueItem): QualityLabel {
+export function qualityKey(item: QueueItem): Label {
   return qualityLabel(item.options.quality);
+}
+
+/**
+ * The i18n key of a stream/step token the backend reports (spec §8.3, §11.5).
+ *
+ * Tokens are stable (`video`, `audio`, `merging`, …) and never sentences, so
+ * word order and plurals stay here, per language (spec §11.9).
+ */
+export function progressLabelKey(label: string): string {
+  switch (label) {
+    case "preparing":
+    case "verifying":
+      return "job.label.preparing";
+    case "video":
+      return "job.label.video";
+    case "audio":
+      return "job.label.audio";
+    case "merging":
+      return "job.label.merging";
+    case "moving":
+      return "job.label.moving";
+    case "extractingAudio":
+      return "job.label.extractingAudio";
+    case "embedding":
+      return "job.label.embedding";
+    case "postProcessing":
+      return "job.label.postProcessing";
+    default:
+      return "job.label.postProcessing";
+  }
+}
+
+/**
+ * The finer "which stream" detail of a running item: "Video 1/2", "Merging…"
+ * (spec §11.5, the *stage detail* next to the stage chip).
+ *
+ * `null` when the backend has not said anything yet: the card shows its status
+ * line regardless, and an empty stage must not become "Video 1/1".
+ */
+export function stageDetail(item: QueueItem): Label | null {
+  const { label, subIndex, subTotal } = item.progress;
+  if (label === "") return null;
+  if (label === "video" || label === "audio") {
+    return {
+      key: progressLabelKey(label),
+      params: { index: subIndex ?? 1, total: subTotal ?? 1 },
+    };
+  }
+  return { key: progressLabelKey(label) };
 }
 
 /**

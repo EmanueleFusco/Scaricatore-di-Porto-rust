@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { hasKey, type Lang } from "$lib/i18n";
 import {
   actionKey,
+  progressLabelKey,
   qualityLabel,
   stateKey,
   type ItemAction,
@@ -107,6 +108,20 @@ const CHOICES: QualityChoice[] = [
   { kind: "explicit", formatId: "137", hasAudio: false },
 ];
 
+/** Every token the backend can report as a stream/step label, plus a new one. */
+const PROGRESS_TOKENS = [
+  "preparing",
+  "verifying",
+  "video",
+  "audio",
+  "merging",
+  "moving",
+  "extractingAudio",
+  "embedding",
+  "postProcessing",
+  "somethingTheBackendInventedLater",
+];
+
 describe("the dictionaries know every key the UI asks for", () => {
   /**
    * A key may be pluralised by `tCount`: `<key>.one` / `<key>.other` is then
@@ -133,6 +148,14 @@ describe("the dictionaries know every key the UI asks for", () => {
     const missing = CHOICES.map(qualityLabel)
       .map((label) => label.key)
       .filter((key) => !known(lang, key));
+    expect(missing).toEqual([]);
+  });
+
+  it.each(LANGS)("covers every progress label the backend can send (%s)", (lang) => {
+    // The tokens arrive as data (`video`, `merging`, …), so no literal in the
+    // source names these keys: the mapping function is the only thing that
+    // knows them, and an unknown token must still land on a real string.
+    const missing = PROGRESS_TOKENS.map(progressLabelKey).filter((key) => !known(lang, key));
     expect(missing).toEqual([]);
   });
 });
