@@ -168,7 +168,7 @@
           <output class="wizard__output">
             {settingsStore.settings.defaultOutputDir ?? tt("settings.outputDir.system")}
           </output>
-          <p class="field__hint">{tt("wizard.output.comingSoon")}</p>
+          <p class="field__hint">{tt("wizard.output.hint")}</p>
         </div>
       {/if}
     </div>

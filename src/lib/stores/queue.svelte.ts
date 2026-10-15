@@ -190,6 +190,27 @@ class QueueStore {
     return this.add(requests, true);
   }
 
+  /**
+   * Put freshly added items at the top of the queue.
+   *
+   * This is what makes the add bar's "Download" the standard download: the
+   * links run now, ahead of whatever is still waiting (spec §11.3, the
+   * "Start immediately" side of the two actions). When nothing else is queued
+   * they are next anyway, and no call is made at all.
+   */
+  async prioritize(ids: readonly string[]): Promise<void> {
+    if (!isTauriRuntime() || ids.length === 0) return;
+    const fresh = new Set(ids);
+    const behind = this.#state.order.some(
+      (id) => !fresh.has(id) && this.items[id]?.state === "queued",
+    );
+    if (!behind) return;
+    // Back to front: each call inserts at the top, so the batch keeps its order.
+    for (const id of [...ids].reverse()) {
+      await this.#invoke("queue_move_to_top", { id });
+    }
+  }
+
   get hasPendingDuplicates(): boolean {
     return this.pendingDuplicates.length > 0;
   }

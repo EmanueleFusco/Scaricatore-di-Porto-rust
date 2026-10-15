@@ -2,18 +2,20 @@
  * The Add bar's state (spec §2.2, §11.3).
  *
  * One input takes **one or many** links: a multi-line paste, a drop of text, a
- * dropped `.txt` file. Every link becomes a row with a spinner, then its title,
- * site, duration and available qualities; the user can change the quality per
- * row, then adds them all at once.
+ * dropped `.txt` file. Inspection starts on its own, debounced 500 ms, exactly
+ * as in the original (spec §11.3): every link becomes a row with a spinner and
+ * then its title, site, duration and available qualities, which the user can
+ * change per row before adding them all at once.
  *
  * The batch inspection (`inspect_urls`) is what makes ten links usable: three
  * in parallel (spec §6.2), each with its own cancellation, answers in order.
- * The pure parts — splitting a paste, building the quality options — are in
- * `$lib/addbar`, so they can be tested without a Svelte runtime.
+ * The pure parts — splitting a paste, the links not seen yet, building the
+ * quality options — are in `$lib/addbar`, so they can be tested without a
+ * Svelte runtime.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { normaliseInspected, type Inspected } from "$lib/inspect";
-import { QUALITY_PRESETS, splitLinks } from "$lib/addbar";
+import { QUALITY_PRESETS, newLinks, splitLinks } from "$lib/addbar";
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
 import type { BackendErrorInfo } from "$lib/settings";
@@ -41,8 +43,6 @@ class AddBarStore {
   rows = $state<AddRow[]>([]);
   /** The preset applied to rows that have no per-row choice. */
   preset = $state("best");
-  /** Per-row "audio only" switch (spec §11.3 preset chips). */
-  audioOnly = $state(false);
   folder = $state<string | null>(null);
   checking = $state(false);
   dragging = $state(false);
@@ -52,6 +52,8 @@ class AddBarStore {
   #counter = 0;
   /** Bumped for every batch; an answer older than this is dropped. */
   #request = 0;
+  /** The pending debounced inspection, if one is waiting (spec §11.3). */
+  #timer: ReturnType<typeof setTimeout> | null = null;
 
   /** Rows that can be added right now. */
   get ready(): AddRow[] {
@@ -74,17 +76,28 @@ class AddBarStore {
   /** The effective quality of a row: its own, or the preset's. */
   effectiveQuality(row: AddRow): QualityChoice {
     if (row.quality !== null) return row.quality;
-    if (this.audioOnly) return { kind: "audioOnly" };
     const preset = QUALITY_PRESETS.find((option) => option.value === this.preset);
     return preset?.choice ?? { kind: "best" };
   }
 
+  /**
+   * Typing or pasting schedules the inspection, 500 ms after the last change
+   * (spec §11.3, "as in the original"). Nothing is lost if the user presses a
+   * button first: the button asks for the same inspection and waits for it.
+   */
   setText(value: string): void {
     this.text = value;
+    this.#cancelTimer();
+    if (this.links.length === 0) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      void this.submit();
+    }, 500);
   }
 
-  /** Check everything in the box (the button, or Enter). */
+  /** Check everything in the box: the debounce, the button, or Enter. */
   async submit(): Promise<void> {
+    this.#cancelTimer();
     const links = this.links;
     if (links.length === 0) return;
     await this.addLinks(links);
@@ -92,9 +105,13 @@ class AddBarStore {
 
   /** A paste of several links, or a drop. */
   async addLinks(links: string[]): Promise<void> {
-    const known = new Set(this.rows.map((row) => row.url));
-    const fresh = links.filter((url) => /^https?:\/\//i.test(url) && !known.has(url));
-    if (fresh.length === 0) return;
+    this.#cancelTimer();
+    const known = this.rows.map((row) => row.url);
+    const fresh = newLinks(links.join("\n"), known);
+    if (fresh.length === 0) {
+      this.text = "";
+      return;
+    }
 
     const room = Math.max(0, MAX_ROWS - this.rows.length);
     const rows: AddRow[] = fresh.slice(0, room).map((url) => {
@@ -140,10 +157,18 @@ class AddBarStore {
   }
 
   clear(): void {
+    this.#cancelTimer();
     this.#request += 1;
     this.rows = [];
     this.text = "";
     this.checking = false;
+  }
+
+  #cancelTimer(): void {
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
   }
 
   setQuality(key: string, choice: QualityChoice | null): void {

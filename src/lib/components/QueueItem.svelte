@@ -37,7 +37,8 @@
   const eta = $derived(secondsToClock(item.progress.etaSec));
   const determinate = $derived(item.progress.percent !== null);
   const percent = $derived(item.progress.percent ?? 0);
-  const detail = $derived(tt(qualityKey(item)));
+  const quality = $derived(qualityKey(item));
+  const detail = $derived(tt(quality.key, quality.params));
   const stageKey = $derived(stateKey(item.state));
 
   async function act(action: ItemAction): Promise<void> {

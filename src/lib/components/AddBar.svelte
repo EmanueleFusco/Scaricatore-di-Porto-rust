@@ -1,36 +1,55 @@
 <!--
   The Add bar (spec §2.2, §11.3).
 
-  One input takes one or many links. Each becomes a row: spinner → title, site,
-  duration, quality picker. Errors are inline per row with a Retry (never a
-  modal, spec §11.3). Drag-and-drop takes text or a `.txt` file (spec §2.2).
+  One input takes one or many links; inspection starts on its own, debounced
+  500 ms as in the original, and every link becomes a row: spinner → title,
+  site, duration, quality picker. Errors are inline per row with a Retry (never
+  a modal, spec §11.3). Drag-and-drop takes text or a `.txt` file (spec §2.2).
 
-  "More options", presets and the transcript options of spec §11.3 arrive with
-  M3/M4: they need the options that do not exist yet.
+  Two actions, because they are two things: **Scarica** starts the links now
+  (a single link is the standard download, priority over what is already
+  waiting) and **Aggiungi alla coda** lines them up behind the others.
+
+  "More options" and the transcript options of spec §11.3 arrive with M3/M4:
+  they need the options that do not exist yet.
 -->
 <script lang="ts">
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
+  import DownloadIcon from "lucide-svelte/icons/download";
   import PlusIcon from "lucide-svelte/icons/plus";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { secondsToClock } from "$lib/inspect";
-  import { choiceOf, qualityLabel, qualityOptions, qualityValue, splitLinks } from "$lib/addbar";
+  import { QUALITY_PRESETS, choiceOf, rowQualityOptions, splitLinks, qualityValue } from "$lib/addbar";
   import { addBarStore, type AddRow } from "$lib/stores/addbar.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
-  import { errorText, isTauriRuntime, settingsStore, tt } from "$lib/stores/settings.svelte";
-  import type { QualityChoice } from "$lib/queue";
+  import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
+  import { qualityLabel, type QualityChoice } from "$lib/queue";
 
-  let adding = $state(false);
-  let copied = $state(false);
+  /** Which of the two actions a click asked for. */
+  type AddMode = "download" | "queue";
+
+  let busy = $state<"" | "checking" | "adding">("");
+  /** The row whose link was just copied, so only that button says so. */
+  let copiedKey = $state<string | null>(null);
   let pasteBlocked = $state(false);
 
   const rows = $derived(addBarStore.rows);
   const readyCount = $derived(addBarStore.readyCount);
+  /** There is something to act on: a ready row, or text still to be checked. */
+  const actionable = $derived(readyCount > 0 || addBarStore.links.length > 0);
   const folderText = $derived(
     addBarStore.folder ?? settingsStore.settings.defaultOutputDir ?? tt("queue.folder.system"),
   );
   const duplicates = $derived(queueStore.pendingDuplicates);
+  const primaryLabel = $derived(
+    busy === "checking"
+      ? tt("queue.add.inspecting")
+      : busy === "adding"
+        ? tt("queue.add.adding")
+        : tt("queue.add.download"),
+  );
 
   /**
    * Drag-and-drop has two halves (spec §2.2). Dropped **text** arrives as an
@@ -67,40 +86,55 @@
     }
   }
 
-  async function addAll(): Promise<void> {
+  /**
+   * The two add actions.
+   *
+   * Whatever is still in the box is checked first and awaited, so the buttons
+   * work the moment a link is pasted — never only after the debounce has
+   * happened to fire. `download` then moves the new items to the top of the
+   * queue; `queue` leaves them at the end.
+   */
+  async function addAll(mode: AddMode): Promise<void> {
+    if (addBarStore.links.length > 0) {
+      busy = "checking";
+      try {
+        await addBarStore.submit();
+      } finally {
+        busy = "";
+      }
+    }
     const requests = addBarStore.toRequests();
     if (requests.length === 0) return;
-    adding = true;
+
+    busy = "adding";
     try {
       const result = await queueStore.add(requests);
       if (result.added.length > 0) {
         addBarStore.clearAdded();
         queueStore.dismissDuplicates();
+        if (mode === "download") await queueStore.prioritize(result.added);
       }
     } finally {
-      adding = false;
+      busy = "";
     }
   }
 
   async function addAnyway(): Promise<void> {
-    adding = true;
+    busy = "adding";
     try {
       await queueStore.addAnyway();
       addBarStore.clearAdded();
     } finally {
-      adding = false;
+      busy = "";
     }
   }
 
-  /**
-   * Ctrl/Cmd+Enter adds whatever is in the box (spec §11.3), and Enter alone on
-   * an empty line does nothing: a paste of five links is already there.
-   */
+  /** Ctrl/Cmd+Enter downloads whatever is in the box (spec §11.3). */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== "Enter") return;
     if (!(event.metaKey || event.ctrlKey)) return;
     event.preventDefault();
-    void addBarStore.submit();
+    void addAll("download");
   }
 
   function onDrop(event: DragEvent): void {
@@ -139,31 +173,33 @@
     return () => window.removeEventListener("paste", onWindowPaste);
   });
 
-  function options(row: AddRow): ReturnType<typeof qualityOptions> {
+  /** The picker of one row: the video's heights, plus the quality in force. */
+  function options(row: AddRow): ReturnType<typeof rowQualityOptions> {
     const video = row.inspected?.kind === "video" ? row.inspected : null;
-    return qualityOptions(video?.heights ?? [], addBarStore.audioOnly);
+    return rowQualityOptions(video?.heights ?? [], addBarStore.effectiveQuality(row));
   }
 
   function choiceFor(row: AddRow): QualityChoice {
     return addBarStore.effectiveQuality(row);
   }
 
+  /** The localised text of a choice, heights included. */
+  function qualityText(choice: QualityChoice): string {
+    const label = qualityLabel(choice);
+    return tt(label.key, label.params);
+  }
+
   async function copyLink(row: AddRow): Promise<void> {
     try {
       await navigator.clipboard.writeText(row.url);
-      copied = true;
-      setTimeout(() => (copied = false), 2000);
+      copiedKey = row.key;
+      setTimeout(() => {
+        if (copiedKey === row.key) copiedKey = null;
+      }, 2000);
     } catch {
       // Clipboard access can be denied; the link is on screen anyway.
     }
   }
-
-  const PRESETS = [
-    { value: "best", key: "queue.add.quality.best" },
-    { value: "max1080", key: "queue.add.quality.max", params: { height: "1080" } },
-    { value: "max720", key: "queue.add.quality.max", params: { height: "720" } },
-    { value: "max480", key: "queue.add.quality.max", params: { height: "480" } },
-  ];
 </script>
 
 <!--
@@ -172,7 +208,7 @@
     element with interactive listeners (an accessibility warning, not a rule to
     break for).
   -->
-  <div
+<div
   class="card add"
   class:add--dragging={addBarStore.dragging}
   role="group"
@@ -192,7 +228,10 @@
       placeholder={tt("queue.add.placeholder")}
       value={addBarStore.text}
       onkeydown={onKeydown}
-      oninput={(event) => addBarStore.setText(event.currentTarget.value)}
+      oninput={(event) => {
+        pasteBlocked = false;
+        addBarStore.setText(event.currentTarget.value);
+      }}
     ></textarea>
     <p class="field__hint">
       {addBarStore.dragging ? tt("queue.add.drop") : tt("queue.add.hint")}
@@ -214,25 +253,13 @@
         class="select"
         id="add-preset"
         value={addBarStore.preset}
-        disabled={addBarStore.audioOnly}
         onchange={(event) => (addBarStore.preset = event.currentTarget.value)}
       >
-        {#each PRESETS as preset (preset.value)}
-          <option value={preset.value}>
-            {tt(preset.key, preset.params ?? undefined)}
-          </option>
+        {#each QUALITY_PRESETS as preset (preset.value)}
+          <option value={preset.value}>{qualityText(preset.choice)}</option>
         {/each}
       </select>
     </div>
-
-    <label class="add__switch">
-      <input
-        type="checkbox"
-        checked={addBarStore.audioOnly}
-        onchange={(event) => (addBarStore.audioOnly = event.currentTarget.checked)}
-      />
-      {tt("queue.add.audio")}
-    </label>
 
     <div class="field">
       <span class="field__label">{tt("queue.folder.label")}</span>
@@ -288,7 +315,7 @@
                   )}
               >
                 {#each options(row) as option (option.value)}
-                  <option value={option.value}>{tt(qualityLabel(option.choice))}</option>
+                  <option value={option.value}>{qualityText(option.choice)}</option>
                 {/each}
               </select>
             {/if}
@@ -301,7 +328,7 @@
               <span class="add__row-error">{errorText(row.errorKey, null)}</span>
             {/if}
             <button type="button" class="btn btn--small" onclick={() => void copyLink(row)}>
-              {copied ? tt("queue.copied") : tt("queue.list.copyLink")}
+              {copiedKey === row.key ? tt("queue.copied") : tt("queue.list.copyLink")}
             </button>
             <button
               type="button"
@@ -320,7 +347,7 @@
     <div class="add__duplicates" role="alert">
       <p class="add__duplicates-title">{tt("queue.add.duplicate.title")}</p>
       <p class="field__hint">
-        {tt("queue.add.duplicate.body", { count: duplicates.length })}
+        {ttCount("queue.add.duplicate.body", duplicates.length)}
       </p>
       <div class="add__actions">
         <button type="button" class="btn btn--primary" onclick={() => void addAnyway()}>
@@ -334,13 +361,16 @@
   {/if}
 
   <div class="add__footer">
-    <p class="field__hint" role="status">
-      {#if readyCount > 0}
-        {tt("queue.add.ready", { count: readyCount })}
-      {:else if rows.length > 0}
-        {tt("queue.add.none")}
-      {/if}
-    </p>
+    <div class="add__status">
+      <p class="field__hint" role="status">
+        {#if readyCount > 0}
+          {ttCount("queue.add.ready", readyCount)}
+        {:else if rows.length > 0}
+          {tt("queue.add.none")}
+        {/if}
+      </p>
+      <p class="field__hint">{tt("queue.add.actions.hint")}</p>
+    </div>
     <div class="add__actions">
       {#if addBarStore.hasRows}
         <button type="button" class="btn" onclick={() => addBarStore.clear()}>
@@ -349,12 +379,21 @@
       {/if}
       <button
         type="button"
-        class="btn btn--primary"
-        disabled={readyCount === 0 || adding}
-        onclick={() => void addAll()}
+        class="btn"
+        disabled={busy !== "" || !actionable}
+        onclick={() => void addAll("queue")}
       >
         <PlusIcon size={16} aria-hidden="true" focusable="false" />
-        {adding ? tt("tools.action.installingUnknown") : tt("queue.add.button")}
+        {tt("queue.add.button")}
+      </button>
+      <button
+        type="button"
+        class="btn btn--primary"
+        disabled={busy !== "" || !actionable}
+        onclick={() => void addAll("download")}
+      >
+        <DownloadIcon size={16} aria-hidden="true" focusable="false" />
+        {primaryLabel}
       </button>
     </div>
   </div>
@@ -384,13 +423,6 @@
     flex-wrap: wrap;
     gap: var(--space-4);
     align-items: flex-end;
-  }
-
-  .add__switch {
-    display: flex;
-    gap: var(--space-2);
-    align-items: center;
-    font-size: 13px;
   }
 
   .add__folder {
@@ -531,6 +563,13 @@
     gap: var(--space-3);
     align-items: center;
     justify-content: space-between;
+  }
+
+  .add__status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
   }
 
   .add__actions {

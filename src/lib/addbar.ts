@@ -5,15 +5,24 @@
  * options of a `<select>` are decisions, not rendering: they live here, free of
  * Svelte runes and of any `@tauri-apps` import, so the tests can cover them
  * directly (AGENTS.md §6).
+ *
+ * Quality is offered twice, on purpose: a **preset** for everything being added
+ * (a cap, `MaxHeight`, the safe choice for a batch and for playlists) and a
+ * **per-link picker** with the resolutions that video actually reports (the
+ * original's behaviour, exact height with a fallback below, spec §8.2).
  */
 import type { QualityChoice } from "$lib/queue";
+
+/** The heights the preset offers, tallest first. */
+export const PRESET_HEIGHTS: readonly number[] = [2160, 1440, 1080, 720, 480, 360];
 
 /** The preset chips of the Add bar, applied to every row that has no choice. */
 export const QUALITY_PRESETS: { value: string; choice: QualityChoice }[] = [
   { value: "best", choice: { kind: "best" } },
-  { value: "max1080", choice: { kind: "maxHeight", height: 1080 } },
-  { value: "max720", choice: { kind: "maxHeight", height: 720 } },
-  { value: "max480", choice: { kind: "maxHeight", height: 480 } },
+  ...PRESET_HEIGHTS.map((height) => ({
+    value: `max${height}`,
+    choice: { kind: "maxHeight" as const, height },
+  })),
   { value: "audio", choice: { kind: "audioOnly" } },
 ];
 
@@ -31,6 +40,12 @@ export function splitLinks(text: string): string[] {
   return links;
 }
 
+/** The links in a paste that are not in `known` yet, in order. */
+export function newLinks(text: string, known: readonly string[]): string[] {
+  const seen = new Set(known);
+  return splitLinks(text).filter((url) => !seen.has(url));
+}
+
 /** One choice of a `<select>`, with the value that selects it back. */
 export interface QualityOption {
   value: string;
@@ -38,39 +53,33 @@ export interface QualityOption {
 }
 
 /**
- * The quality options of one link.
+ * The quality options of one link's row.
  *
- * `heights` come from the inspection: a video lists its resolutions, as *max*
- * and *exact* (spec §8.2 needs both), and a source without heights offers only
- * Best and Audio only — never a failure, because heights are missing on plenty
- * of real sites (spec §6.2).
+ * The video's own heights come first (descending, as the inspection reports
+ * them), each an *exact* choice: the original's "1080p" behaviour (spec §8.2).
+ * `chosen` — the row's own pick, or the preset while the row follows it — is
+ * inserted after *Best* whenever it is not one of those heights, so the select
+ * always shows the quality that is actually in force instead of going blank.
+ *
+ * A source without heights is not a failure (spec §6.2): the row falls back to
+ * Best, the preset and Audio only.
  */
-export function qualityOptions(heights: readonly number[], audioOnly: boolean): QualityOption[] {
+export function rowQualityOptions(
+  heights: readonly number[],
+  chosen: QualityChoice,
+): QualityOption[] {
   const options: QualityOption[] = [{ value: "best", choice: { kind: "best" } }];
-  if (!audioOnly) {
-    for (const height of heights) {
-      options.push({ value: `max${height}`, choice: { kind: "maxHeight", height } });
-      options.push({ value: `exact${height}`, choice: { kind: "exact", height } });
-    }
+  const chosenValue = qualityValue(chosen);
+  /** An exact height is already in the list below; a cap or an id is not. */
+  const amongHeights = chosen.kind === "exact" && heights.includes(chosen.height);
+  if (chosenValue !== "best" && chosenValue !== "audio" && !amongHeights) {
+    options.push({ value: chosenValue, choice: chosen });
+  }
+  for (const height of heights) {
+    options.push({ value: `exact${height}`, choice: { kind: "exact", height } });
   }
   options.push({ value: "audio", choice: { kind: "audioOnly" } });
   return options;
-}
-
-/** The i18n label of a quality choice (spec §8.2, §11.9). */
-export function qualityLabel(choice: QualityChoice): string {
-  switch (choice.kind) {
-    case "exact":
-      return `queue.item.quality.exact.${choice.height}`;
-    case "maxHeight":
-      return `queue.item.quality.max.${choice.height}`;
-    case "audioOnly":
-      return "queue.item.quality.audio";
-    case "explicit":
-      return "queue.item.quality.explicit";
-    default:
-      return "queue.item.quality.best";
-  }
 }
 
 /**

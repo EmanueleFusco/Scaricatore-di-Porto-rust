@@ -608,20 +608,37 @@ export function itemLabel(item: QueueItem): string {
   return fileName(item.url) || item.url;
 }
 
-/** What the details panel shows as the chosen quality (spec §11.5). */
-export function qualityKey(item: QueueItem): string {
-  switch (item.options.quality.kind) {
+/**
+ * An i18n key plus the parameters it needs.
+ *
+ * Heights are parameters, never part of the key: a video can report any height
+ * (`576`, `4320`, …), and a dictionary of fixed keys would print the raw key
+ * for every one that is missing (D98).
+ */
+export interface QualityLabel {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+/** The label of a quality choice (spec §8.2, §11.9). */
+export function qualityLabel(choice: QualityChoice): QualityLabel {
+  switch (choice.kind) {
     case "exact":
-      return `queue.item.quality.exact.${item.options.quality.height}`;
+      return { key: "queue.item.quality.exact", params: { height: choice.height } };
     case "maxHeight":
-      return `queue.item.quality.max.${item.options.quality.height}`;
+      return { key: "queue.item.quality.max", params: { height: choice.height } };
     case "audioOnly":
-      return "queue.item.quality.audio";
+      return { key: "queue.item.quality.audio" };
     case "explicit":
-      return "queue.item.quality.explicit";
+      return { key: "queue.item.quality.explicit" };
     default:
-      return "queue.item.quality.best";
+      return { key: "queue.item.quality.best" };
   }
+}
+
+/** What the details panel shows as the chosen quality (spec §11.5). */
+export function qualityKey(item: QueueItem): QualityLabel {
+  return qualityLabel(item.options.quality);
 }
 
 /** A finished item whose resolution is lower than requested (spec §11.5). */

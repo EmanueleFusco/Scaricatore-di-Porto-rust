@@ -119,6 +119,12 @@
     />
     <p class="field__hint">{tt("settings.downloads.perHost.hint")}</p>
   </div>
+</section>
+
+<section class="card settings__group" aria-labelledby="heading-behaviour">
+  <h2 class="settings__group-title" id="heading-behaviour">
+    {tt("settings.section.behaviour")}
+  </h2>
 
   <!-- Spec §7.7: one notification when the queue goes idle, off by default. -->
   <label class="settings__check">
@@ -129,12 +135,6 @@
     />
     {tt("settings.general.notifyIdle")}
   </label>
-</section>
-
-<section class="card settings__group" aria-labelledby="heading-behaviour">
-  <h2 class="settings__group-title" id="heading-behaviour">
-    {tt("settings.general.behaviour")}
-  </h2>
 
   <!-- Spec §11.3: Ctrl/Cmd+V anywhere on the page, opt-in. -->
   <label class="settings__check">

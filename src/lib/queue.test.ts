@@ -26,6 +26,7 @@ import {
   normaliseSummary,
   normaliseUpdate,
   qualityKey,
+  qualityLabel,
   secondsToClock,
   speedMbits,
   stateKey,
@@ -39,9 +40,9 @@ import {
 } from "$lib/queue";
 import {
   choiceOf,
-  qualityLabel,
-  qualityOptions,
+  newLinks,
   qualityValue,
+  rowQualityOptions,
   splitLinks,
 } from "$lib/addbar";
 
@@ -293,21 +294,21 @@ describe("the text the cards show", () => {
   });
 
   it("names the chosen quality", () => {
-    expect(qualityKey(item())).toBe("queue.item.quality.best");
+    expect(qualityKey(item())).toEqual({ key: "queue.item.quality.best" });
     expect(
       qualityKey(
         item({
           options: { ...item().options, quality: { kind: "exact", height: 1080 } },
         }),
       ),
-    ).toBe("queue.item.quality.exact.1080");
+    ).toEqual({ key: "queue.item.quality.exact", params: { height: 1080 } });
     expect(
       qualityKey(
         item({
           options: { ...item().options, quality: { kind: "maxHeight", height: 720 } },
         }),
       ),
-    ).toBe("queue.item.quality.max.720");
+    ).toEqual({ key: "queue.item.quality.max", params: { height: 720 } });
   });
 
   it("warns only when a finished item is lower than asked", () => {
@@ -420,42 +421,76 @@ describe("splitting a paste into links", () => {
   });
 });
 
+describe("the links not seen yet", () => {
+  it("keeps the order and drops what already has a row", () => {
+    expect(
+      newLinks("https://a.example/1\nhttps://b.example/2", ["https://a.example/1"]),
+    ).toEqual(["https://b.example/2"]);
+  });
+
+  it("finds nothing new in a text that is not links", () => {
+    expect(newLinks("hello world", [])).toEqual([]);
+  });
+});
+
 describe("the quality options of a link", () => {
-  it("offers Best, every height as max and exact, and Audio only", () => {
-    const options = qualityOptions([1080, 720], false);
+  it("offers the video's own heights as exact choices, plus Best and Audio only", () => {
+    const options = rowQualityOptions([1080, 720], { kind: "best" });
     expect(options.map((option) => option.value)).toEqual([
       "best",
-      "max1080",
       "exact1080",
-      "max720",
       "exact720",
       "audio",
     ]);
   });
 
-  it("hides the video choices in audio mode", () => {
-    const options = qualityOptions([1080], true);
-    expect(options.map((option) => option.value)).toEqual(["best", "audio"]);
+  it("shows the preset in force while the row has its own choice to make", () => {
+    // A cap is not one of the heights: it has to be in the list, or the
+    // <select> would show nothing for a row that follows the preset.
+    const options = rowQualityOptions([720], { kind: "maxHeight", height: 1080 });
+    expect(options.map((option) => option.value)).toEqual([
+      "best",
+      "max1080",
+      "exact720",
+      "audio",
+    ]);
+  });
+
+  it("does not repeat a preset that is already one of the heights", () => {
+    const options = rowQualityOptions([1080], { kind: "exact", height: 1080 });
+    expect(options.map((option) => option.value)).toEqual(["best", "exact1080", "audio"]);
   });
 
   it("still offers Best and Audio only when there are no heights", () => {
     // Spec §6.2: a source without heights is not a failure.
-    expect(qualityOptions([], false).map((option) => option.value)).toEqual(["best", "audio"]);
+    expect(rowQualityOptions([], { kind: "audioOnly" }).map((option) => option.value)).toEqual([
+      "best",
+      "audio",
+    ]);
   });
 
   it("round-trips a choice through a <select> value", () => {
-    const options = qualityOptions([720], false);
+    const options = rowQualityOptions(
+      [720],
+      { kind: "explicit", formatId: "137", hasAudio: false },
+    );
     for (const option of options) {
       expect(choiceOf(options, qualityValue(option.choice))).toEqual(option.choice);
     }
     expect(choiceOf(options, "nonsense")).toBeNull();
   });
 
-  it("names every choice with an i18n key", () => {
-    expect(qualityLabel({ kind: "best" })).toBe("queue.item.quality.best");
-    expect(qualityLabel({ kind: "audioOnly" })).toBe("queue.item.quality.audio");
-    expect(qualityLabel({ kind: "exact", height: 720 })).toBe("queue.item.quality.exact.720");
-    expect(qualityLabel({ kind: "maxHeight", height: 720 })).toBe("queue.item.quality.max.720");
+  it("names every choice with an i18n key and its parameters", () => {
+    expect(qualityLabel({ kind: "best" })).toEqual({ key: "queue.item.quality.best" });
+    expect(qualityLabel({ kind: "audioOnly" })).toEqual({ key: "queue.item.quality.audio" });
+    expect(qualityLabel({ kind: "exact", height: 720 })).toEqual({
+      key: "queue.item.quality.exact",
+      params: { height: 720 },
+    });
+    expect(qualityLabel({ kind: "maxHeight", height: 720 })).toEqual({
+      key: "queue.item.quality.max",
+      params: { height: 720 },
+    });
   });
 });
 

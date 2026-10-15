@@ -10,7 +10,7 @@
   import QueueItemRow from "$lib/components/QueueItem.svelte";
   import { visibleItems, visibleRange } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
-  import { tt } from "$lib/stores/settings.svelte";
+  import { tt, ttCount } from "$lib/stores/settings.svelte";
 
   /** Row height in px; the cards are fixed-height by construction. */
   const ROW_HEIGHT = 92;
@@ -49,7 +49,7 @@
   </div>
 
   {#if items.length > 0}
-    <p class="list__count">{tt("queue.list.count", { visible: shown.length, total: items.length })}</p>
+    <p class="list__count">{ttCount("queue.list.count", items.length)}</p>
   {/if}
 </section>
 
