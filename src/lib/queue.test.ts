@@ -11,6 +11,7 @@ import {
   actionsFor,
   applySnapshot,
   applyUpdate,
+  barPercentFor,
   detailsText,
   emptyQueueState,
   fileName,
@@ -30,6 +31,7 @@ import {
   secondsToClock,
   speedMbits,
   stateKey,
+  statusKindFor,
   visibleItems,
   visibleRange,
   type ItemState,
@@ -269,6 +271,8 @@ describe("the text the cards show", () => {
   it("converts speed to Mbit/s and refuses the impossible", () => {
     expect(speedMbits(1024 * 1024 / 8)).toBe(1);
     expect(speedMbits(5e6)).toBe(38);
+    // One decimal below 1 Mbit/s: a slow download must not read as `0`.
+    expect(speedMbits(50_000)).toBe(0.4);
     expect(speedMbits(0)).toBeNull();
     expect(speedMbits(null)).toBeNull();
   });
@@ -324,6 +328,53 @@ describe("the text the cards show", () => {
     expect(
       heightWarning(item({ state: "downloading", requestedHeight: 1080, actualHeight: 360 })),
     ).toBeNull();
+  });
+
+  it("gives every state a status line: the problem, the progress, or the quality", () => {
+    // The card must never lose its status line: that is the height it keeps.
+    for (const state of Object.keys({
+      queued: 1,
+      inspecting: 1,
+      downloading: 1,
+      postProcessing: 1,
+      encoding: 1,
+      transcribing: 1,
+      summarizing: 1,
+      done: 1,
+      failed: 1,
+      cancelled: 1,
+      paused: 1,
+      interrupted: 1,
+    }) as ItemState[]) {
+      expect(["error", "warning", "progress", "quality"]).toContain(
+        statusKindFor(item({ state })),
+      );
+    }
+    expect(statusKindFor(item({ state: "downloading" }))).toBe("progress");
+    expect(statusKindFor(item({ state: "queued" }))).toBe("quality");
+    expect(
+      statusKindFor(
+        item({
+          state: "failed",
+          error: { code: "NETWORK", messageKey: "error.ytdlp.network", detail: "raw" },
+        }),
+      ),
+    ).toBe("error");
+    expect(
+      statusKindFor(item({ state: "done", requestedHeight: 1440, actualHeight: 360 })),
+    ).toBe("warning");
+  });
+
+  it("always has a progress width, even when yt-dlp reported none", () => {
+    expect(barPercentFor(item({ progress: { ...item().progress, percent: 42 } }))).toBe(42);
+    expect(barPercentFor(item({ state: "queued" }))).toBe(0);
+    expect(barPercentFor(item({ state: "done" }))).toBe(100);
+    // A failed item keeps the last width it had, so the bar never jumps.
+    expect(
+      barPercentFor(
+        item({ state: "failed", progress: { ...item().progress, percent: 37 } }),
+      ),
+    ).toBe(37);
   });
 
   it("builds the copy-details text out of the message, the detail and the log", () => {

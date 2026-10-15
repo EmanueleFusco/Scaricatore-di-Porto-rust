@@ -23,6 +23,7 @@
   "queue.download": "Scarica",
   "queue.cancel": "Annulla",
   "queue.speed": "Velocità: {value} Mbit/s",
+  "queue.status.waitingData": "In attesa dei dati…",
   "queue.eta": "Tempo rimasto {value}",
   "queue.cancelled": "Download annullato. Non è rimasto nulla in giro.",
   "queue.done.title": "Scaricato",
@@ -34,6 +35,7 @@
   "queue.playlist.countUnknown": "Questo link è una playlist. I download delle playlist arrivano con M3; per ora apri il link di un singolo video.",
   "queue.copyDetails": "Copia i dettagli",
   "queue.copied": "Dettagli copiati",
+  "queue.warning.heightLower.short": "Salvato a {actual}p invece di {requested}p",
   "queue.warning.heightLower": "yt-dlp ha salvato in {actual}p anche se ne avevi chiesti {requested}p: in quella esecuzione l'estrazione era ridotta (mancavano alcuni flussi) e il suo ripiego ha scelto un formato muxed. Riprova, o installa Deno in Impostazioni → Strumenti.",
   "queue.degraded.hint": "Questa lista potrebbe non avere tutte le risoluzioni: in questa lettura l'estrazione era ridotta (la challenge JavaScript non è riuscita). Riprova — o installa Deno in Impostazioni → Strumenti.",
   "queue.retry": "Riprova",
@@ -160,6 +162,8 @@
   "footer.percent": "{value}%",
 
   "footer.running": "{count} in esecuzione",
+  "footer.failed": "{count} falliti",
+  "footer.parked": "{count} in pausa",
   "footer.running.one": "{count} in esecuzione",
 
   "footer.queued": "{count} in coda",

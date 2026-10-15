@@ -581,7 +581,10 @@ export function speedMbits(bytesPerSecond: number | null): number | null {
   if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
     return null;
   }
-  return Math.round((bytesPerSecond * 8) / 1024 / 1024);
+  const mbit = (bytesPerSecond * 8) / 1024 / 1024;
+  // One decimal below 1 Mbit/s: `0` for a slow download reads as "stalled",
+  // and the footer and the cards both show this number.
+  return mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
 }
 
 /** Seconds → `h:mm:ss` / `m:ss`, or `null` when there is nothing to show. */
@@ -639,6 +642,34 @@ export function qualityLabel(choice: QualityChoice): QualityLabel {
 /** What the details panel shows as the chosen quality (spec §11.5). */
 export function qualityKey(item: QueueItem): QualityLabel {
   return qualityLabel(item.options.quality);
+}
+
+/**
+ * What a card's status line says (spec §11.5): one line for every state.
+ *
+ * Pinned as a function because the line is always rendered — the card is not
+ * allowed to change height when a value appears or disappears, which is both
+ * the flicker the user saw and what keeps the virtualiser's row height honest.
+ */
+export type StatusKind = "error" | "warning" | "progress" | "quality";
+
+/** The kind of status line an item wants: the problem, the progress, or the quality. */
+export function statusKindFor(item: QueueItem): StatusKind {
+  if (item.error !== null) return "error";
+  if (heightWarning(item) !== null) return "warning";
+  return isActive(item.state) ? "progress" : "quality";
+}
+
+/**
+ * The width of the progress slot, in per cent: what yt-dlp last reported, 100
+ * for a finished item, 0 when nothing is known.
+ *
+ * Never `null`: the slot is always there. `percent === null` only decides
+ * whether it animates (spec §8.3).
+ */
+export function barPercentFor(item: QueueItem): number {
+  if (item.progress.percent !== null) return item.progress.percent;
+  return item.state === "done" ? 100 : 0;
 }
 
 /** A finished item whose resolution is lower than requested (spec §11.5). */

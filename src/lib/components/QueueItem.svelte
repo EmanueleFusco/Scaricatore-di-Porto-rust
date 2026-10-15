@@ -11,6 +11,7 @@
   import {
     actionsFor,
     actionKey,
+    barPercentFor,
     detailsText,
     heightWarning,
     isActive,
@@ -18,6 +19,7 @@
     qualityKey,
     speedMbits,
     stateKey,
+    statusKindFor,
     type ItemAction,
     type QueueItem,
   } from "$lib/queue";
@@ -35,11 +37,39 @@
   const warning = $derived(heightWarning(item));
   const speed = $derived(speedMbits(item.progress.speedBps));
   const eta = $derived(secondsToClock(item.progress.etaSec));
-  const determinate = $derived(item.progress.percent !== null);
-  const percent = $derived(item.progress.percent ?? 0);
+  const percent = $derived(barPercentFor(item));
+  const indeterminate = $derived(isActive(item.state) && item.progress.percent === null);
   const quality = $derived(qualityKey(item));
   const detail = $derived(tt(quality.key, quality.params));
   const stageKey = $derived(stateKey(item.state));
+  /**
+   * One status line, whatever the state.
+   *
+   * The card keeps the same shape while a download runs: the slot is always
+   * there, so a speed that arrives, disappears (yt-dlp reports `NA` between
+   * fragments) and comes back cannot resize the card. The full text lives in
+   * the details panel; this line is clamped with a `title` for the same reason.
+   */
+  const statusKind = $derived(statusKindFor(item));
+  const statusText = $derived.by(() => {
+    if (statusKind === "error" && item.error !== null) {
+      return errorText(item.error.messageKey, null);
+    }
+    if (statusKind === "warning" && warning !== null) {
+      return tt("queue.warning.heightLower.short", {
+        actual: warning.actual,
+        requested: warning.requested,
+      });
+    }
+    if (statusKind === "progress") {
+      const parts = [
+        speed !== null ? tt("queue.speed", { value: speed }) : null,
+        eta !== null ? tt("queue.eta", { value: eta }) : null,
+      ].filter((part) => part !== null);
+      return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
+    }
+    return detail;
+  });
 
   async function act(action: ItemAction): Promise<void> {
     switch (action) {
@@ -149,38 +179,30 @@
   {#if isActive(item.state)}
     <div
       class="item__bar"
+      data-state={item.state}
+      data-indeterminate={indeterminate}
       role="progressbar"
       aria-label={tt(stageKey)}
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={determinate ? Math.round(percent) : undefined}
-      data-indeterminate={!determinate}
+      aria-valuenow={indeterminate ? undefined : Math.round(percent)}
     >
-      <div class="item__bar-fill" style:width={determinate ? `${percent}%` : "100%"}></div>
+      <div class="item__bar-fill" style:width={`${percent}%`}></div>
+    </div>
+  {:else}
+    <div class="item__bar" data-state={item.state} aria-hidden="true">
+      <div class="item__bar-fill" style:width={`${percent}%`}></div>
     </div>
   {/if}
 
-  {#if isActive(item.state) && (speed !== null || eta !== null)}
-    <p class="item__detail">
-      {#if speed !== null}<span>{tt("queue.speed", { value: speed })}</span>{/if}
-      {#if eta !== null}<span>{tt("queue.eta", { value: eta })}</span>{/if}
-    </p>
-  {/if}
-
-  {#if item.error !== null}
-    <p class="item__error" role="alert">
-      {errorText(item.error.messageKey, item.error.detail)}
-    </p>
-  {/if}
-
-  {#if warning !== null}
-    <p class="item__warning" role="status">
-      {tt("queue.warning.heightLower", {
-        actual: warning.actual,
-        requested: warning.requested,
-      })}
-    </p>
-  {/if}
+  <p
+    class="item__status"
+    data-kind={statusKind}
+    role={statusKind === "error" ? "alert" : statusKind === "warning" ? "status" : undefined}
+    title={statusText}
+  >
+    {statusText}
+  </p>
 
   {#if expanded}
     <div class="item__details">
@@ -196,6 +218,21 @@
           <dd class="item__path">{item.file}</dd>
         {/if}
       </dl>
+
+      {#if item.error !== null}
+        <p class="item__note item__note--error">
+          {errorText(item.error.messageKey, item.error.detail)}
+        </p>
+      {/if}
+
+      {#if warning !== null}
+        <p class="item__note item__note--warning">
+          {tt("queue.warning.heightLower", {
+            actual: warning.actual,
+            requested: warning.requested,
+          })}
+        </p>
+      {/if}
 
       {#if item.logTail.length > 0}
         <p class="item__log-label">{tt("queue.item.log")}</p>
@@ -305,6 +342,20 @@
     transition: width 120ms linear;
   }
 
+  .item__bar[data-state="queued"] .item__bar-fill {
+    background: transparent;
+  }
+
+  .item__bar[data-state="failed"] .item__bar-fill {
+    background: var(--danger);
+  }
+
+  .item__bar[data-state="cancelled"] .item__bar-fill,
+  .item__bar[data-state="paused"] .item__bar-fill,
+  .item__bar[data-state="interrupted"] .item__bar-fill {
+    background: var(--border-strong);
+  }
+
   .item__bar[data-indeterminate="true"] .item__bar-fill {
     animation: item-slide 1.2s ease-in-out infinite alternate;
     opacity: 0.6;
@@ -326,23 +377,39 @@
     }
   }
 
-  .item__detail {
-    display: flex;
-    gap: var(--space-3);
+  /*
+    The one status line of a card: progress while it runs, the quality when it
+    waits, the problem when there is one. Always present and always one line,
+    so the card's height never changes (the virtualiser relies on that too).
+  */
+  .item__status {
+    min-height: 16px;
     color: var(--text-muted);
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .item__error {
+  .item__status[data-kind="error"] {
     color: var(--danger);
-    font-size: 12px;
   }
 
-  .item__warning {
-    padding-left: var(--space-2);
-    border-left: 3px solid var(--accent);
-    color: var(--text-muted);
-    font-size: 12px;
+  .item__status[data-kind="warning"] {
+    color: var(--accent);
+  }
+
+  .item__note {
+    margin: 0;
+  }
+
+  .item__note--error {
+    color: var(--danger);
+  }
+
+  .item__note--warning {
+    color: var(--accent);
   }
 
   .item__details {

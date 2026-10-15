@@ -8,20 +8,22 @@
 -->
 <script lang="ts">
   import QueueItemRow from "$lib/components/QueueItem.svelte";
+  import { untrack } from "svelte";
   import { visibleItems, visibleRange } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
 
-  /** Row height in px; the cards are fixed-height by construction. */
-  const ROW_HEIGHT = 92;
+  /** Fallback row height, for the first paint; the real one is measured. */
+  const ROW_HEIGHT_FALLBACK = 132;
   const VIEWPORT_FALLBACK = 480;
 
   let scroller = $state<HTMLElement | null>(null);
   let scrollTop = $state(0);
   let viewportHeight = $state(VIEWPORT_FALLBACK);
+  let rowHeight = $state(ROW_HEIGHT_FALLBACK);
 
   const items = $derived(queueStore.list);
-  const range = $derived(visibleRange(scrollTop, viewportHeight, ROW_HEIGHT, items.length));
+  const range = $derived(visibleRange(scrollTop, viewportHeight, rowHeight, items.length));
   const shown = $derived(visibleItems(items, range));
 
   function onScroll(): void {
@@ -30,6 +32,45 @@
       viewportHeight = scroller.clientHeight || VIEWPORT_FALLBACK;
     }
   }
+
+  /**
+   * The distance between two rows, in px: the height of a card plus the gap.
+   *
+   * The cards have the same shape whatever the state (head, bar, one status
+   * line, actions), so one pitch fits them all; the tallest covers a narrow
+   * window where one state's buttons wrap and another's do not. Measured rather
+   * than taken from a constant: the padding rows have to match the rows that
+   * are really drawn, or the window scrolls to the wrong place.
+   */
+  function measureRow(): void {
+    if (scroller === null) return;
+    const rows = scroller.querySelectorAll<HTMLElement>(".item");
+    if (rows.length === 0) return;
+    const first = rows[0].getBoundingClientRect();
+    const gap = Number.parseFloat(getComputedStyle(scroller).rowGap) || 0;
+    const pitch =
+      rows.length >= 2
+        ? Math.round(rows[1].getBoundingClientRect().top - first.top)
+        : Math.round(first.height + gap);
+    if (pitch > 0 && Math.abs(pitch - rowHeight) > 2) {
+      rowHeight = pitch;
+    }
+  }
+
+  $effect(() => {
+    const el = scroller;
+    if (el === null) return;
+    const observer = new ResizeObserver(() => measureRow());
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  // Re-measure whenever the rendered slice changes: a row that went from
+  // downloading to done has a different height, and so does a window resize.
+  $effect(() => {
+    void shown;
+    untrack(() => measureRow());
+  });
 </script>
 
 <section class="list" aria-label={tt("a11y.queueList")}>
@@ -58,19 +99,25 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    min-height: 0;
     flex: 1 1 auto;
+    /* A floor, not a fixed height: on a window too small for everything, the
+       page scrolls (see `.queue`) instead of the list painting over the
+       actions below it. */
+    min-height: 104px;
   }
 
   .list__viewport {
     flex: 1 1 auto;
-    min-height: 240px;
-    max-height: calc(100vh - 320px);
+    min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     padding-right: var(--space-1);
+  }
+
+  .list__count {
+    flex: none;
   }
 
   .list__pad {

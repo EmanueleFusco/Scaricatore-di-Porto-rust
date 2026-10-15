@@ -405,6 +405,9 @@
     flex-direction: column;
     gap: var(--space-4);
     padding: var(--space-4);
+    /* Never squeezed: on a window too small for everything, the page scrolls
+       (`.queue`), and the textarea keeps its size. */
+    flex: none;
   }
 
   .add--dragging {

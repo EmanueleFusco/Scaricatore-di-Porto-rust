@@ -53,7 +53,17 @@
     {:else if summary.total === 0}
       <span class="status__state" data-state="idle">
         <span class="status__dot" aria-hidden="true"></span>
-        {tt("footer.idle")}
+        {tt("footer.nothing")}
+      </span>
+    {:else if summary.failed > 0}
+      <span class="status__state" data-state="failed">
+        <span class="status__dot" aria-hidden="true"></span>
+        {tt("footer.failed", { count: summary.failed })}
+      </span>
+    {:else if summary.paused + summary.interrupted > 0}
+      <span class="status__state" data-state="paused">
+        <span class="status__dot" aria-hidden="true"></span>
+        {tt("footer.parked", { count: summary.paused + summary.interrupted })}
       </span>
     {:else}
       <span class="status__state" data-state="done">
@@ -93,6 +103,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+    flex: none;
     min-height: var(--row-height);
     padding: 0 var(--space-4);
     background: var(--surface);
@@ -134,6 +145,10 @@
   .status__state[data-state="paused"] .status__dot,
   .status__state[data-state="queued"] .status__dot {
     background: var(--warning, var(--border-strong));
+  }
+
+  .status__state[data-state="failed"] .status__dot {
+    background: var(--danger);
   }
 
   .status__detail {

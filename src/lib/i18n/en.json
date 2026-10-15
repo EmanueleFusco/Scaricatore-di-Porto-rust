@@ -23,6 +23,7 @@
   "queue.download": "Download",
   "queue.cancel": "Cancel",
   "queue.speed": "Speed: {value} Mbit/s",
+  "queue.status.waitingData": "Waiting for data…",
   "queue.eta": "ETA {value}",
   "queue.cancelled": "Download cancelled. Nothing was left behind.",
   "queue.done.title": "Downloaded",
@@ -34,6 +35,7 @@
   "queue.playlist.countUnknown": "This URL is a playlist. Playlist downloads arrive with M3; for now, open a single video link.",
   "queue.copyDetails": "Copy details",
   "queue.copied": "Details copied",
+  "queue.warning.heightLower.short": "Saved at {actual}p instead of {requested}p",
   "queue.warning.heightLower": "yt-dlp saved {actual}p although {requested}p was requested: the extraction was degraded in that run (some streams were missing), so its own fallback chose a muxed format. Try again, or install Deno in Settings → Tools.",
   "queue.degraded.hint": "This list may be missing resolutions: the extraction was degraded in this run (the JavaScript challenge failed). Try again — or install Deno in Settings → Tools.",
   "queue.retry": "Try again",
@@ -160,6 +162,8 @@
   "footer.percent": "{value}%",
 
   "footer.running": "{count} running",
+  "footer.failed": "{count} failed",
+  "footer.parked": "{count} paused",
   "footer.running.one": "{count} running",
 
   "footer.queued": "{count} queued",

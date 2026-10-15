@@ -53,16 +53,23 @@
     gap: var(--space-4);
     height: 100%;
     min-height: 0;
+    /* The page is exactly as tall as the window; when even the minimum of the
+       add bar plus the list does not fit (a very small window, or a long list
+       of pasted links), this scrolls instead of letting a child paint over the
+       actions and the footer. */
+    overflow: auto;
   }
 
   .queue__title {
     font-size: 20px;
+    flex: none;
   }
 
   .queue__actions {
     display: flex;
     gap: var(--space-2);
     flex-wrap: wrap;
+    flex: none;
     padding-top: var(--space-2);
     border-top: 1px solid var(--border);
   }
