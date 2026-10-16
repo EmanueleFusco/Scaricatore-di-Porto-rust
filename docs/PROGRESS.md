@@ -3083,3 +3083,10 @@ Branch `m3-playlists-and-sites`.
 - **Decisions/deviations**: none.
 - **Next step**: M3 Step 2 — download args (`-o` prefix with `%` → `%%` and ID toggle, `-S vcodec:h264,res,acodec:m4a`, `--download-archive`, `--sleep-interval`, `--live-from-start`, `--proxy`, `--limit-rate`, custom headers), anti-bot `--impersonate chrome` probe & retry, archive commands, and queue group commands.
 
+
+## 2026-10-16 — M3 / Step 2: download args, anti-bot retry, archive, settings v5, group commands
+- Done: M3 `yt-dlp` download args (numbering prefix, ID toggle, H.264 sort, `--download-archive`, pacing sleep, `--live-from-start`, proxy, rate limit, referer/UA/headers, `--impersonate chrome`); one-shot anti-bot retry with `--impersonate chrome` in inspect and download (cached `--list-impersonate-targets` probe); `JobOutcome::SkippedArchive`; settings schema v5; `archive_status` / `archive_clear`; queue group commands (pause/resume/retry-failed/remove); frontend bindings (`settings.ts`, `queue.ts`, stores) and unit tests.
+- Verified by running: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all suites pass, incl. new `ytdlp_job` antibot-retry / archive-skip tests and `queue_ipc` archive/group test), `npm run check` (0 errors), `npm test` (213 passed).
+- Not verified / stubbed: the Svelte UI for M3 (Step 3); real `--impersonate` against a live site (needs curl_cffi in the bundled yt-dlp, not tested offline).
+- Decisions/deviations: the fake yt-dlp answers `--list-impersonate-targets` anywhere in argv (the real probe passes `--ignore-config` first).
+- Next step: Step 3 — playlist panel, AddBar URL cases, queue group headers, M3 settings UI, i18n.

@@ -332,6 +332,33 @@ pub struct ItemOptions {
     pub cookies: CookieChoice,
     /// The JS runtime mode in force when the item was added (spec §5.3.3).
     pub runtime_mode: JsRuntimeMode,
+    /// Optional literal prefix before `%(title).180B` in `-o`, e.g. `"01 - "`
+    /// for numbered playlist entries (spec §6.4, §8.2).
+    pub filename_prefix: Option<String>,
+    /// Include `[%(id)s]` suffix in the filename (spec §8.2, §11.8).
+    pub include_id_in_filename: bool,
+    /// Pass `-S vcodec:h264,res,acodec:m4a` (spec §8.2, §11.8).
+    pub prefer_h264: bool,
+    /// Optional `--download-archive <path>` (spec §6.2.4, §8.2).
+    pub archive_file: Option<PathBuf>,
+    /// Optional `(min, max)` sleep interval in seconds for playlists > 20 items
+    /// (spec §6.4, §8.2).
+    pub sleep_interval: Option<(u32, u32)>,
+    /// Live stream recording mode (`Some(true)` = `--live-from-start`,
+    /// `Some(false)` = `--no-live-from-start`, `None` = normal VOD, spec §6.4).
+    pub live_from_start: Option<bool>,
+    /// `--proxy <url>` (spec §8.2, §11.8).
+    pub proxy: Option<String>,
+    /// `--limit-rate <rate>` (spec §8.2, §11.8).
+    pub limit_rate: Option<String>,
+    /// `--referer <url>` (spec §6.3.4, §8.2).
+    pub referer: Option<String>,
+    /// `--user-agent <ua>` (spec §6.3.4, §8.2).
+    pub user_agent: Option<String>,
+    /// Extra `Header: Value` lines passed via `--add-headers` (spec §6.3.4, §8.2).
+    pub custom_headers: Vec<String>,
+    /// Allow one retry with `--impersonate chrome` on `ANTIBOT` (spec §6.3.5, §8.5).
+    pub impersonate_retry: bool,
 }
 
 impl Default for ItemOptions {
@@ -342,6 +369,18 @@ impl Default for ItemOptions {
             output_dir: PathBuf::new(),
             cookies: CookieChoice::None,
             runtime_mode: JsRuntimeMode::default(),
+            filename_prefix: None,
+            include_id_in_filename: true,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: true,
         }
     }
 }
@@ -353,6 +392,19 @@ impl ItemOptions {
             kind: self.kind.to_job_kind(),
             quality: self.quality.to_format_choice(),
             cookies: self.cookies.to_source(),
+            filename_prefix: self.filename_prefix.clone(),
+            include_id_in_filename: self.include_id_in_filename,
+            prefer_h264: self.prefer_h264,
+            archive_file: self.archive_file.clone(),
+            sleep_interval: self.sleep_interval,
+            live_from_start: self.live_from_start,
+            proxy: self.proxy.clone(),
+            limit_rate: self.limit_rate.clone(),
+            referer: self.referer.clone(),
+            user_agent: self.user_agent.clone(),
+            custom_headers: self.custom_headers.clone(),
+            impersonate_chrome: false,
+            impersonate_retry: self.impersonate_retry,
         }
     }
 

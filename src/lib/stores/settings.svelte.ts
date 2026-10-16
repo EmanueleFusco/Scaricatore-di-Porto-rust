@@ -82,6 +82,40 @@ class SettingsStore {
     this.errorDetail = null;
   }
 
+  /** Read `archive.txt` path and entry count (spec §6.4, §11.8). */
+  async archiveStatus(): Promise<{ path: string; entries: number }> {
+    if (!isTauriRuntime()) {
+      return { path: "", entries: 0 };
+    }
+    try {
+      const view = await invoke<{ path?: unknown; entries?: unknown }>("archive_status");
+      return {
+        path: typeof view?.path === "string" ? view.path : "",
+        entries: typeof view?.entries === "number" ? view.entries : 0,
+      };
+    } catch (err) {
+      this.#fail(err);
+      return { path: "", entries: 0 };
+    }
+  }
+
+  /** Clear `archive.txt` (spec §11.8). */
+  async archiveClear(): Promise<{ path: string; entries: number }> {
+    if (!isTauriRuntime()) {
+      return { path: "", entries: 0 };
+    }
+    try {
+      const view = await invoke<{ path?: unknown; entries?: unknown }>("archive_clear");
+      return {
+        path: typeof view?.path === "string" ? view.path : "",
+        entries: typeof view?.entries === "number" ? view.entries : 0,
+      };
+    } catch (err) {
+      this.#fail(err);
+      return { path: "", entries: 0 };
+    }
+  }
+
   #apply(view: SettingsView): void {
     this.settings = normaliseSettings(view.settings);
     this.recovery = view.recovery ?? null;

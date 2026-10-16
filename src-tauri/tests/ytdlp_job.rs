@@ -132,11 +132,11 @@ impl Fixture {
     fn request_with_stall(&self, url: &str, stall: Duration) -> JobRequest {
         JobRequest {
             url: url.to_owned(),
-            spec: DownloadSpec {
-                kind: scaricatore_di_porto_lib::services::ytdlp::JobKind::Video,
-                quality: FormatChoice::MaxHeight { height: 1080 },
-                cookies: CookieSource::None,
-            },
+            spec: DownloadSpec::new(
+                scaricatore_di_porto_lib::services::ytdlp::JobKind::Video,
+                FormatChoice::MaxHeight { height: 1080 },
+                CookieSource::None,
+            ),
             dirs: JobDirs {
                 home: self.home.clone(),
                 temp: self.temp.clone(),
@@ -993,4 +993,57 @@ async fn garbage_from_the_tool_is_an_error_not_a_panic() {
         matches!(&*inspected, Inspected::Error(_)),
         "got {inspected:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_antibot_failure_retries_once_with_chrome_impersonation_in_inspect_and_download() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let i_env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
+
+    let outcome = inspect::inspect(
+        &i_env,
+        "https://site.example/antibot-retry",
+        CancellationToken::new(),
+    )
+    .await;
+    let inspected = inspected(outcome);
+    assert!(
+        matches!(&*inspected, Inspected::Video(_)),
+        "expected inspect to succeed on impersonate retry, got {inspected:?}"
+    );
+    assert_eq!(fixture.log_lines().len(), 2, "two inspect attempts");
+
+    let j_env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+    let j_outcome = job::run_job(
+        &j_env,
+        &fixture.request("https://site.example/antibot-retry"),
+        CancellationToken::new(),
+        sink,
+    )
+    .await;
+    assert!(
+        matches!(j_outcome, JobOutcome::Done { .. }),
+        "expected download to succeed on impersonate retry, got {j_outcome:?}"
+    );
+    assert_eq!(fixture.log_lines().len(), 4, "two more download attempts");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_skip_reports_skipped_archive_without_failing() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let mut req = fixture.request("https://youtu.be/archive-skip");
+    req.spec.archive_file = Some(fixture.home.join("archive.txt"));
+
+    let outcome = job::run_job(&env, &req, CancellationToken::new(), sink).await;
+    assert!(
+        matches!(outcome, JobOutcome::SkippedArchive { .. }),
+        "expected SkippedArchive, got {outcome:?}"
+    );
+    assert_eq!(fixture.log_lines().len(), 1);
 }

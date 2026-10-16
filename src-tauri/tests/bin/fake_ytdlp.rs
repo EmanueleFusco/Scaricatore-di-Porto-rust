@@ -40,6 +40,15 @@ fn main() {
         println!("ffmpeg version 9.9.9-fake");
         return;
     }
+    if args.iter().any(|arg| arg == "--list-impersonate-targets") {
+        println!(
+            "[info] Available impersonate targets\n\
+             Client  OS        Source\n\
+             ---------------------------------\n\
+             Chrome  macos-14  curl_cffi"
+        );
+        return;
+    }
 
     let url = url_of(&args).unwrap_or_default();
     let runtime = runtime_of(&args);
@@ -199,6 +208,15 @@ fn challenge_warning() {
 }
 
 fn inspect_url(args: &[String], url: &str, runtime: &str) -> i32 {
+    if url.contains("antibot-retry") {
+        let impersonated = args
+            .windows(2)
+            .any(|pair| pair[0] == "--impersonate" && pair[1] == "chrome");
+        if !impersonated {
+            eprintln!("ERROR: [generic] video: HTTP Error 403: Forbidden (Cloudflare)");
+            return 1;
+        }
+    }
     if url.contains("auth-fail") {
         eprintln!(
             "ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication."
@@ -272,6 +290,19 @@ fn download_url(args: &[String], url: &str, runtime: &str) -> i32 {
 }
 
 fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
+    if url.contains("antibot-retry") {
+        let impersonated = args
+            .windows(2)
+            .any(|pair| pair[0] == "--impersonate" && pair[1] == "chrome");
+        if !impersonated {
+            eprintln!("ERROR: [generic] video: HTTP Error 403: Forbidden (Cloudflare)");
+            return 1;
+        }
+    }
+    if url.contains("archive-skip") && args.iter().any(|arg| arg == "--download-archive") {
+        println!("[download] fakeid: has already been recorded in the archive");
+        return 0;
+    }
     // A transient network failure that heals on the second attempt: the queue's
     // automatic retry (spec §7.3) must notice, wait and try again.
     if url.contains("netfail-once") && counter("netfail-once", true) <= 1 {

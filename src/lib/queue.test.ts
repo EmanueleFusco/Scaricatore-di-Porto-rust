@@ -67,6 +67,18 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
       outputDir: "/home/user/Videos",
       cookies: { kind: "none" },
       runtimeMode: "auto",
+      filenamePrefix: null,
+      includeIdInFilename: true,
+      preferH264: false,
+      archiveFile: null,
+      sleepInterval: null,
+      liveFromStart: null,
+      proxy: null,
+      limitRate: null,
+      referer: null,
+      userAgent: null,
+      customHeaders: [],
+      impersonateRetry: true,
     },
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
@@ -648,6 +660,7 @@ function update(overrides: Partial<QueueUpdate> = {}): QueueUpdate {
     items: [],
     removed: [],
     order: null,
+    groups: null,
     summary: summary(),
     toast: null,
     ...overrides,
@@ -710,6 +723,26 @@ describe("folding an event into what the UI shows", () => {
     const before = applyUpdate(emptyQueueState(), update({ seq: 1, toast }));
     const after = applyUpdate(before, update({ seq: 2 }));
     expect(after.toast).toBe(toast);
+  });
+});
+
+describe("groups in events (M3)", () => {
+  it("replaces the groups only when the event carries them", () => {
+    const group = { id: "g1", title: "PL", folder: null, index: 0 };
+    const withGroups = applyUpdate(emptyQueueState(), update({ seq: 1, groups: [group] }));
+    expect(withGroups.groups).toEqual([group]);
+    const unchanged = applyUpdate(withGroups, update({ seq: 2 }));
+    expect(unchanged.groups).toBe(withGroups.groups);
+    expect(applyUpdate(unchanged, update({ seq: 3, groups: [] })).groups).toEqual([]);
+  });
+
+  it("reads M3 item options with safe defaults", () => {
+    const parsed = normaliseItem({ options: { filenamePrefix: "01 - ", sleepInterval: [1, 4], liveFromStart: true } });
+    expect(parsed.options.filenamePrefix).toBe("01 - ");
+    expect(parsed.options.sleepInterval).toEqual([1, 4]);
+    expect(parsed.options.liveFromStart).toBe(true);
+    expect(parsed.options.includeIdInFilename).toBe(true);
+    expect(parsed.options.customHeaders).toEqual([]);
   });
 });
 

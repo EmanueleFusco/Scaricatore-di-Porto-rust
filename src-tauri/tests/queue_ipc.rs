@@ -102,10 +102,17 @@ fn app_in(dir: &Path) -> tauri::App<MockRuntime> {
             scaricatore_di_porto_lib::commands::queue::queue_move_to_top,
             scaricatore_di_porto_lib::commands::queue::queue_clear_finished,
             scaricatore_di_porto_lib::commands::queue::queue_lanes,
+            scaricatore_di_porto_lib::commands::queue::queue_upsert_group,
+            scaricatore_di_porto_lib::commands::queue::queue_pause_group,
+            scaricatore_di_porto_lib::commands::queue::queue_resume_group,
+            scaricatore_di_porto_lib::commands::queue::queue_retry_group_failed,
+            scaricatore_di_porto_lib::commands::queue::queue_remove_group,
             scaricatore_di_porto_lib::commands::queue::read_links_file,
             scaricatore_di_porto_lib::commands::queue::app_set_language,
             scaricatore_di_porto_lib::commands::settings::settings_get,
             scaricatore_di_porto_lib::commands::settings::settings_save,
+            scaricatore_di_porto_lib::commands::settings::archive_status,
+            scaricatore_di_porto_lib::commands::settings::archive_clear,
         ])
         .build(mock_context(noop_assets()))
         .expect("mock app must build");
@@ -571,7 +578,7 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
     assert_eq!(answer["settings"]["perHostCap"], 4);
     assert_eq!(answer["settings"]["notifyOnIdle"], true);
     assert_eq!(answer["settings"]["pasteLinksAnywhere"], true);
-    assert_eq!(answer["settings"]["schemaVersion"], 4, "M2's schema");
+    assert_eq!(answer["settings"]["schemaVersion"], 5, "M3's schema");
 
     // And the engine was told, without a restart.
     let lanes = call(&window, "queue_lanes", json!({})).expect("must succeed");
@@ -596,5 +603,48 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
             .expect("settings.json is JSON");
     assert_eq!(on_disk["parallelDownloads"], 4);
     assert_eq!(on_disk["perHostCap"], 1);
-    assert_eq!(on_disk["schemaVersion"], 4);
+    assert_eq!(on_disk["schemaVersion"], 5);
+}
+
+#[test]
+fn archive_and_group_commands_work_over_the_ipc() {
+    let dir = TempDir::new().expect("temp dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let status = call(&window, "archive_status", json!({})).expect("archive_status");
+    assert_eq!(status["entries"], 0);
+    let archive_path = status["path"].as_str().expect("archive path");
+    std::fs::create_dir_all(std::path::Path::new(archive_path).parent().unwrap()).expect("mkdir");
+    std::fs::write(archive_path, "youtube a\nyoutube b\n").expect("write archive");
+
+    let status = call(&window, "archive_status", json!({})).expect("archive_status");
+    assert_eq!(status["entries"], 2);
+
+    let cleared = call(&window, "archive_clear", json!({})).expect("archive_clear");
+    assert_eq!(cleared["entries"], 0);
+
+    // Upsert a group and verify it appears in queue_list.
+    call(
+        &window,
+        "queue_upsert_group",
+        json!({
+            "group": {
+                "id": "g-pl",
+                "title": "My Playlist",
+                "folder": "/tmp/My Playlist",
+                "index": 0
+            }
+        }),
+    )
+    .expect("queue_upsert_group");
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    assert_eq!(list["groups"].as_array().expect("groups").len(), 1);
+    assert_eq!(list["groups"][0]["title"], "My Playlist");
+
+    let removed = call(&window, "queue_remove_group", json!({ "groupId": "g-pl" }))
+        .expect("queue_remove_group");
+    assert_eq!(removed, json!([]));
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    assert_eq!(list["groups"].as_array().expect("groups").len(), 0);
 }

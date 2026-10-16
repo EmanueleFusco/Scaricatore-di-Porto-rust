@@ -19,7 +19,11 @@ use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
+
+/// Default filename for `--download-archive` under `<app-data>/` (spec §6.2.4,
+/// §8.2, §11.8).
+pub const ARCHIVE_FILE: &str = "archive.txt";
 
 /// Which releases the yt-dlp updater may install (spec §5.5, §11.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -52,6 +56,46 @@ fn channel_from_str(raw: &str) -> Option<YtdlpChannel> {
 fn de_channel<'de, D: serde::Deserializer<'de>>(d: D) -> Result<YtdlpChannel, D::Error> {
     let raw = String::deserialize(d)?;
     Ok(channel_from_str(&raw).unwrap_or_default())
+}
+
+/// Default action when pasting a video URL that also carries `list=` (spec §6.4,
+/// §11.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaylistUrlBehavior {
+    /// Show the inline *This video only* / *Whole playlist* choice (default).
+    #[default]
+    Ask,
+    /// Always inspect as a single video (`--no-playlist`).
+    Video,
+    /// Always inspect the whole playlist.
+    Playlist,
+}
+
+impl PlaylistUrlBehavior {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Video => "video",
+            Self::Playlist => "playlist",
+        }
+    }
+}
+
+fn playlist_url_behavior_from_str(raw: &str) -> Option<PlaylistUrlBehavior> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "ask" => Some(PlaylistUrlBehavior::Ask),
+        "video" => Some(PlaylistUrlBehavior::Video),
+        "playlist" => Some(PlaylistUrlBehavior::Playlist),
+        _ => None,
+    }
+}
+
+fn de_playlist_url_behavior<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<PlaylistUrlBehavior, D::Error> {
+    let raw = String::deserialize(d)?;
+    Ok(playlist_url_behavior_from_str(&raw).unwrap_or_default())
 }
 
 /// UI theme (spec §11.9).
@@ -169,6 +213,33 @@ pub struct Settings {
     pub notify_on_idle: bool,
     /// Spec §11.3, §11.8: "Add links pasted into the window", opt-in.
     pub paste_links_anywhere: bool,
+    /// Spec §8.2, §11.8: include `[%(id)s]` suffix in filenames (default `true`).
+    pub include_id_in_filename: bool,
+    /// Spec §8.2, §11.8: pass `-S vcodec:h264,res,acodec:m4a` for maximum
+    /// device compatibility (default `false`).
+    pub prefer_h264: bool,
+    /// Spec §6.4, §11.8: behaviour when pasting a video URL with `list=`
+    /// (*Ask* default, *Video*, *Playlist*).
+    #[serde(deserialize_with = "de_playlist_url_behavior")]
+    pub playlist_url_behavior: PlaylistUrlBehavior,
+    /// Spec §6.2.4, §8.2, §11.8: skip already downloaded playlist videos via
+    /// `--download-archive <app-data>/archive.txt` (default `true`).
+    pub use_download_archive: bool,
+    /// Spec §8.2, §11.8: `--proxy <url>` (`http://`, `socks5://`).
+    pub proxy_url: Option<String>,
+    /// Spec §8.2, §11.8: `--limit-rate <rate>` (e.g. `5M`).
+    pub limit_rate: Option<String>,
+    /// Spec §6.3.4, §8.2, §11.8: `--referer <url>`.
+    pub custom_referer: Option<String>,
+    /// Spec §6.3.4, §8.2, §11.8: `--user-agent <ua>`.
+    pub custom_user_agent: Option<String>,
+    /// Spec §6.3.4, §8.2, §11.8: extra `Header: Value` lines passed via
+    /// `--add-headers`.
+    pub custom_headers: Vec<String>,
+    /// Spec §6.3.5, §8.5, §11.8: retry once with `--impersonate chrome` on
+    /// `ANTIBOT` when the yt-dlp binary supports chrome impersonation
+    /// (default `true`).
+    pub impersonate_retry: bool,
 }
 
 impl Default for Settings {
@@ -190,6 +261,16 @@ impl Default for Settings {
             per_host_cap: crate::services::queue::model::DEFAULT_PER_HOST_CAP as u8,
             notify_on_idle: false,
             paste_links_anywhere: false,
+            include_id_in_filename: true,
+            prefer_h264: false,
+            playlist_url_behavior: PlaylistUrlBehavior::default(),
+            use_download_archive: true,
+            proxy_url: None,
+            limit_rate: None,
+            custom_referer: None,
+            custom_user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: true,
         }
     }
 }
@@ -238,6 +319,18 @@ impl Settings {
         if let Some(raw) = &self.youtube_player_clients {
             self.youtube_player_clients = jsruntime::sanitize_player_clients(raw);
         }
+
+        self.proxy_url = clean_optional_text(self.proxy_url.take());
+        self.limit_rate = clean_optional_text(self.limit_rate.take());
+        self.custom_referer = clean_optional_text(self.custom_referer.take());
+        self.custom_user_agent = clean_optional_text(self.custom_user_agent.take());
+        self.custom_headers = self
+            .custom_headers
+            .iter()
+            .map(|h| h.trim())
+            .filter(|h| !h.is_empty() && h.contains(':') && !h.contains(['\r', '\n']))
+            .map(str::to_owned)
+            .collect();
     }
 
     /// The user's override for `tool`, if any.
@@ -785,6 +878,12 @@ impl ToolContext {
         self.data_dir.join(jsruntime::RUNTIME_MEMORY_FILE)
     }
 
+    /// Where the playlist download archive (`archive.txt`) lives (spec §6.2.4,
+    /// §8.2, §11.8).
+    pub fn archive_path(&self) -> PathBuf {
+        self.data_dir.join(ARCHIVE_FILE)
+    }
+
     pub fn bundled_dir(&self) -> &Path {
         &self.bundled_dir
     }
@@ -803,6 +902,17 @@ impl ToolContext {
             well_known_dirs: tools::well_known_dirs(paths::home_dir().as_deref()),
         }
     }
+}
+
+fn clean_optional_text(raw: Option<String>) -> Option<String> {
+    raw.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.contains(['\r', '\n']) {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 /// Key of the tool-resolution cache: the tool plus the override path it was
@@ -1161,5 +1271,41 @@ mod tests {
         assert_eq!(Language::System.explicit(), None);
         assert_eq!(Language::It.explicit(), Some("it"));
         assert_eq!(Language::En.explicit(), Some("en"));
+    }
+
+    #[test]
+    fn m3_settings_defaults_and_normalisation() {
+        let s = Settings::default();
+        assert!(s.include_id_in_filename);
+        assert!(!s.prefer_h264);
+        assert_eq!(s.playlist_url_behavior, PlaylistUrlBehavior::Ask);
+        assert!(s.use_download_archive);
+        assert!(s.proxy_url.is_none());
+        assert!(s.limit_rate.is_none());
+        assert!(s.custom_referer.is_none());
+        assert!(s.custom_user_agent.is_none());
+        assert!(s.custom_headers.is_empty());
+        assert!(s.impersonate_retry);
+
+        let mut dirty = Settings {
+            playlist_url_behavior: PlaylistUrlBehavior::Video,
+            proxy_url: Some("  socks5://127.0.0.1:1080  ".to_owned()),
+            limit_rate: Some("   ".to_owned()),
+            custom_referer: Some("bad\nline".to_owned()),
+            custom_user_agent: Some(" Mozilla/5.0 ".to_owned()),
+            custom_headers: vec![
+                "  X-Token: abc  ".to_owned(),
+                "invalid-header-without-colon".to_owned(),
+                "Bad: \r\ninjected".to_owned(),
+                "   ".to_owned(),
+            ],
+            ..Settings::default()
+        };
+        dirty.normalise();
+        assert_eq!(dirty.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert!(dirty.limit_rate.is_none());
+        assert!(dirty.custom_referer.is_none());
+        assert_eq!(dirty.custom_user_agent.as_deref(), Some("Mozilla/5.0"));
+        assert_eq!(dirty.custom_headers, vec!["X-Token: abc".to_owned()]);
     }
 }

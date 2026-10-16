@@ -82,6 +82,12 @@ pub enum JobOutcome {
         /// audio-only and for extractors that do not declare one.
         actual_height: Option<u32>,
     },
+    /// `--download-archive` matched this video ID: yt-dlp exited 0 without
+    /// downloading anything (spec §6.2.4).
+    SkippedArchive {
+        runtime: jsruntime::RuntimeKind,
+        elapsed_ms: u64,
+    },
     Failed(YtdlpError),
     Cancelled,
 }
@@ -118,6 +124,8 @@ pub async fn run_job(
     let mut omit_format = false;
     let mut format_retried = false;
     let mut degraded_retry_done = false;
+    let mut impersonate_chrome = request.spec.impersonate_chrome;
+    let mut impersonate_retried = false;
 
     emitter.emit(JobProgress::label(JobStage::Preparing, "preparing"));
 
@@ -129,8 +137,16 @@ pub async fn run_job(
         }
 
         let started = Instant::now();
-        let attempt =
-            run_attempt(env, request, runtime, omit_format, token.clone(), &emitter).await;
+        let attempt = run_attempt(
+            env,
+            request,
+            runtime,
+            omit_format,
+            impersonate_chrome,
+            token.clone(),
+            &emitter,
+        )
+        .await;
 
         match attempt {
             AttemptOutcome::Finished {
@@ -176,6 +192,13 @@ pub async fn run_job(
                     actual_height,
                 };
             }
+            AttemptOutcome::SkippedArchive => {
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return JobOutcome::SkippedArchive {
+                    runtime,
+                    elapsed_ms,
+                };
+            }
             AttemptOutcome::Failed(error) => {
                 // The one retry without `-f` (spec §8.2): the user asked for a
                 // format that is not available, and yt-dlp's own fallback is the
@@ -199,6 +222,22 @@ pub async fn run_job(
                             );
                         }
                         FallbackDecision::No => {}
+                    }
+                }
+                // One-shot retry with `--impersonate chrome` on ANTIBOT when
+                // enabled in settings and the yt-dlp binary supports chrome
+                // impersonation (spec §6.3.5, §8.5).
+                if error.code == YtdlpErrorCode::Antibot
+                    && request.spec.impersonate_retry
+                    && !impersonate_retried
+                    && !impersonate_chrome
+                {
+                    impersonate_retried = true;
+                    if ytdlp::probe_impersonate_chrome(&env.ytdlp, env.private_temp.as_deref())
+                        .await
+                    {
+                        impersonate_chrome = true;
+                        continue;
                     }
                 }
                 return JobOutcome::Failed(error);
@@ -267,6 +306,9 @@ enum AttemptOutcome {
         /// The selected format id (`278+251` merged, `18` muxed).
         format_id: Option<String>,
     },
+    /// `--download-archive` matched this video ID: yt-dlp exited 0 without
+    /// writing a file (spec §6.2.4).
+    SkippedArchive,
     /// yt-dlp selected a **muxed** format lower than the one asked for: the
     /// degraded-extraction signature. The attempt is cancelled the moment
     /// `SDP_FORMAT` says so, so the wrong file is not downloaded to the end.
@@ -285,6 +327,7 @@ async fn run_attempt(
     request: &JobRequest,
     runtime: jsruntime::RuntimeKind,
     omit_format: bool,
+    impersonate_chrome: bool,
     token: CancellationToken,
     emitter: &Emitter,
 ) -> AttemptOutcome {
@@ -298,9 +341,11 @@ async fn run_attempt(
         tmp_env: env.private_temp.clone(),
         youtube_clients: env.youtube_clients.clone(),
     };
+    let mut spec = request.spec.clone();
+    spec.impersonate_chrome = impersonate_chrome;
     let args = ytdlp::download_args(
         &request.url,
-        &request.spec,
+        &spec,
         &request.dirs,
         &download_env,
         omit_format,
@@ -326,6 +371,7 @@ async fn run_attempt(
         requested_height: ytdlp::requested_height(&request.spec.quality),
         attempt_token: attempt_token.clone(),
         degraded: Arc::clone(&degraded),
+        skipped_archive: AtomicBool::new(false),
     });
 
     let stdout_sink = {
@@ -431,6 +477,7 @@ async fn run_attempt(
                 file.display()
             ),
         )),
+        None if attempt.skipped_archive.load(Ordering::Relaxed) => AttemptOutcome::SkippedArchive,
         None => AttemptOutcome::Failed(YtdlpError::new(
             YtdlpErrorCode::Unknown,
             "yt-dlp exited 0 but never printed the final path (SDP_FILE)",
@@ -456,10 +503,17 @@ struct AttemptShared {
     /// Set when the cancel above was because of a degraded selection (as
     /// opposed to the user or the watchdog).
     degraded: Arc<AtomicBool>,
+    /// Set when `--download-archive` prints its skip line on stdout.
+    skipped_archive: AtomicBool,
 }
 
 impl AttemptShared {
     fn on_stdout_line(&self, line: &str) {
+        if ytdlp::is_archive_skip_line(line) {
+            self.challenge_pending.store(false, Ordering::Relaxed);
+            self.skipped_archive.store(true, Ordering::Relaxed);
+            return;
+        }
         if let Some(last) = ytdlp::parse_file_line(line) {
             if let Ok(mut files) = self.files.lock() {
                 files.push(last);

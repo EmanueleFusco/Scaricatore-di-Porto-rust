@@ -13,7 +13,10 @@ export type YtdlpChannel = "stable" | "nightly";
 /** JavaScript runtime strategy (spec §5.3.3). */
 export type JsRuntimeMode = "auto" | "quickjs" | "deno";
 
-/** Mirror of the Rust `state::Settings` document (spec §2.6, §2.8). */
+/** Default behaviour when a URL has both a video and a `list=` parameter (spec §6.4, §11.8). */
+export type PlaylistUrlBehavior = "ask" | "video" | "playlist";
+
+/** Mirror of the Rust `state::Settings` document (spec §2.6, §2.8, §11.8). */
 export interface Settings {
   schemaVersion: number;
   language: LangPreference;
@@ -46,6 +49,32 @@ export interface Settings {
   notifyOnIdle: boolean;
   /** Spec §11.3, §11.8: Ctrl/Cmd+V anywhere adds links. */
   pasteLinksAnywhere: boolean;
+  /** Spec §8.2, §11.8: include `[%(id)s]` in the output filename (default true). */
+  includeIdInFilename: boolean;
+  /** Spec §8.2, §11.8: prefer H.264/AAC for compatibility (default false). */
+  preferH264: boolean;
+  /** Spec §6.4, §11.8: default behaviour for `watch?v=…&list=…` URLs (default "ask"). */
+  playlistUrlBehavior: PlaylistUrlBehavior;
+  /** Spec §6.4, §8.2, §11.8: skip videos already recorded in `archive.txt` (default false). */
+  useDownloadArchive: boolean;
+  /** Spec §6.3.4, §8.2, §11.8: HTTP/HTTPS/SOCKS5 proxy URL (`--proxy`). */
+  proxyUrl: string | null;
+  /** Spec §8.2, §11.8: bandwidth limit (`--limit-rate`, e.g. `5M`). */
+  limitRate: string | null;
+  /** Spec §6.3.4, §8.2, §11.8: default custom `Referer` header. */
+  customReferer: string | null;
+  /** Spec §6.3.4, §8.2, §11.8: default custom `User-Agent` header. */
+  customUserAgent: string | null;
+  /** Spec §6.3.4, §8.2, §11.8: default extra `Header: Value` lines. */
+  customHeaders: string[];
+  /** Spec §6.3.5, §11.8: retry once with `--impersonate chrome` on anti-bot failure (default true). */
+  impersonateRetry: boolean;
+}
+
+/** Mirror of the Rust `commands::settings::ArchiveStatusView` payload. */
+export interface ArchiveStatusView {
+  path: string;
+  entries: number;
 }
 
 /** Mirror of the Rust `state::Recovery` payload. */
@@ -71,7 +100,7 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
@@ -87,6 +116,16 @@ export const DEFAULT_SETTINGS: Settings = {
   perHostCap: 2,
   notifyOnIdle: false,
   pasteLinksAnywhere: false,
+  includeIdInFilename: true,
+  preferH264: false,
+  playlistUrlBehavior: "ask",
+  useDownloadArchive: false,
+  proxyUrl: null,
+  limitRate: null,
+  customReferer: null,
+  customUserAgent: null,
+  customHeaders: [],
+  impersonateRetry: true,
 };
 
 /**
@@ -106,6 +145,7 @@ const LANGUAGES: readonly LangPreference[] = ["system", "it", "en"];
 const THEMES: readonly ThemePreference[] = ["system", "dark", "light"];
 const CHANNELS: readonly YtdlpChannel[] = ["stable", "nightly"];
 const RUNTIME_MODES: readonly JsRuntimeMode[] = ["auto", "quickjs", "deno"];
+const PLAYLIST_BEHAVIORS: readonly PlaylistUrlBehavior[] = ["ask", "video", "playlist"];
 
 /**
  * The browsers `--cookies-from-browser` knows (spec §8.6), in a stable order.
@@ -152,6 +192,16 @@ export function isYtdlpChannelValue(value: unknown): value is YtdlpChannel {
   return CHANNELS.includes(value as YtdlpChannel);
 }
 
+export function isPlaylistUrlBehavior(value: unknown): value is PlaylistUrlBehavior {
+  return PLAYLIST_BEHAVIORS.includes(value as PlaylistUrlBehavior);
+}
+
+function normaliseOptionalTrimmed(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed !== "" ? trimmed : null;
+}
+
 /**
  * Coerce anything the backend sends into a known, complete document.
  *
@@ -168,6 +218,12 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
       paths[name] = value;
     }
   }
+  const customHeaders = Array.isArray(raw?.customHeaders)
+    ? raw.customHeaders
+        .filter((h): h is string => typeof h === "string")
+        .map((h) => h.trim())
+        .filter((h) => h !== "")
+    : [];
   return {
     schemaVersion:
       typeof raw?.schemaVersion === "number" ? raw.schemaVersion : DEFAULT_SETTINGS.schemaVersion,
@@ -195,6 +251,24 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
     perHostCap: clampCap(raw?.perHostCap, 1, 8, 2),
     notifyOnIdle: raw?.notifyOnIdle === true,
     pasteLinksAnywhere: raw?.pasteLinksAnywhere === true,
+    includeIdInFilename:
+      typeof raw?.includeIdInFilename === "boolean"
+        ? raw.includeIdInFilename
+        : DEFAULT_SETTINGS.includeIdInFilename,
+    preferH264: raw?.preferH264 === true,
+    playlistUrlBehavior: isPlaylistUrlBehavior(raw?.playlistUrlBehavior)
+      ? raw.playlistUrlBehavior
+      : "ask",
+    useDownloadArchive: raw?.useDownloadArchive === true,
+    proxyUrl: normaliseOptionalTrimmed(raw?.proxyUrl),
+    limitRate: normaliseOptionalTrimmed(raw?.limitRate),
+    customReferer: normaliseOptionalTrimmed(raw?.customReferer),
+    customUserAgent: normaliseOptionalTrimmed(raw?.customUserAgent),
+    customHeaders,
+    impersonateRetry:
+      typeof raw?.impersonateRetry === "boolean"
+        ? raw.impersonateRetry
+        : DEFAULT_SETTINGS.impersonateRetry,
   };
 }
 

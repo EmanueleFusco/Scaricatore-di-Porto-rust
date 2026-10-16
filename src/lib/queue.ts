@@ -39,6 +39,21 @@ export interface ItemOptions {
   outputDir: string;
   cookies: { kind: "none" } | { kind: "browser"; browser: string } | { kind: "file"; file: string };
   runtimeMode: "auto" | "quickJs" | "deno";
+  /** M3 (spec §6.4, §8.2): literal prefix before the title in `-o`, e.g. `"01 - "`. */
+  filenamePrefix: string | null;
+  includeIdInFilename: boolean;
+  preferH264: boolean;
+  /** Absolute path of the `--download-archive` file, when the archive is on. */
+  archiveFile: string | null;
+  sleepInterval: [number, number] | null;
+  /** `true` = from start, `false` = from now, `null` = not a live stream. */
+  liveFromStart: boolean | null;
+  proxy: string | null;
+  limitRate: string | null;
+  referer: string | null;
+  userAgent: string | null;
+  customHeaders: string[];
+  impersonateRetry: boolean;
 }
 
 /** Mirror of `services::queue::model::ItemProgress`. */
@@ -110,6 +125,8 @@ export interface QueueUpdate {
   items: QueueItem[];
   removed: string[];
   order: string[] | null;
+  /** M3: the full group list when it changed, otherwise `null`. */
+  groups: QueueGroup[] | null;
   summary: QueueSummary;
   toast: QueueToast | null;
 }
@@ -187,6 +204,16 @@ export interface AddItemRequest {
   quality: QualityChoice;
   outputDir: string | null;
   groupId?: string | null;
+  /** M3 per-item overrides; omitted means "use the settings". */
+  filenamePrefix?: string | null;
+  includeIdInFilename?: boolean | null;
+  preferH264?: boolean | null;
+  useArchive?: boolean | null;
+  sleepInterval?: [number, number] | null;
+  liveFromStart?: boolean | null;
+  referer?: string | null;
+  userAgent?: string | null;
+  customHeaders?: string[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +300,25 @@ export function normaliseItem(raw: unknown): QueueItem {
         options.runtimeMode === "quickJs" || options.runtimeMode === "deno"
           ? options.runtimeMode
           : "auto",
+      filenamePrefix: asNullableString(options.filenamePrefix),
+      includeIdInFilename: options.includeIdInFilename !== false,
+      preferH264: options.preferH264 === true,
+      archiveFile: asNullableString(options.archiveFile),
+      sleepInterval:
+        Array.isArray(options.sleepInterval) &&
+        options.sleepInterval.length === 2 &&
+        options.sleepInterval.every((n) => typeof n === "number")
+          ? [options.sleepInterval[0] as number, options.sleepInterval[1] as number]
+          : null,
+      liveFromStart: typeof options.liveFromStart === "boolean" ? options.liveFromStart : null,
+      proxy: asNullableString(options.proxy),
+      limitRate: asNullableString(options.limitRate),
+      referer: asNullableString(options.referer),
+      userAgent: asNullableString(options.userAgent),
+      customHeaders: Array.isArray(options.customHeaders)
+        ? options.customHeaders.filter((h): h is string => typeof h === "string")
+        : [],
+      impersonateRetry: options.impersonateRetry !== false,
     },
     groupId: asNullableString(value.groupId),
     progress: {
@@ -334,6 +380,7 @@ export function normaliseUpdate(raw: unknown): QueueUpdate {
     items: Array.isArray(value.items) ? value.items.map(normaliseItem) : [],
     removed: Array.isArray(value.removed) ? value.removed.filter((id): id is string => typeof id === "string") : [],
     order: Array.isArray(value.order) ? value.order.filter((id): id is string => typeof id === "string") : null,
+    groups: Array.isArray(value.groups) ? value.groups.map(normaliseGroup) : null,
     summary: normaliseSummary(value.summary),
     toast: normaliseToast(value.toast),
   };
@@ -344,19 +391,19 @@ export function normaliseSnapshot(raw: unknown): QueueSnapshot {
   return {
     seq: asNumber(value.seq) ?? 0,
     items: Array.isArray(value.items) ? value.items.map(normaliseItem) : [],
-    groups: Array.isArray(value.groups)
-      ? value.groups.map((group) => {
-          const entry = (group ?? {}) as Record<string, unknown>;
-          return {
-            id: asString(entry.id),
-            title: asString(entry.title),
-            folder: asNullableString(entry.folder),
-            index: asNumber(entry.index) ?? 0,
-          };
-        })
-      : [],
+    groups: Array.isArray(value.groups) ? value.groups.map(normaliseGroup) : [],
     summary: normaliseSummary(value.summary),
     toast: normaliseToast(value.toast),
+  };
+}
+
+export function normaliseGroup(group: unknown): QueueGroup {
+  const entry = (group ?? {}) as Record<string, unknown>;
+  return {
+    id: asString(entry.id),
+    title: asString(entry.title),
+    folder: asNullableString(entry.folder),
+    index: asNumber(entry.index) ?? 0,
   };
 }
 
@@ -449,6 +496,7 @@ export function applyUpdate(state: QueueState, update: QueueUpdate): QueueState 
 
   next.items = items;
   next.order = order;
+  if (update.groups !== null) next.groups = update.groups;
   return next;
 }
 
@@ -466,7 +514,7 @@ export function applySnapshot(state: QueueState, snapshot: QueueSnapshot, stale 
   const byId: Record<string, QueueItem> = {};
   for (const item of snapshot.items) byId[item.id] = item;
 
-  // `groups` travel only in the snapshot, never in an event.
+  // Groups also travel in events (M3), but the snapshot is the full list.
   const groups = snapshot.groups;
 
   if (!stale) {

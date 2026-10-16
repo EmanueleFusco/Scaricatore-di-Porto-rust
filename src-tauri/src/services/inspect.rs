@@ -864,7 +864,7 @@ impl Runtimes {
 }
 
 /// Extra options for a single inspection call (spec §6.2, §6.3, §6.4).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectOptions {
     /// Explicit 1-based inclusive range `(start, end)` for `-I start:end`.
     /// When `None`, defaults to `:50` for YouTube Mix URLs (`list=RD…`) and
@@ -875,11 +875,29 @@ pub struct InspectOptions {
     pub no_playlist: bool,
     /// Pass `--impersonate chrome` on the anti-bot retry (spec §6.3.3).
     pub impersonate_chrome: bool,
+    /// Allow one retry with `--impersonate chrome` on `ANTIBOT` when the
+    /// yt-dlp build supports chrome impersonation (spec §6.3.5, §8.5).
+    pub impersonate_retry: bool,
     /// Network options from Settings / Add bar (spec §6.3.3, §8.2).
     pub proxy: Option<String>,
     pub referer: Option<String>,
     pub user_agent: Option<String>,
     pub custom_headers: Vec<String>,
+}
+
+impl Default for InspectOptions {
+    fn default() -> Self {
+        Self {
+            item_range: None,
+            no_playlist: false,
+            impersonate_chrome: false,
+            impersonate_retry: true,
+            proxy: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+        }
+    }
 }
 
 impl InspectOptions {
@@ -930,7 +948,7 @@ pub struct InspectEnvironment {
 ///
 /// **Deviation from spec §6.2, deliberate:** this command does *not* pass
 /// `--no-warnings`. yt-dlp announces a degraded extraction only there —
-/// measured on the pinned binary and confirmed in its source
+/// measured on the pinned yt-dlp and confirmed in its source
 /// (`yt_dlp/extractor/youtube/_video.py`): `Signature solving failed: Some
 /// formats may be missing` and `n challenge solving failed: Some formats may be
 /// missing`. Those two lines are the difference between "this video really has
@@ -1144,6 +1162,9 @@ pub async fn inspect(
 ///    complete.
 ///
 /// A `YT_CHALLENGE` **error** also triggers the runtime fallback, as before.
+/// An `ANTIBOT` error triggers a one-shot retry with `--impersonate chrome`
+/// when `options.impersonate_retry` is enabled and the yt-dlp binary supports
+/// chrome impersonation (spec §6.3.5, §8.5).
 pub async fn inspect_with_options(
     env: &InspectEnvironment,
     url: &str,
@@ -1168,15 +1189,17 @@ pub async fn inspect_with_options(
         };
     }
 
+    let mut current_options = options.clone();
     let mut fell_back = false;
     let mut extra_attempt_made = false;
+    let mut impersonate_retried = false;
     let mut elapsed_ms = 0_u64;
     // The best result seen so far, with whether *that* attempt was degraded.
     let mut best: Option<(Box<Inspected>, bool)> = None;
 
     loop {
         let started = std::time::Instant::now();
-        let outcome = run_once(env, url, runtime, options, token.clone()).await;
+        let outcome = run_once(env, url, runtime, &current_options, token.clone()).await;
         elapsed_ms += u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match outcome {
             RunOutcome::Cancelled => return InspectOutcome::Cancelled,
@@ -1229,6 +1252,19 @@ pub async fn inspect_with_options(
                     runtime = RuntimeKind::Deno;
                     fell_back = true;
                     continue;
+                }
+                if error.code == YtdlpErrorCode::Antibot
+                    && current_options.impersonate_retry
+                    && !impersonate_retried
+                    && !current_options.impersonate_chrome
+                {
+                    impersonate_retried = true;
+                    if ytdlp::probe_impersonate_chrome(&env.ytdlp, env.private_temp.as_deref())
+                        .await
+                    {
+                        current_options.impersonate_chrome = true;
+                        continue;
+                    }
                 }
                 // An attempt that failed after a usable degraded one: keep the
                 // usable one rather than losing the whole inspection.
@@ -1965,6 +2001,7 @@ mod tests {
             item_range: Some((1001, 2000)),
             no_playlist: false,
             impersonate_chrome: true,
+            impersonate_retry: true,
             proxy: Some("http://127.0.0.1:8080".into()),
             referer: Some("https://site.example/page".into()),
             user_agent: Some("CustomUA/1.0".into()),

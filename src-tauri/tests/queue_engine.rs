@@ -191,6 +191,7 @@ impl Fixture {
                 output_dir: self.out.clone(),
                 cookies: CookieChoice::None,
                 runtime_mode: JsRuntimeMode::Auto,
+                ..ItemOptions::default()
             },
             group_id: None,
         }

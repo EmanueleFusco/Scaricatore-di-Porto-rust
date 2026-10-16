@@ -26,15 +26,29 @@ pub struct InspectRequestOptions {
 }
 
 impl InspectRequestOptions {
-    fn into_service_options(self) -> InspectOptions {
+    fn into_service_options(self, settings: &crate::state::Settings) -> InspectOptions {
+        let mut custom_headers = settings.custom_headers.clone();
+        for header in self.custom_headers {
+            let trimmed = header.trim();
+            if !trimmed.is_empty() && trimmed.contains(':') && !trimmed.contains(['\r', '\n']) {
+                custom_headers.push(trimmed.to_owned());
+            }
+        }
         InspectOptions {
             item_range: self.item_range,
             no_playlist: self.no_playlist.unwrap_or(false),
             impersonate_chrome: false,
-            proxy: None,
-            referer: self.referer,
-            user_agent: self.user_agent,
-            custom_headers: self.custom_headers,
+            impersonate_retry: settings.impersonate_retry,
+            proxy: settings.proxy_url.clone(),
+            referer: self
+                .referer
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| settings.custom_referer.clone()),
+            user_agent: self
+                .user_agent
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| settings.custom_user_agent.clone()),
+            custom_headers,
         }
     }
 }
@@ -79,7 +93,7 @@ pub async fn inspect_url(
         private_temp: tools.private_temp,
         youtube_clients: settings.youtube_player_clients.clone(),
     };
-    let service_opts = options.unwrap_or_default().into_service_options();
+    let service_opts = options.unwrap_or_default().into_service_options(&settings);
 
     let token = state.start_inspection(request_id);
     let outcome = inspect::inspect_with_options(&environment, &url, &service_opts, token).await;
@@ -162,7 +176,7 @@ pub async fn inspect_urls(
         private_temp: tools.private_temp,
         youtube_clients: settings.youtube_player_clients.clone(),
     };
-    let service_opts = options.unwrap_or_default().into_service_options();
+    let service_opts = options.unwrap_or_default().into_service_options(&settings);
 
     let mut answers: Vec<Option<BatchInspectView>> = (0..wanted.len()).map(|_| None).collect();
     let mut next = 0;

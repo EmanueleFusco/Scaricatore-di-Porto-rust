@@ -70,6 +70,47 @@ pub const FORMAT_PREFIX: &str = "SDP_FORMAT|";
 /// sanitising is one of the behaviours of spec §12 and is not ported).
 pub const FILENAME_TEMPLATE: &str = "%(title).150B [%(id)s].%(ext)s";
 
+/// File name template when the user disables `[%(id)s]` in Settings (spec §6.3.8, §11.8).
+pub const FILENAME_TEMPLATE_NO_ID: &str = "%(title).150B.%(ext)s";
+
+/// Format sort spec for the "Prefer H.264/AAC for compatibility" toggle (spec §6.3.7, §11.8).
+pub const H264_SORT_SPEC: &str = "vcodec:h264,res,acodec:m4a";
+
+/// Playlist item count at or above which pacing (`--sleep-interval 1 --max-sleep-interval 4`)
+/// is automatically enabled (spec §6.4).
+pub const PLAYLIST_PACING_THRESHOLD: usize = 20;
+
+/// Default pacing interval `(min_secs, max_secs)` for large playlists (spec §6.4).
+pub const DEFAULT_SLEEP_INTERVAL: (u32, u32) = (1, 4);
+
+/// Escape any literal `%` in a playlist numbering prefix as `%%` so yt-dlp's
+/// `-o` template expansion never misinterprets it (spec §6.4).
+pub fn escape_template_literal(prefix: &str) -> String {
+    prefix.replace('%', "%%")
+}
+
+/// Build the `-o` output template from an optional numbering prefix (e.g.
+/// `"001 - "`) and the "Include video ID in filename" setting (spec §6.3.8, §6.4).
+pub fn build_filename_template(prefix: Option<&str>, include_id: bool) -> String {
+    let base = if include_id {
+        FILENAME_TEMPLATE
+    } else {
+        FILENAME_TEMPLATE_NO_ID
+    };
+    match prefix.filter(|p| !p.is_empty()) {
+        Some(raw) => format!("{}{base}", escape_template_literal(raw)),
+        None => base.to_owned(),
+    }
+}
+
+/// Format a 1-based playlist index (`1..=total`) as a zero-padded prefix like
+/// `"01 - "` or `"001 - "` (at least 2 digits, or the width of `total`, min 3
+/// when `total >= 100`; spec §6.4 uses `"001 - "` as the canonical example).
+pub fn format_playlist_prefix(index: usize, total: usize) -> String {
+    let width = total.max(1).to_string().len().max(3);
+    format!("{index:0width$} - ")
+}
+
 /// Preferred merge container, MKV fallback (spec §8.2). Measured: VP9+Opus
 /// streams choose MKV, so the final extension really is not always `.mp4`.
 pub const MERGE_OUTPUT_FORMAT: &str = "mp4/mkv";
@@ -177,21 +218,75 @@ pub struct JobDirs {
     pub temp: PathBuf,
 }
 
-/// Everything the URL is downloaded with.
+/// Everything the URL is downloaded with (spec §6.3, §6.4, §8.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadSpec {
     pub kind: JobKind,
     pub quality: FormatChoice,
     pub cookies: CookieSource,
+    /// Optional numbering prefix for playlist items (e.g. `"001 - "`), `%` escaped as `%%` in `-o` (spec §6.4).
+    pub filename_prefix: Option<String>,
+    /// Include `[%(id)s]` in the filename template (default `true`, spec §6.3.8, §11.8).
+    pub include_id_in_filename: bool,
+    /// Prefer H.264/AAC over VP9/AV1 (`-S vcodec:h264,res,acodec:m4a`, spec §6.3.7, §11.8).
+    pub prefer_h264: bool,
+    /// `--download-archive <path>` when `Some` (spec §6.4).
+    pub archive_file: Option<PathBuf>,
+    /// `(min_secs, max_secs)` → `--sleep-interval <min> --max-sleep-interval <max>` (spec §6.4).
+    pub sleep_interval: Option<(u32, u32)>,
+    /// `Some(true)` → `--live-from-start`, `Some(false)` → `--no-live-from-start` (spec §6.3.6).
+    pub live_from_start: Option<bool>,
+    /// `--proxy <url>` (spec §8.2, §11.8).
+    pub proxy: Option<String>,
+    /// `--limit-rate <rate>` (spec §8.2, §11.8).
+    pub limit_rate: Option<String>,
+    /// `--referer <url>` (spec §6.3.4, §11.3).
+    pub referer: Option<String>,
+    /// `--user-agent <ua>` (spec §6.3.4, §11.3).
+    pub user_agent: Option<String>,
+    /// Repeated `--add-headers FIELD:VALUE` (spec §6.3.4, §11.3).
+    pub custom_headers: Vec<String>,
+    /// `--impersonate chrome` (set on the one-shot anti-bot retry, spec §6.3.5, §8.5).
+    pub impersonate_chrome: bool,
+    /// Whether the runner may retry once with `--impersonate chrome` on `ANTIBOT` (spec §6.3.5, §11.8).
+    pub impersonate_retry: bool,
+}
+
+impl Default for DownloadSpec {
+    fn default() -> Self {
+        Self {
+            kind: JobKind::Video,
+            quality: FormatChoice::Best,
+            cookies: CookieSource::None,
+            filename_prefix: None,
+            include_id_in_filename: true,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_chrome: false,
+            impersonate_retry: true,
+        }
+    }
 }
 
 impl DownloadSpec {
-    pub fn video(quality: FormatChoice) -> Self {
+    pub fn new(kind: JobKind, quality: FormatChoice, cookies: CookieSource) -> Self {
         Self {
-            kind: JobKind::Video,
+            kind,
             quality,
-            cookies: CookieSource::None,
+            cookies,
+            ..Self::default()
         }
+    }
+
+    pub fn video(quality: FormatChoice) -> Self {
+        Self::new(JobKind::Video, quality, CookieSource::None)
     }
 
     /// A selector exists for every video choice, `false` only when the caller
@@ -375,7 +470,10 @@ pub fn download_args(
     args.push(paths_arg("temp", &dirs.temp));
 
     args.push("-o".into());
-    args.push(FILENAME_TEMPLATE.into());
+    args.push(
+        build_filename_template(spec.filename_prefix.as_deref(), spec.include_id_in_filename)
+            .into(),
+    );
     // Safe file names on every OS (spec §8.2); the accented-title bug of the
     // original is spec §12.5.
     args.push("--windows-filenames".into());
@@ -384,6 +482,87 @@ pub fn download_args(
     if spec.needs_merge() {
         args.push("--merge-output-format".into());
         args.push(MERGE_OUTPUT_FORMAT.into());
+        if spec.prefer_h264 {
+            args.push("-S".into());
+            args.push(H264_SORT_SPEC.into());
+        }
+    }
+
+    if let Some(archive) = &spec.archive_file
+        && !archive.as_os_str().is_empty()
+    {
+        args.push("--download-archive".into());
+        args.push(archive.clone().into_os_string());
+    }
+
+    if let Some((min_secs, max_secs)) = spec.sleep_interval
+        && min_secs > 0
+    {
+        args.push("--sleep-interval".into());
+        args.push(min_secs.to_string().into());
+        if max_secs >= min_secs {
+            args.push("--max-sleep-interval".into());
+            args.push(max_secs.to_string().into());
+        }
+    }
+
+    match spec.live_from_start {
+        Some(true) => args.push("--live-from-start".into()),
+        Some(false) => args.push("--no-live-from-start".into()),
+        None => {}
+    }
+
+    if let Some(proxy) = spec
+        .proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--proxy".into());
+        args.push(proxy.into());
+    }
+
+    if let Some(rate) = spec
+        .limit_rate
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--limit-rate".into());
+        args.push(rate.into());
+    }
+
+    if let Some(referer) = spec
+        .referer
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--referer".into());
+        args.push(referer.into());
+    }
+
+    if let Some(ua) = spec
+        .user_agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--user-agent".into());
+        args.push(ua.into());
+    }
+
+    for header in &spec.custom_headers {
+        let trimmed = header.trim();
+        if !trimmed.is_empty() {
+            args.push("--add-headers".into());
+            args.push(trimmed.into());
+        }
+    }
+
+    if spec.impersonate_chrome {
+        args.push("--impersonate".into());
+        args.push("chrome".into());
     }
 
     args.push("--progress-template".into());
@@ -423,6 +602,73 @@ fn paths_arg(kind: &str, dir: &Path) -> OsString {
     let mut value = OsString::from(format!("{kind}:"));
     value.push(dir);
     value
+}
+
+/// Does a stdout line announce that yt-dlp skipped the video because its ID was
+/// already in `--download-archive` (spec §6.4)?
+///
+/// Verified in yt-dlp's `YoutubeDL.in_download_archive`:
+/// `[download] <title/id>: has already been recorded in the archive`.
+pub fn is_archive_skip_line(line: &str) -> bool {
+    line.contains("has already been recorded in the archive")
+}
+
+/// Parse the output of `yt-dlp --list-impersonate-targets` and return `true`
+/// when at least one `chrome` target is available (spec §6.3.5).
+pub fn supports_chrome_impersonation(stdout: &str) -> bool {
+    stdout.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        (lower.starts_with("chrome") || lower.contains(" chrome "))
+            && !lower.contains("unavailable")
+    })
+}
+
+/// Probe `yt-dlp --ignore-config --list-impersonate-targets` once per binary
+/// and cache whether `--impersonate chrome` is supported (spec §6.3.5).
+pub async fn probe_impersonate_chrome(ytdlp: &Path, private_temp: Option<&Path>) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, u64), bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let size = std::fs::metadata(ytdlp).map(|m| m.len()).unwrap_or(0);
+    let key = (ytdlp.to_path_buf(), size);
+
+    if let Ok(guard) = cache.lock()
+        && let Some(&cached) = guard.get(&key)
+    {
+        return cached;
+    }
+
+    let mut cmd = crate::services::process::ToolCommand::new(ytdlp)
+        .args(["--ignore-config", "--list-impersonate-targets"])
+        .label("yt-dlp impersonate probe");
+    if let Some(temp) = private_temp {
+        cmd = cmd.temp_dir(temp);
+    }
+
+    let stdout = std::sync::Arc::new(Mutex::new(String::new()));
+    let sink = {
+        let stdout = std::sync::Arc::clone(&stdout);
+        crate::services::process::line_sink(move |line| {
+            if let Ok(mut buf) = stdout.lock() {
+                buf.push_str(line);
+                buf.push('\n');
+            }
+        })
+    };
+    let ok =
+        crate::services::process::spawn_tool(cmd, tokio_util::sync::CancellationToken::new(), sink)
+            .await
+            .map(|res| res.success())
+            .unwrap_or(false);
+
+    let text = stdout.lock().map(|b| b.clone()).unwrap_or_default();
+    let supported = ok && supports_chrome_impersonation(&text);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, supported);
+    }
+    supported
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,11 +1312,7 @@ mod tests {
     }
 
     fn spec(quality: FormatChoice) -> DownloadSpec {
-        DownloadSpec {
-            kind: JobKind::Video,
-            quality,
-            cookies: CookieSource::None,
-        }
+        DownloadSpec::video(quality)
     }
 
     // -- selectors (spec §8.2, spec §15 "format-selector builder") -----------
@@ -1292,11 +1534,7 @@ mod tests {
     fn audio_only_asks_for_opus_and_keeps_the_paths() {
         let args = args_as_strings(&download_args(
             "https://youtu.be/x",
-            &DownloadSpec {
-                kind: JobKind::Audio,
-                quality: FormatChoice::AudioOnly,
-                cookies: CookieSource::None,
-            },
+            &DownloadSpec::new(JobKind::Audio, FormatChoice::AudioOnly, CookieSource::None),
             &dirs(),
             &plain_env(),
             false,
@@ -1327,11 +1565,11 @@ mod tests {
 
     #[test]
     fn cookies_are_passed_as_the_two_different_flags() {
-        let spec = DownloadSpec {
-            kind: JobKind::Video,
-            quality: FormatChoice::Best,
-            cookies: CookieSource::Browser("firefox".into()),
-        };
+        let spec = DownloadSpec::new(
+            JobKind::Video,
+            FormatChoice::Best,
+            CookieSource::Browser("firefox".into()),
+        );
         let args = args_as_strings(&download_args(
             "https://youtu.be/x",
             &spec,
@@ -1344,11 +1582,11 @@ mod tests {
                 .any(|pair| pair == ["--cookies-from-browser", "firefox"])
         );
 
-        let spec = DownloadSpec {
-            kind: JobKind::Video,
-            quality: FormatChoice::Best,
-            cookies: CookieSource::File(PathBuf::from("/home/u/cookies.txt")),
-        };
+        let spec = DownloadSpec::new(
+            JobKind::Video,
+            FormatChoice::Best,
+            CookieSource::File(PathBuf::from("/home/u/cookies.txt")),
+        );
         let args = args_as_strings(&download_args(
             "https://youtu.be/x",
             &spec,
@@ -1362,6 +1600,103 @@ mod tests {
         );
 
         assert!(CookieSource::None.args().is_empty());
+    }
+
+    #[test]
+    fn filename_templates_escape_percent_and_respect_id_toggle() {
+        assert_eq!(
+            build_filename_template(None, true),
+            "%(title).150B [%(id)s].%(ext)s"
+        );
+        assert_eq!(
+            build_filename_template(None, false),
+            "%(title).150B.%(ext)s"
+        );
+        assert_eq!(
+            build_filename_template(Some("001 - "), true),
+            "001 - %(title).150B [%(id)s].%(ext)s"
+        );
+        assert_eq!(
+            build_filename_template(Some("100% Live - "), false),
+            "100%% Live - %(title).150B.%(ext)s"
+        );
+        assert_eq!(format_playlist_prefix(1, 12), "001 - ");
+        assert_eq!(format_playlist_prefix(42, 1500), "0042 - ");
+    }
+
+    #[test]
+    fn m3_flags_reach_argv_and_keep_url_after_double_dash() {
+        let mut s = spec(FormatChoice::MaxHeight { height: 1080 });
+        s.filename_prefix = Some("007 - ".into());
+        s.include_id_in_filename = false;
+        s.prefer_h264 = true;
+        s.archive_file = Some(PathBuf::from("/data/archive.txt"));
+        s.sleep_interval = Some((1, 4));
+        s.live_from_start = Some(true);
+        s.proxy = Some("socks5://127.0.0.1:1080".into());
+        s.limit_rate = Some("5M".into());
+        s.referer = Some("https://site.example/page".into());
+        s.user_agent = Some("CustomUA/2.0".into());
+        s.custom_headers = vec!["Origin: https://site.example".into()];
+        s.impersonate_chrome = true;
+
+        let args = args_as_strings(&download_args(
+            "https://site.example/v/1",
+            &s,
+            &dirs(),
+            &plain_env(),
+            false,
+        ));
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["-o", "007 - %(title).150B.%(ext)s"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["-S", "vcodec:h264,res,acodec:m4a"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["--download-archive", "/data/archive.txt"])
+        );
+        assert!(args.windows(2).any(|p| p == ["--sleep-interval", "1"]));
+        assert!(args.windows(2).any(|p| p == ["--max-sleep-interval", "4"]));
+        assert!(args.contains(&"--live-from-start".to_owned()));
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["--proxy", "socks5://127.0.0.1:1080"])
+        );
+        assert!(args.windows(2).any(|p| p == ["--limit-rate", "5M"]));
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["--referer", "https://site.example/page"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["--user-agent", "CustomUA/2.0"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["--add-headers", "Origin: https://site.example"])
+        );
+        assert!(args.windows(2).any(|p| p == ["--impersonate", "chrome"]));
+        assert_eq!(args[args.len() - 2], "--");
+        assert_eq!(args[args.len() - 1], "https://site.example/v/1");
+    }
+
+    #[test]
+    fn archive_skip_and_impersonation_target_parsers_recognise_real_output() {
+        assert!(is_archive_skip_line(
+            "[download] dQw4w9WgXcQ: has already been recorded in the archive"
+        ));
+        assert!(!is_archive_skip_line("[download] 100% of 10.00MiB"));
+
+        let available = "[info] Available impersonate targets\nClient     OS       Source\nChrome-136 Windows-10 curl_cffi\n";
+        assert!(supports_chrome_impersonation(available));
+
+        let unavailable =
+            "[info] Available impersonate targets\nChrome-136 Windows-10 curl_cffi (unavailable)\n";
+        assert!(!supports_chrome_impersonation(unavailable));
     }
 
     // -- cookies per OS (spec §8.6) -----------------------------------------

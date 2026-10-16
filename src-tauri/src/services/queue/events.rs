@@ -43,6 +43,8 @@ pub struct QueueUpdate {
     /// The queue order, **only when it changed**. Re-sending a 5 000-entry
     /// array ten times a second would cost more than the items themselves.
     pub order: Option<Vec<String>>,
+    /// The group list, **only when it changed** (playlist added or group removed).
+    pub groups: Option<Vec<QueueGroup>>,
     pub summary: QueueSummary,
     /// A transient message for the toast area (spec §11.7).
     pub toast: Option<QueueToast>,
@@ -373,6 +375,7 @@ mod tests {
             items: Vec::new(),
             removed: vec!["q9".into()],
             order: None,
+            groups: None,
             summary: QueueSummary::default(),
             toast: Some(QueueToast::new("toast.queueIdle").with("count", 3)),
         };
