@@ -18,7 +18,7 @@
 </script>
 
 <nav class="sidebar" aria-label={tt("a11y.sidebar")}>
-  <a class="sidebar__brand" href="/" onclick={(event) => router.follow(event, "/")}>
+  <a class="sidebar__brand" href="/" draggable="false" onclick={(event) => router.follow(event, "/")}>
     <DownloadIcon size={24} aria-hidden="true" focusable="false" />
     <span class="sidebar__title">{tt("app.name")}</span>
   </a>
@@ -29,6 +29,7 @@
         <a
           class="sidebar__link"
           href={link.href}
+          draggable="false"
           aria-current={router.isActive(link.href) ? "page" : undefined}
           onclick={(event) => router.follow(event, link.href)}
         >
@@ -63,6 +64,9 @@
     font-size: 13px;
     font-weight: 700;
     line-height: 1.25;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
   }
 
   .sidebar__title {
@@ -88,6 +92,9 @@
     border-radius: var(--radius-md);
     color: var(--text);
     text-decoration: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
     transition: background var(--transition);
   }
 

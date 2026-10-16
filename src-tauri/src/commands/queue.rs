@@ -147,8 +147,17 @@ pub struct AddItemRequest {
     pub user_agent: Option<String>,
     /// Extra `Header: Value` lines from Add bar "More options" (spec §6.3.4,
     /// §11.3).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub custom_headers: Vec<String>,
+}
+
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 /// The quality picker of spec §8.2, as the frontend sends it.

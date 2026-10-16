@@ -119,6 +119,8 @@
 html,
 body {
   height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 body {
@@ -130,6 +132,34 @@ body {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* Allow text selection in form inputs and explicitly selectable text */
+input,
+textarea,
+.selectable,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Prevent native browser drag ghosts on links, buttons, images, and SVGs */
+a,
+button,
+img,
+svg {
+  -webkit-user-drag: none;
+}
+
+/* Inside buttons and links, SVG icons should never intercept clicks or trigger drag */
+button svg,
+a svg {
+  pointer-events: none;
+}
+
+/* Reorderable items keep element dragging */
+[draggable="true"] {
+  -webkit-user-drag: element;
 }
 
 h1,
@@ -178,6 +208,9 @@ textarea {
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
   transition:
     background var(--transition),
     border-color var(--transition);

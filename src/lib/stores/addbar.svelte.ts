@@ -367,7 +367,7 @@ class AddBarStore {
         liveFromStart: video?.isLive ? row.liveFromStart : null,
         referer: row.referer.trim() === "" ? null : row.referer.trim(),
         userAgent: row.userAgent.trim() === "" ? null : row.userAgent.trim(),
-        customHeaders: headers.length > 0 ? headers : null,
+        customHeaders: headers,
       };
     });
   }

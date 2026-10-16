@@ -145,6 +145,11 @@
 
   /** Drag and drop to reorder (spec §7.3), pointer-free on touch. */
   function onDragStart(event: DragEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, select, textarea")) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer?.setData("text/plain", item.id);
     if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
   }

@@ -266,7 +266,8 @@ fn queue_add_refuses_a_non_http_url_and_keeps_the_others() {
                         "durationSec": 12,
                         "kind": "video",
                         "quality": { "kind": "maxHeight", "height": 720 },
-                        "outputDir": out.display().to_string()
+                        "outputDir": out.display().to_string(),
+                        "customHeaders": null
                     }
                 ]
             }),

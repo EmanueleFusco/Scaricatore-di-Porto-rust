@@ -3154,4 +3154,25 @@ Branch `m3-playlists-and-sites`.
 - **Decisions/deviations**: None.
 - **Next step**: Phase M4 — Media processing (ffmpeg encode/trim, encoder probing, audio encode, embed metadata/thumbnail/chapters, SponsorBlock, spec §9, §14 row M4).
 
+## 2026-10-16 — M3 / Bugfix: download click IPC deserialisation and native drag prevention (spec §6.4, §11.2, §11.3)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Diagnosed and fixed the download button inaction issue: `AddItemRequest.custom_headers` was typed as `Vec<String>` with `#[serde(default)]` in Rust, which failed with `"invalid type: null, expected a sequence"` when `addbar.svelte.ts` passed `customHeaders: null` on items without custom headers. Added `deserialize_null_as_default` to `AddItemRequest.custom_headers` in `src-tauri/src/commands/queue.rs` and ensured `addbar.svelte.ts` passes `headers` array, with regression integration test in `src-tauri/tests/queue_ipc.rs`.
+  - Diagnosed and fixed unwanted browser dragging of UI elements (sidebar links, buttons, icons):
+    - Added global `user-select: none; -webkit-user-select: none;` to `html, body` and buttons in `src/lib/styles/app.css` (retaining selection for `input, textarea, .selectable`).
+    - Added `-webkit-user-drag: none;` on `a, button, img, svg` and `pointer-events: none;` on `button svg, a svg` in `app.css` so that clicks on buttons are never swallowed by icon drag initiation in WebKitGTK/WebView.
+    - Set `draggable="false"` on `Sidebar.svelte` anchor links and brand, as well as `App.svelte` skip link.
+    - Updated `QueueItem.svelte` `onDragStart` to prevent starting row drag when the interaction begins inside interactive child controls (`button, a, input, select, textarea`).
+    - Fixed `onDragLeave` in `AddBar.svelte` to verify `contains(relatedTarget)`.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → all 424 tests pass, including regression test for `customHeaders: null`.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 238 tests pass across 11 test suites.
+  - `npm run build` → builds cleanly.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all pass.
+- **Next step**: Ready for user testing.
+
+
 

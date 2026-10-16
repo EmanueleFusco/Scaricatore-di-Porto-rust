@@ -170,7 +170,12 @@
     addBarStore.dragging = true;
   }
 
-  function onDragLeave(): void {
+  function onDragLeave(event: DragEvent): void {
+    const current = event.currentTarget as HTMLElement | null;
+    const related = event.relatedTarget as Node | null;
+    if (current !== null && related !== null && current.contains(related)) {
+      return;
+    }
     addBarStore.dragging = false;
   }
 
