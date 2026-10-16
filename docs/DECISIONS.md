@@ -3155,3 +3155,53 @@ inside the shortest user-visible timeout.
 whether `CreateProcess` ever answers 32 or 5 for them; if it does not, the budget
 can go back to the Unix amount and this becomes a one-line comment instead of two
 constants.
+
+### D117 — The spawn-busy predicate, and how a `cfg(windows)`-only failure is verified on Linux
+
+Two things came out of the D116 change landing on the Windows runner. The first is
+a bug I introduced, the second is a way to stop paying CI runs for that class of
+bug.
+
+**1. `ETXTBSY` and the sharing errors are compared per family, and so is the
+test.** The first Windows run of D116 failed `check` with:
+
+> assertion failed: `!is_text_file_busy(&io::Error::from_raw_os_error(other))`
+> at `src\services\process.rs:1576`
+
+That was my own unit test, and it failed *correctly*: the test asserted that the
+codes `[2, 5, 13, 22, 27, 32]` are never retried, which is true on Unix and false
+on Windows, and I had left it ungated. The mistake is not the assertion, it is
+that D116 gave the predicate a per-family meaning while leaving one half of it
+described as unconditional.
+
+The correction goes one step further than adding a `#[cfg(not(windows))]`: the
+predicate compares **only** the codes that mean "not runnable yet" on the family
+it is running on. `raw_os_error()` is an errno on Unix and a Win32 code on
+Windows, and the same number means two different things — 26 is `ETXTBSY` on one
+and `ERROR_NOT_DOS_DISK` on the other, 32 and 5 are `EPIPE` and `EIO` on one and
+the sharing errors on the other. So `ETXTBSY` is now `#[cfg(not(windows))]` too,
+and the Windows test asserts that 26 is *not* retried there: reading a Win32 code
+with the Unix table would turn a real failure into the same real failure one
+second later. Each half is a `#[cfg(...)]` test, and neither can run on the
+family it does not describe.
+
+**2. A `cfg`-only failure can be reproduced and fixed on Linux, without a
+Windows runner.** The reason this bug reached the runner at all is that the
+offending function does not exist on the machine where I run `cargo test`. It can
+be made to exist: take the item's text out of the file, let `rustc` apply the
+`cfg` expansion by rewriting the *other* family's attributes to `#[cfg(any())]`
+(never true) and dropping the kept family's attributes, then compile that as a
+test with `--test` and run it natively. The technique is worth the paragraph
+because it verified both halves of this decision:
+
+* *as Windows*, the pre-fix source has **two** tests and
+  `text_file_busy_is_recognised_and_nothing_else_is` **fails** with the CI's exact
+  assertion — the Windows failure, reproduced on Linux;
+* *as Windows*, the fixed source has **one** test and it passes;
+* *as Unix*, the fixed source has the other one and it passes.
+
+It is not a substitute for the runner (it cannot cover `CreateProcess`, the Job
+Object, or real antivirus behaviour, and it is only as faithful as the extraction
+is), but for the specific question "does this item exist and pass on the other
+family?" it answers in seconds instead of in a CI round trip. The extraction is
+throwaway code in `/tmp`, not something the repository carries.

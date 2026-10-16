@@ -2958,3 +2958,42 @@ came from reading the code with those tests in hand.
 - **Next step**
   1. Push, re-run the process-tests workflow on `windows-x64` (and `ci` on push).
   2. Then the tag `v0.1.0` for the draft release.
+
+## 2026-10-15 — process: the two halves of the spawn-busy predicate, split by cfg (spec §4, §5.2)
+
+- **Done**
+  - The `process-tests` run on `windows-x64` came back with **`queue_engine` 22/22**
+    (the D115 fix holds — `the_queue_survives_a_restart_and_the_interrupted_item_can_resume`
+    passes) and **`windows_sharing_violations_are_the_same_not_runnable_yet`** passing.
+    One failure left, and it was mine: `text_file_busy_is_recognised_and_nothing_else_is`
+    asserted that `[2, 5, 13, 22, 27, 32]` are never retried — true on Unix, false on
+    Windows — and I had left it ungated (D116 gave the predicate a per-family meaning
+    without gating the half that describes Unix).
+  - Fixed properly rather than by adding one attribute: `ETXTBSY` (26) is now
+    `#[cfg(not(windows))]` **as a constant too**, so the predicate compares only the
+    codes that mean "not runnable yet" on the family it runs on. On Windows
+    `raw_os_error()` is a Win32 code, and 26 there is `ERROR_NOT_DOS_DISK`: reading it
+    with the Unix table would have delayed a real failure by a second. The Unix test is
+    `#[cfg(not(windows))]`, the Windows test now also asserts that 26 is **not** retried,
+    and neither test can run on the family it does not describe.
+- **Verified by running**
+  - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+    `cargo test --lib services::process`: **31 green** on Linux.
+  - `rustc --target x86_64-pc-windows-msvc --emit=metadata -D warnings` on the extracted
+    predicate: compiles with no warning, and the same for
+    `x86_64-unknown-linux-gnu` — so both `cfg` arms are well-formed.
+  - **The Windows branch executed on Linux**: extracted the item from the real file, let
+    `rustc` expand the `cfg` (other family → `#[cfg(any())]`), compiled with `--test`,
+    ran natively. Pre-fix as-Windows: **2 tests, the Unix one fails with the CI's exact
+    assertion** (the failure reproduced locally). Post-fix as-Windows: 1 test, green.
+    Post-fix as-Unix: the other test, green. Method recorded in D117.
+- **Not verified / stubbed**
+  - Still the runner's job: `CreateProcess`, the Job Object and real antivirus behaviour,
+    none of which the local expansion can reach. D116's numbers remain a judgement with
+    its `TODO(verify)`.
+- **Spec items marked "verify" that I checked**: none new.
+- **Decisions/deviations (also in DECISIONS.md)**: D117 (correction of D116 + the
+  reproduction method).
+- **Next step**
+  1. Push, re-run `Process Tests` on `windows-x64`: expect the whole suite green.
+  2. Then the tag `v0.1.0` for the draft release.

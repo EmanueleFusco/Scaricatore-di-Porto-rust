@@ -118,7 +118,10 @@ pub const SPAWN_BUSY_TOTAL: Duration = Duration::from_millis(1_000);
 #[cfg(windows)]
 pub const SPAWN_BUSY_DELAY: Duration = Duration::from_millis(50);
 
-/// `ETXTBSY`: the binary is still open for writing (Linux and macOS).
+/// `ETXTBSY`: the binary is still open for writing (Linux and macOS). Not a
+/// Windows code: there `raw_os_error()` is a Win32 error and 26 means something
+/// else entirely.
+#[cfg(not(windows))]
 const ETXTBSY: i32 = 26;
 
 /// `ERROR_SHARING_VIOLATION`: another process holds the file open — the Windows
@@ -142,8 +145,15 @@ const ERROR_ACCESS_DENIED: i32 = 5;
 /// The Windows codes are compared only on Windows: 32 and 5 are `EPIPE` and
 /// `EIO` elsewhere, and a real failure retried is a real failure reported later.
 pub fn is_text_file_busy(err: &io::Error) -> bool {
-    if err.raw_os_error() == Some(ETXTBSY) {
-        return true;
+    // `raw_os_error()` is an errno on Unix and a Win32 code on Windows, and the
+    // same number means two different things on the two families: 26 is
+    // `ETXTBSY` on one and `ERROR_NOT_DOS_DISK` on the other, 32 and 5 are
+    // `EPIPE` and `EIO` on one and the sharing errors on the other. So each code
+    // is compared only where it means "not runnable yet" — reading a Win32 code
+    // with the Unix table would retry a real failure for a second.
+    #[cfg(not(windows))]
+    {
+        err.raw_os_error() == Some(ETXTBSY)
     }
     #[cfg(windows)]
     {
@@ -151,10 +161,6 @@ pub fn is_text_file_busy(err: &io::Error) -> bool {
             err.raw_os_error(),
             Some(ERROR_SHARING_VIOLATION) | Some(ERROR_ACCESS_DENIED)
         )
-    }
-    #[cfg(not(windows))]
-    {
-        false
     }
 }
 
@@ -1563,13 +1569,16 @@ mod tests {
         assert_eq!(json["durationMs"], 12);
     }
 
+    /// The Unix half of the predicate: `ETXTBSY` and nothing else.
+    ///
+    /// 32 and 5 are the *Windows* names of the same situation (the other half
+    /// below); here they are `EPIPE` and `EIO`, which must not be retried. This
+    /// is why the test is `#[cfg(not(windows))]` and why the predicate compares
+    /// them behind `#[cfg(windows)]`: the same number means two different things
+    /// on the two families, and only one of them is "not runnable yet".
+    #[cfg(not(windows))]
     #[test]
     fn text_file_busy_is_recognised_and_nothing_else_is() {
-        // errno 26 on Linux and macOS, and nothing else: mistaking another error
-        // for it would turn a real failure into a slower real failure. 32 and 5
-        // are the *Windows* names of the same situation; here they are EPIPE and
-        // EIO, which must not be retried (the `#[cfg(windows)]` test below is
-        // the other half of this one).
         let busy = io::Error::from_raw_os_error(26);
         assert!(is_text_file_busy(&busy));
         for other in [2, 5, 13, 22, 27, 32] {
@@ -1594,6 +1603,10 @@ mod tests {
         for code in [2, 3] {
             assert!(!is_text_file_busy(&io::Error::from_raw_os_error(code)));
         }
+        // 26 is `ETXTBSY` on Unix and `ERROR_NOT_DOS_DISK` here: a real failure
+        // that must be reported at once, not retried for a second because the
+        // other family's table happens to have that number in it.
+        assert!(!is_text_file_busy(&io::Error::from_raw_os_error(26)));
     }
 
     #[test]
