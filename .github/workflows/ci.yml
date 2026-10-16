@@ -1,14 +1,30 @@
 # Verifiche e bundle su più sistemi operativi (spec §13.5).
 #
-# Due scelte, per non sprecare i minuti gratuiti di un repository PRIVATO:
-#   - `check` gira solo su Linux (moltiplicatore 1x) a ogni push e PR: feedback veloce.
-#   - `bundle` gira su tutte e tre le piattaforme solo quando serve un artefatto
-#     da scaricare (push su main, tag, o avvio manuale).
-#   - `process-tests` gira su Windows e macOS solo su tag o avvio manuale:
-#     i test del livello processi (Job Object, process group, spec §4) sono
-#     l'unica parte del progetto il cui comportamento cambia davvero da un
-#     sistema all'altro, e `cargo test` nel job `check` li eseguirebbe solo su
-#     Linux. Costa ~6 min per target, quindi non a ogni push (costo D12).
+# **Solo manuale (D118).** Niente parte da solo: né su push, né su PR. Questo
+# workflow si preme dalla pagina Actions, e quando lo si preme fa tutto quello
+# che ha sempre fatto:
+#   - `check` su Linux (moltiplicatore 1x): fmt, clippy, `cargo test`, il
+#     frontend (type-check, test, build), il manifest e la guardia sulle
+#     immagini dei runner. E' il cancello degli altri job.
+#   - `process-tests` su Windows e macOS: i test del livello processi
+#     (Job Object, process group, spec §4), l'unica parte del progetto il cui
+#     comportamento cambia davvero da un sistema all'altro. Qui **non** gira su
+#     Linux perché su Linux li esegue già `check`.
+#   - `bundle` su tutte e tre le piattaforme e `bundle-macos-universal`: gli
+#     installer da scaricare. È la parte lenta, ed è la ragione per cui per i
+#     soli test c'è l'altro workflow.
+#   - `release`, solo se il workflow parte da un tag `v*`: la bozza con gli
+#     asset sopra.
+#
+# Per i **soli test, su tutte e tre le piattaforme**, c'è `process-tests.yml`:
+# lo stesso `check` più la matrice dei test su Linux, Windows e macOS, senza
+# costruire installer. E' il pulsante da premere per sapere se il codice è sano.
+#
+# Perché nulla parte da solo: su repository PRIVATO i minuti si pagano (D12), e
+# un push di commit non deve avviare runner che nessuno ha chiesto. La scelta
+# resta esplicita nel gesto di premere il pulsante invece di essere dedotta dal
+# gesto del push.
+#
 # I target sperimentali di spec §1.1 (macOS Intel, Windows ARM64, Linux arm64)
 # NON stanno qui: sono in `tier2.yml`, con un proprio pulsante. Starne nello
 # stesso file li faceva partire a ogni avvio manuale di questo workflow.
@@ -18,13 +34,9 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
-# Un push nuovo annulla il run precedente dello stesso ref.
+# Un dispatch nuovo annulla il run precedente dello stesso ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -155,13 +167,13 @@ jobs:
 
       # Offline validation of tools.manifest.json: schema, both bundled tools
       # declared for this target, pinned checksums that look like checksums.
-      # Runs on EVERY push, costs about a second, and fails before anything is
+      # Runs in every run, costs about a second, and fails before anything is
       # built if the manifest and the spec disagree.
       - name: Validate the tools manifest
         run: npm run check:tools
 
       # Nessuna immagine fluttuante, nessuna in deprecazione, tutte le azioni su
-      # Node 24. Gira a ogni push e costa meno di un secondo: senza, la prossima
+      # Node 24. Gira in ogni run e costa meno di un secondo: senza, la prossima
       # migrazione di un runner la si scopre da un build rosso invece che da una
       # riga rossa.
       - name: Check the runner images and the actions
@@ -183,8 +195,9 @@ jobs:
   # all'altro: una suite linux-only darebbe una copertura solo-linux spacciata
   # per multi-OS.
   #
-  # Stessa soglia del job `bundle` (tag o avvio manuale) per non spendere la
-  # quota a ogni push: vedi la nota sul budget in cima al file e DECISIONS.md D19.
+  # Gira a ogni avvio manuale di questo workflow, che è quello che fa tutto: per
+  # i soli test senza installer c'è `process-tests.yml` (D118). Linux non è nella
+  # matrice perché i suoi test li esegue già `check`.
   process-tests:
     name: process tests (${{ matrix.label }})
     needs: check
@@ -245,14 +258,14 @@ jobs:
   bundle:
     name: bundle (${{ matrix.label }})
     needs: check
-    # I bundle girano SOLO quando serve un artefatto: tag `v*`, oppure avvio
-    # manuale dalla pagina Actions. Non a ogni push su main.
+    # I bundle girano a ogni avvio manuale di questo workflow: chi preme "CI" sta
+    # chiedendo anche gli installer. Per i soli test senza installer c'è
+    # `process-tests.yml` (D118).
     #
-    # Motivo: su repo PRIVATO il piano Free include 500 MB di spazio artifact
-    # (condiviso con Packages). Ogni run occupa almeno 108 MB solo di AppImage,
-    # quindi con retention 14 giorni bastava 3-4 push in due settimane per
-    # sforare la quota ed essere fatturato. Un push normale deve costare solo
-    # `check`: 7 minuti e 7 minuti di quota Linux.
+    # Motivo per cui non sono un job da push: su repo PRIVATO il piano Free
+    # include 500 MB di spazio artifact (condiviso con Packages). Ogni run occupa
+    # almeno 108 MB solo di AppImage, quindi con retention 14 giorni bastava 3-4
+    # push in due settimane per sforare la quota ed essere fatturato (D19).
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false

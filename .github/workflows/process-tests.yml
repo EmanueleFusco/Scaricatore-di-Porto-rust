@@ -1,16 +1,30 @@
-# Process tests on Windows and macOS without bundling (spec §4, §13.5).
+# I test su tutte e tre le piattaforme, senza costruire installer (spec §4, §13.5).
 #
-# Dedicated workflow for verifying cross-platform process execution
-# (Job Object on Windows, process groups on macOS, tree kill, pipe draining)
-# without running Linux checks (already run on push) and without building
-# installer bundles (.exe, .dmg, etc.).
+# **Solo manuale (D118).** Niente parte da solo: né su push, né su PR. E' il
+# pulsante da premere per la domanda "il codice e' sano?" — lo stesso `check` di
+# `ci.yml` su Linux (fmt, clippy, `cargo test`, frontend, manifest, immagini dei
+# runner) piu' la suite completa su Linux, Windows e macOS.
 #
-# MANUAL DISPATCH ONLY (workflow_dispatch):
-#   In line with DECISIONS.md D12 and D26 ("one workflow, one button, one reason
-#   to run"), this workflow runs on demand from the Actions tab or `gh workflow run`
-#   to avoid burning private repository quota on routine pushes.
+# Perché tutte e tre (spec §1.1, §4): il livello processi — Job Object su
+# Windows, process group su Unix, kill dell'albero, drenaggio di stdout e stderr,
+# assenza di finestre di console — e' l'unica parte del progetto il cui
+# comportamento cambia davvero da un sistema all'altro. Una suite linux-only
+# darebbe copertura solo-linux spacciata per multi-OS, ed e' cosi' che sono
+# passati inosservati il fallimento di `queue_engine` su Windows (D115) e il test
+# non gated di `process.rs` (D117).
+#
+# Differenza con `ci.yml`: quello fa questo **piu'** i bundle e, se parte da un
+# tag, la bozza della release. Provare il codice non deve costare tre installer,
+# quindi qui la parte lenta non c'e'. Se serve tutto, si preme "CI".
+#
+# Perché ogni job azzera `bundle.externalBin` (D48): `tauri_build::build()` sta
+# in build.rs e gira a ogni invocazione di cargo, quindi senza i binari dei tool
+# anche il solo `cargo check` morirebbe su un resource path mancante. Questi job
+# non impacchettano, quindi compilano senza rete e senza i 43 MB dei tool. La
+# spiegazione lunga, con il percorso di packaging che resta verificato per
+# intero, sta nel commento prima dei job di `ci.yml`.
 
-name: Process Tests
+name: Checks and process tests
 
 on:
   workflow_dispatch:
@@ -25,17 +39,131 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Compiles without externalBin: offline build without needing tool binaries (D48).
-  TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
 
 jobs:
-  # ------------------------------------------------------- process tests (2x/10x)
+  # ---------------------------------------------------------------- check (1x)
+  # Copia del job `check` di `ci.yml`: Actions non sa condividere un job fra due
+  # workflow (servirebbe un workflow riutilizzabile con `workflow_call`, che
+  # cambierebbe la forma di `ci.yml` piu' di quanto questa modifica chieda).
+  # Le due copie vanno cambiate **insieme**: un `diff` dei due blocchi deve
+  # restare vuoto.
+  check:
+    name: check (ubuntu, lint + test)
+    runs-on: ubuntu-24.04
+    # Vedi il commento prima dei job: `tauri_build::build()` gira a ogni cargo,
+    # e questo job non impacchetta. Azzerare externalBin lo tiene offline.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      # Pacchetti di sistema: elenco preso dalla pagina "Prerequisites" di Tauri v2
+      # (https://v2.tauri.app/start/prerequisites/), verificato pacchetto per
+      # pacchetto contro gli indici apt: esistono tutti su 22.04, 24.04 e 26.04.
+      # Non usiamo il tray, quindi libayatana-appindicator3-dev non e'
+      # strettamente necessario (la feature `tray-icon` di Tauri non e' attiva),
+      # ma lo teniamo per allinearci alla fonte invece che fidarci del ragionamento.
+      # NB: i commenti stanno SOPRA lo step di proposito. Dentro un blocco `run: |`
+      # sono commenti SHELL, e una riga `#` che segue una continuazione `\` tronca
+      # il comando: e' esattamente come si e' rotto la prima CI.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            build-essential \
+            curl wget file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        # `--no-fail-fast`: senza, il primo test fallito nasconde tutti gli
+        # altri. Il 2026-10-13 un fallimento nella lib ha impedito di vedere
+        # che `settings_ipc` (che risponde alla domanda su rename di D15) e i
+        # 15 test di integrazione non erano mai partiti: si e' perso un giro
+        # di CI intero per scoprirlo. Costa zero minuti di quota.
+        run: cargo test --no-fail-fast
+
+      - run: npm run check
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Offline validation of tools.manifest.json: schema, both bundled tools
+      # declared for this target, pinned checksums that look like checksums.
+      # Runs in every run, costs about a second, and fails before anything is
+      # built if the manifest and the spec disagree.
+      - name: Validate the tools manifest
+        run: npm run check:tools
+
+      # Nessuna immagine fluttuante, nessuna in deprecazione, tutte le azioni su
+      # Node 24. Gira in ogni run e costa meno di un secondo: senza, la prossima
+      # migrazione di un runner la si scopre da un build rosso invece che da una
+      # riga rossa.
+      - name: Check the runner images and the actions
+        run: npm run check:runners
+
+      # The version lives in three manifest indipendenti e finisce nel NOME dei file
+      # prodotti. Senza questo controllo si pubblicherebbe v0.2.0 contenente
+      # "..._0.1.0_amd64.deb": binari sbagliati con etichetta sbagliata, e su una
+      # release pubblicata non si corregge. Costa 10 secondi.
+      - name: Verify the tag matches the manifest versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm run check:release -- "${{ github.ref_name }}"
+
+  # ------------------------------------------------------- process tests (3x)
+  # `cargo test` nel job `check` gira solo su Linux; qui la stessa suite gira
+  # anche su Windows e macOS, che e' l'unico modo di vedere le differenze fra i
+  # sistemi operativi. Il `cargo test` del job `check` e quello della riga Linux
+  # di questa matrice sono la stessa cosa due volte: e' voluto, perche' i tre
+  # sistemi eseguono la stessa riga di comando e il confronto e' riga per riga.
+  # `needs: check` e' il cancello che evita di spendere tre macchine su codice
+  # che non compila o non passa clippy — la stessa forma di `ci.yml`.
   process-tests:
     name: process tests (${{ matrix.label }})
+    needs: check
+    # Compila senza externalBin: questo job prova il livello processi con i
+    # falsi tool, non impacchetta, e non deve dipendere dalla rete. Vedi il
+    # commento prima dei job.
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Stesse immagini del job `bundle` di `ci.yml` (i target Tier 1 di
+          # spec §1.1), piu' Linux: qui interessa il confronto fra i tre sistemi,
+          # non la copertura — quella, per Linux, la da' gia' il job `check`.
+          - os: ubuntu-24.04
+            label: linux-x64
           - os: windows-2022
             label: windows-x64
           - os: macos-26
@@ -68,7 +196,11 @@ jobs:
 
       - run: npm ci
 
-      # Runs the test suite against the dependency-free fake_tool test harness.
+      # Nessun test di questa suite tocca la rete ne richiede un tool reale: si
+      # eseguono contro il binario `fake_tool` compilato insieme ai test
+      # (src-tauri/tests/bin/fake_tool.rs).
       - name: cargo test (real spawn, job object / process group)
         working-directory: src-tauri
+        # `--no-fail-fast` per lo stesso motivo del job `check`: vedere tutto in
+        # una run sola vale piu' di una run che si ferma al primo rosso.
         run: cargo test --no-fail-fast

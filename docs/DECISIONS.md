@@ -3205,3 +3205,66 @@ Object, or real antivirus behaviour, and it is only as faithful as the extractio
 is), but for the specific question "does this item exist and pass on the other
 family?" it answers in seconds instead of in a CI round trip. The extraction is
 throwaway code in `/tmp`, not something the repository carries.
+
+### D118 — Nothing starts by itself: every workflow is a button
+
+Until today `ci.yml` started on `push` (`main` and `v*` tags) and on
+`pull_request`, so **every** commit pushed to `main` bought a Linux `check` (7
+minutes of the private repository's minutes, D12) that nobody had asked for.
+Waiting for a result that was going to be looked at later is the same as not
+having it, and the budget is the reason the push trigger was ever narrowed
+(D19) — narrowing it twice was the sign that the trigger itself was wrong.
+
+**The decision: no workflow starts on its own.** All four are
+`workflow_dispatch` only (`ci.yml`, `process-tests.yml`, `selftest.yml`,
+`tier2.yml`). The `push` and `pull_request` triggers are gone; the tag trigger is
+gone too, because "only manual" that keeps one automatic path is not only
+manual.
+
+**Two buttons instead of one.** They answer two different questions, and the
+second is the fast one:
+
+* **`Checks and process tests`** (`process-tests.yml`) — "is the code healthy?":
+  the same `check` job as `ci.yml` (Linux: fmt, clippy, `cargo test`, frontend
+  type-check/test/build, tools manifest, runner-image guard) plus the whole
+  suite on **Linux, Windows and macOS** (`linux-x64` was added: the process
+  layer is the part whose behaviour really changes from one OS to the next, and
+  the two failures of D115 and D117 are exactly what a matrix missing a row
+  hides). It builds no installer.
+* **`CI`** (`ci.yml`) — everything: the same `check`, the process tests on
+  Windows and macOS, the three bundles, the universal macOS bundle and, if the
+  dispatch is on a tag `v*`, the draft release. Unchanged in what it does.
+
+**What this costs.** A green run is now a deliberate act, which is the point,
+but it also means a broken commit can sit on `main` until someone presses the
+button; there is no longer a background check. And the release is no longer "push
+the tag and wait": with the tag trigger gone, the flow is *tag → push the tag →
+Actions → `CI` → Run workflow → choose the tag in the dropdown*, because
+`release` is still conditioned on `startsWith(github.ref, 'refs/tags/v')` and a
+dispatch on a branch would silently skip it. That step is the price of the
+choice, and it is written here so the v0.1.0 release does not go looking for it.
+
+**Mechanics worth knowing.**
+
+* The jobs of `ci.yml` keep their `if: github.event_name == 'workflow_dispatch' ||
+  startsWith(github.ref, 'refs/tags/v')`. The first clause is now always true and
+  the second is unreachable; they are left as the written statement of "these are
+  not jobs for a push" and as the only thing that would have to be true again if
+  a trigger ever came back.
+* The `check` job exists twice, in `ci.yml` and in `process-tests.yml`, because
+  Actions cannot share a job between workflows (`workflow_call` would mean
+  restructuring `ci.yml` into a reusable workflow, which is a bigger change than
+  the one asked for). The two blocks are **byte-identical** — they were generated
+  from the same text — and both files say so; the check that they have not
+  drifted is one `diff` of the two blocks, and it is a candidate for
+  `scripts/check-ci-syntax.mjs` if it ever drifts in practice.
+* The `process-tests` matrix of `process-tests.yml` runs `cargo test` on Linux
+  too, which the `check` job already does. That is deliberate: the three rows are
+  the same command on three systems, which is what makes a comparison possible,
+  and it costs a cached minute.
+* `permissions: contents: read` and the `concurrency` groups stay: cancellation
+  is still useful when a button is pressed twice.
+
+**Verified** by `npm run check:ci` (13 `run: |` blocks), `npm run
+check:runners` (4 workflows, no floating or deprecated image, every action on
+Node 24), a YAML parse of all four files, and the `diff` above (empty).

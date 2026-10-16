@@ -2997,3 +2997,42 @@ came from reading the code with those tests in hand.
 - **Next step**
   1. Push, re-run `Process Tests` on `windows-x64`: expect the whole suite green.
   2. Then the tag `v0.1.0` for the draft release.
+
+## 2026-10-16 — every workflow is manual, and the tests have their own button (spec §13.5)
+
+- **Done**
+  - `ci.yml` no longer starts on `push` (`main`, `v*` tags) or on `pull_request`:
+    `workflow_dispatch` is its only trigger. Every commit pushed to `main` used to
+    buy a Linux `check` (7 minutes) that nobody had asked for (D12, D19); now the
+    run is a deliberate act. The header comment describes what the button does
+    instead of when it fires.
+  - `process-tests.yml` became the fast button — **"Checks and process tests"**:
+    it carries the same `check` job as `ci.yml` (fmt, clippy, `cargo test`,
+    frontend, manifest, runner-image guard) **and** the whole suite on all three
+    platforms. `linux-x64` is the row that was added: the process layer is the
+    part whose behaviour really differs per OS, and the D115 and D117 failures are
+    exactly what a matrix missing that row hides. It builds no installer.
+  - `CI` still does everything (same `check`, process tests, all bundles, and the
+    draft release when dispatched on a tag): unchanged in what it does, only in
+    when it starts.
+- **Verified by running**
+  - `npm run check:ci`: all 13 `run: |` blocks valid across the four workflows.
+  - `npm run check:runners`: 4 workflows, no floating or deprecated image, every
+    action on Node 24.
+  - YAML parse of the four files: `on:` is `workflow_dispatch` for all of them,
+    and `grep` finds no `push:`, `pull_request:` or `schedule:` left.
+  - The `check` job of the two files is **byte-identical** (generated from the
+    same text; a `diff` of the two blocks is empty).
+- **Not verified / stubbed**
+  - Nothing here needs a runner to be believed, but the real proof is the first
+    manual dispatch: `Checks and process tests` on `main` must go
+    check → three platforms, and `CI` dispatched on `v0.1.0` must still reach the
+    draft release.
+- **Spec items marked "verify" that I checked**: spec §13.5 lists the jobs and
+  the platforms but says nothing about triggers, so the trigger policy is ours
+  (D118) and not a deviation from the spec.
+- **Decisions/deviations (also in DECISIONS.md)**: D118.
+- **Next step**
+  1. Push, then press `Checks and process tests` by hand on `windows-x64` (with
+     the D117 fix) — expect all three rows green.
+  2. Then the tag `v0.1.0`, and the release by dispatching `CI` **on the tag**.
