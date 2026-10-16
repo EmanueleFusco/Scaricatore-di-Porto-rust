@@ -1,10 +1,8 @@
 {
   "app.name": "Scaricatore Di Porto",
   "app.tagline": "Download and transcribe, queued.",
-
   "nav.queue": "Queue",
   "nav.settings": "Settings",
-
   "queue.title": "Queue",
   "queue.empty.title": "Paste a link to start",
   "queue.empty.hint": "The queue is empty. Downloads and transcriptions will show up here.",
@@ -39,7 +37,6 @@
   "queue.warning.heightLower": "yt-dlp saved {actual}p although {requested}p was requested: the extraction was degraded in that run (some streams were missing), so its own fallback chose a muxed format. Try again, or install Deno in Settings → Tools.",
   "queue.degraded.hint": "This list may be missing resolutions: the extraction was degraded in this run (the JavaScript challenge failed). Try again — or install Deno in Settings → Tools.",
   "queue.retry": "Try again",
-
   "queue.add.label": "Links to download",
   "queue.add.placeholder": "Paste one or more links, one per line",
   "queue.add.drop": "Drop a .txt file of links here",
@@ -61,7 +58,6 @@
   "queue.add.duplicate.confirm": "Add anyway",
   "queue.add.duplicate.cancel": "Leave it",
   "queue.add.site": "Site",
-
   "queue.list.empty.supported": "Supported sites",
   "queue.list.pauseAll": "Pause all",
   "queue.list.resumeAll": "Resume all",
@@ -77,11 +73,9 @@
   "queue.list.collapse": "Hide details",
   "queue.list.count.one": "{count} link",
   "queue.list.count.other": "{count} links",
-
   "queue.list.empty.title": "The queue is empty",
   "queue.list.empty.hint": "Paste one or more links above and press Download: the queue takes it from there, two downloads at a time.",
   "queue.list.groups": "Playlists",
-
   "queue.item.options": "Options",
   "queue.item.output": "File",
   "queue.item.log": "Last messages",
@@ -90,7 +84,6 @@
   "queue.item.runtime": "Runtime: {runtime}",
   "queue.item.retrying": "Automatic retry {attempt}/2 shortly",
   "queue.item.resumed": "Resumed after a restart",
-
   "queue.item.action.pause": "Pause",
   "queue.item.action.resume": "Resume",
   "queue.item.action.cancel": "Cancel",
@@ -101,13 +94,11 @@
   "queue.item.action.moveToTop": "Move to top",
   "queue.item.action.copyLink": "Copy link",
   "queue.item.action.openPage": "Open page",
-
   "queue.item.quality.best": "Best available",
   "queue.item.quality.audio": "Audio only (.opus)",
   "queue.item.quality.exact": "{height}p",
   "queue.item.quality.explicit": "Format chosen by hand",
   "queue.item.quality.max": "Up to {height}p",
-
   "queue.state.queued": "Queued",
   "queue.state.inspecting": "Checking",
   "queue.state.downloading": "Downloading",
@@ -120,56 +111,31 @@
   "queue.state.cancelled": "Cancelled",
   "queue.state.paused": "Paused",
   "queue.state.interrupted": "Interrupted",
-
-
-
-
-
-
-
   "job.label.preparing": "Preparing…",
-
   "job.label.video": "Video {index}/{total}",
-
   "job.label.audio": "Audio {index}/{total}",
-
   "job.label.merging": "Merging…",
-
   "job.label.moving": "Finishing…",
-
   "job.label.extractingAudio": "Converting to audio…",
-
   "job.label.embedding": "Embedding…",
-
   "job.label.postProcessing": "Processing…",
-
   "job.deno.title": "Deno is required for YouTube extraction",
-
   "job.deno.body": "QuickJS could not solve the YouTube challenge. Deno is the automatic fallback (spec §5.3): install it once and downloads keep working.",
-
   "job.deno.install": "Install Deno",
-
   "job.deno.dismiss": "Not now",
-
   "footer.idle": "Idle",
   "footer.placeholder": "No process running",
   "footer.toolsPending": "Tools need attention",
   "footer.percent": "{value}%",
-
   "footer.running": "{count} running",
   "footer.failed": "{count} failed",
   "footer.parked": "{count} paused",
   "footer.running.one": "{count} running",
-
   "footer.queued": "{count} queued",
   "footer.queued.one": "{count} queued",
-
   "footer.pausedAll": "Queue paused",
-
   "footer.speed": "{value} Mbit/s",
-
   "footer.nothing": "The queue is empty",
-
   "settings.title": "Settings",
   "settings.general": "General",
   "settings.language": "Language",
@@ -190,12 +156,10 @@
   "settings.section.behaviour": "Behaviour",
   "settings.section.tools": "Tools",
   "settings.language.resolved": "In use: {lang}",
-
   "settings.downloads.parallel": "Parallel downloads",
   "settings.downloads.parallel.hint": "How many downloads at once (1 to 4). Two is the default: beyond that the network and the CPU struggle.",
   "settings.downloads.perHost": "Max per site",
   "settings.downloads.perHost.hint": "How many downloads at once from the same site. Two keeps you from looking like a bot.",
-
   "settings.general.pasteAnywhere": "Add links pasted anywhere",
   "settings.general.pasteAnywhere.hint": "Paste links anywhere in the window, not only in the box. Opt-in.",
   "settings.general.notifyIdle": "Notify me when the queue finishes",
@@ -219,7 +183,6 @@
   "settings.cookies.file.clear": "Clear",
   "settings.cookies.file.none": "No file chosen",
   "settings.accounts.comingSoon": "Proxy, custom headers and impersonation arrive with M3.",
-
   "tools.title": "External tools",
   "tools.refresh": "Re-check",
   "tools.table.caption": "External tools used by the app, with their source, version and status",
@@ -230,44 +193,25 @@
   "tools.column.actions": "Actions",
   "tools.badge.bundled": "Bundled",
   "tools.version.unknown": "unknown",
-
   "tools.action.update": "Update",
-
   "tools.action.test": "Test",
-
   "tools.action.ownPath": "Use my own path",
-
   "tools.action.clearPath": "Go back to automatic",
-
   "tools.action.unavailable": "Not available on this system",
   "tools.choosePath.title": "Choose the path to {tool}",
-
   "tools.state.ok": "Ready",
-
   "tools.state.notInstalled": "Not found",
-
   "tools.state.belowMinVersion": "Too old",
-
   "tools.state.notAvailable": "Not available on this system",
-
   "tools.source.override": "Your own path",
-
   "tools.source.appData": "In the app data folder",
-
   "tools.source.bundled": "Bundled in the installer",
-
   "tools.source.path": "On the system PATH",
-
   "tools.source.wellKnown": "Installed on the system",
-
   "tools.channel.title": "yt-dlp updates",
-
   "tools.channel.label": "Channel",
-
   "tools.channel.stable": "Stable",
-
   "tools.channel.nightly": "Nightly",
-
   "tools.channel.hint": "An update only ever replaces the copy in the app data folder, never the one inside the installer.",
   "tools.paths.title": "Folders",
   "tools.paths.target": "Platform",
@@ -276,17 +220,11 @@
   "tools.paths.temp": "Private temp folder",
   "tools.paths.temp.unavailable": "Not available",
   "tools.paths.hint": "No secret is ever written here. It is here for diagnostics.",
-
   "tools.wizard.title": "Setup",
-
   "tools.wizard.hint": "Reopen the first-run steps: every one of them is optional.",
-
   "tools.wizard.open": "Reopen the setup",
-
   "tools.action.install": "Install",
-
   "tools.action.installing": "Installing… {percent}%",
-
   "tools.action.installingUnknown": "Installing…",
   "tools.action.cancel": "Cancel",
   "tools.selfTest.title": "YouTube extraction",
@@ -296,15 +234,10 @@
   "tools.selfTest.ok": "Working with {runtime}: {seconds} s, {formats} formats.",
   "tools.selfTest.failed": "Failed: {message}",
   "tools.selfTest.never": "Not run yet.",
-
   "tools.update.done": "yt-dlp was updated to version {version}.",
-
   "tools.update.upToDate": "yt-dlp is already at version {version}.",
-
   "tools.update.notChanged": "yt-dlp did not change.",
-
   "tools.update.broken": "yt-dlp was updated but no longer answers; restore the copy from the installer.",
-
   "wizard.title": "Setup",
   "wizard.previous": "Back",
   "wizard.next": "Next",
@@ -318,35 +251,21 @@
   "wizard.transcription.body": "Offline transcription arrives later, with Whisper. This step can be skipped.",
   "wizard.output.body": "Downloads go to the system Downloads folder when it exists.",
   "wizard.output.hint": "You can change it any time in Settings → General.",
-
   "plural.running": "{count} running",
-
   "plural.running.one": "{count} running",
-
   "plural.queued": "{count} queued",
-
   "plural.queued.one": "{count} queued",
-
   "toast.settingsRecovered": "The settings file was unreadable: it was moved to {path} and the defaults are being used.",
-
   "toast.dismiss": "Dismiss",
-
   "toast.added": "{count} items added to the queue.",
   "toast.added.one": "{count} item added to the queue.",
-
   "toast.queueIdle.title": "Queue finished",
   "toast.queueIdle.body": "{count} downloads finished.",
-
   "toast.queueIdleWithErrors": "Queue finished with errors.",
-
   "toast.queueRetrying": "Automatic retry {count}/2 after a network error.",
-
   "toast.queueRecovered": "The queue file was unreadable: it was kept as .bak and the queue starts empty.",
-
   "toast.queueInterrupted": "{count} items were running when the app closed: you can resume them.",
-
   "toast.queueCleared": "{count} finished items removed from the queue.",
-
   "error.io": "I/O error",
   "error.json": "Invalid data format",
   "error.tauri": "Internal application error",
@@ -354,44 +273,121 @@
   "error.unsupported": "Unsupported operation",
   "error.process": "External program error",
   "error.cancelled": "Cancelled",
-
   "error.ytdlp.ffmpegMissing": "ffmpeg is missing: merging video and audio, and the opus conversion, both need it",
-
   "error.ytdlp.ytChallenge": "YouTube refused the extraction (challenge). Try again, update yt-dlp, or use cookies",
-
   "error.ytdlp.auth": "This video needs your session: set cookies from the browser or a cookies file",
-
   "error.ytdlp.unavailable": "The video is not available (removed, private or blocked)",
-
   "error.ytdlp.geo": "Not available in your country: a proxy may help",
-
   "error.ytdlp.format": "That format is not available: choose another quality",
-
   "error.ytdlp.unsupported": "This link has no downloadable media. Updating yt-dlp may help",
-
   "error.ytdlp.drm": "DRM-protected content is not supported",
-
   "error.ytdlp.antibot": "The site blocked the request (anti-bot). Retrying with browser impersonation may help (M3)",
-
   "error.ytdlp.cookies": "The browser cookies could not be read: close the browser, or use a cookies file",
-
   "error.ytdlp.diskFull": "No space left on the disk",
-
   "error.ytdlp.network": "Network problem: check the connection and retry",
-
   "error.ytdlp.extract": "yt-dlp could not read this page: updating it usually fixes this",
-
   "error.ytdlp.denoMissing": "Deno, the JavaScript fallback, is not installed",
-
   "error.ytdlp.unknown": "Download failed",
-
   "a11y.skipToContent": "Skip to content",
   "a11y.sidebar": "Main navigation",
   "a11y.statusBar": "Application status",
   "a11y.queueList": "Download queue",
   "a11y.queueItem": "Queue item",
   "a11y.progress": "Progress",
-
   "common.back": "Back",
-  "common.close": "Close"
+  "common.close": "Close",
+  "playlist.add.one": "Add {count} item to queue",
+  "playlist.add.other": "Add {count} items to queue",
+  "playlist.cancel": "Cancel",
+  "playlist.cookies.browser": "Browser cookies…",
+  "playlist.cookies.file": "Cookies file…",
+  "playlist.cookies.hint": "Sign in to access private videos, Watch Later or age-restricted content.",
+  "playlist.cookies.title": "Use cookies for authentication",
+  "playlist.count.one": "{count} video",
+  "playlist.count.other": "{count} videos",
+  "playlist.duration": "{duration} total",
+  "playlist.filter.label": "Filter by title",
+  "playlist.filter.placeholder": "Search titles…",
+  "playlist.list.label": "Playlist videos",
+  "playlist.loadMore": "Load more",
+  "playlist.loadingMore": "Loading…",
+  "playlist.option.archive": "Skip videos already recorded in download archive",
+  "playlist.option.archive.hint": "Recorded in archive.txt to avoid re-downloading videos you already have.",
+  "playlist.option.folder": "Create a subfolder for this playlist",
+  "playlist.option.folder.preview": "Folder: {name}",
+  "playlist.option.numbering": "Prefix index to filenames (e.g. 001 - )",
+  "playlist.option.quality": "Maximum quality",
+  "playlist.option.quality.hint": "Each video will be downloaded up to this height.",
+  "playlist.range.apply": "Apply",
+  "playlist.range.invalid": "Invalid range syntax (e.g. 1-10, 15, 20-)",
+  "playlist.range.label": "Select range",
+  "playlist.range.placeholder": "e.g. 1-10, 15, 20-",
+  "playlist.reverse": "Reverse order",
+  "playlist.select.all": "Select all",
+  "playlist.select.invert": "Invert",
+  "playlist.select.none": "Deselect all",
+  "playlist.selected": "{selected} of {total} selected",
+  "playlist.truncated": "Only the first items were loaded.",
+  "playlist.unavailable": "Unavailable",
+  "playlist.warning.channel": "This channel has many videos. Showing the first {count} by default.",
+  "playlist.warning.mix": "YouTube Mix playlists are endless. Capped to {count} videos by default.",
+  "queue.add.choice.playlist": "Whole playlist",
+  "queue.add.choice.remember": "Remember choice for this session",
+  "queue.add.choice.title": "This link includes both a video and a playlist. What do you want to download?",
+  "queue.add.choice.video": "This video only",
+  "queue.add.formats.codecs": "Codecs",
+  "queue.add.formats.ext": "Ext",
+  "queue.add.formats.hint": "Pick an exact format ID from yt-dlp. Audio is merged automatically if needed.",
+  "queue.add.formats.id": "ID",
+  "queue.add.formats.pick": "Pick",
+  "queue.add.formats.resolution": "Resolution",
+  "queue.add.formats.size": "Size",
+  "queue.add.formats.title": "Advanced formats table",
+  "queue.add.live.now": "From now",
+  "queue.add.live.start": "From start",
+  "queue.add.live.title": "Live stream recording",
+  "queue.add.more.headers": "Custom HTTP headers",
+  "queue.add.more.headers.count.one": "{count} valid header",
+  "queue.add.more.headers.count.other": "{count} valid headers",
+  "queue.add.more.referer": "Custom Referer URL",
+  "queue.add.more.title": "More options",
+  "queue.add.more.userAgent": "Custom User-Agent",
+  "queue.group.collapse": "Collapse playlist",
+  "queue.group.expand": "Expand playlist",
+  "queue.group.failed": "{count} failed",
+  "queue.group.list": "Playlists",
+  "queue.group.openFolder": "Open folder",
+  "queue.group.pause": "Pause playlist",
+  "queue.group.progress": "{done} of {total} completed",
+  "queue.group.remove": "Remove playlist",
+  "queue.group.resume": "Resume playlist",
+  "queue.group.retryFailed": "Retry failed",
+  "queue.item.skippedArchive": "Already in archive (skipped)",
+  "settings.archive.clear": "Clear archive",
+  "settings.archive.cleared": "Archive cleared",
+  "settings.archive.count": "{count} videos recorded in archive.txt",
+  "settings.archive.hint": "Keep track of downloaded video IDs to avoid re-downloading them in playlists.",
+  "settings.archive.use": "Use download archive",
+  "settings.files.includeId": "Include video ID in filename",
+  "settings.files.includeId.hint": "Appends [%(id)s] to the filename template to ensure uniqueness.",
+  "settings.files.limitRate": "Download rate limit",
+  "settings.files.limitRate.hint": "Maximum download speed (e.g. 5M, 500K). Leave empty for unlimited.",
+  "settings.files.preferH264": "Prefer H.264 video and AAC audio",
+  "settings.files.preferH264.hint": "Sorts formats to favor widely compatible H.264/AAC over newer codecs (AV1/VP9).",
+  "settings.headers": "Default custom headers",
+  "settings.headers.hint": "One Header: Value per line. Passed to yt-dlp via --add-headers.",
+  "settings.impersonate": "Retry blocked requests with Chrome impersonation",
+  "settings.impersonate.hint": "When a site responds with anti-bot or 403 Forbidden, retries once using --impersonate chrome.",
+  "settings.playlistUrl": "Links with both video and playlist",
+  "settings.playlistUrl.ask": "Always ask",
+  "settings.playlistUrl.hint": "Default behaviour when a link has both watch?v=… and list=… parameters.",
+  "settings.playlistUrl.playlist": "Always whole playlist",
+  "settings.playlistUrl.video": "Always this video only",
+  "settings.proxy": "Proxy URL",
+  "settings.proxy.hint": "HTTP, HTTPS or SOCKS5 proxy URL (e.g. socks5://127.0.0.1:1080).",
+  "settings.referer": "Default Referer header",
+  "settings.section.files": "Files & naming",
+  "settings.section.playlists": "Playlists & archive",
+  "settings.section.requests": "Network & requests",
+  "settings.userAgent": "Default User-Agent header"
 }

@@ -110,6 +110,11 @@ pub struct AddItemRequest {
     pub output_dir: Option<String>,
     #[serde(default)]
     pub group_id: Option<String>,
+    /// A sub-folder under the resolved output folder, e.g. the playlist title
+    /// (spec §6.4 "folder per playlist"). Sanitised here, never trusted from the
+    /// frontend: it may hold path separators or reserved Windows names.
+    #[serde(default)]
+    pub output_subdir: Option<String>,
     /// Optional literal prefix before `%(title).180B` in `-o`, e.g. `"01 - "`
     /// (spec §6.4, §8.2).
     #[serde(default)]
@@ -265,6 +270,15 @@ pub async fn queue_add<R: Runtime>(
                 "no output folder: pick one in Settings, or set a default in your OS",
             )
         })?;
+        let dir = match item
+            .output_subdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => dir.join(crate::services::paths::sanitize_component(name, 100)),
+            None => dir,
+        };
         crate::services::paths::ensure_dir(&dir).map_err(|err| {
             ErrorInfo::new(
                 ErrorCode::Io,
@@ -290,7 +304,7 @@ pub async fn queue_add<R: Runtime>(
                 custom_headers.push(trimmed.to_owned());
             }
         }
-        let use_archive = item.use_archive.unwrap_or(false);
+        let use_archive = item.use_archive.unwrap_or(settings.use_download_archive);
 
         let options = ItemOptions {
             kind,

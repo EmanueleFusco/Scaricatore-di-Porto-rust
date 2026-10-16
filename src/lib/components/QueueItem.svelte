@@ -16,6 +16,7 @@
     formatBytes,
     heightWarning,
     isActive,
+    wasSkippedByArchive,
     itemLabel,
     qualityKey,
     speedMbits,
@@ -77,6 +78,8 @@
       ].filter((part) => part !== null);
       return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
     }
+    // Spec §6.4: finished without downloading because the archive has it.
+    if (wasSkippedByArchive(item)) return tt("queue.item.skippedArchive");
     return size !== null ? `${detail} · ${size}` : detail;
   });
 

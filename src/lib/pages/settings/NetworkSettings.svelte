@@ -3,10 +3,12 @@
    * Settings → Network & Accounts (spec §11.8): the JavaScript runtime strategy
    * (spec §5.3.3) and the cookies two ways (spec §8.6).
    *
-   * Proxy, custom headers and impersonation are M3; the page says so instead of
-   * leaving three empty fields.
+   * M3 adds the proxy, the default referer / user agent / extra headers sent to
+   * every site (spec §6.3.4), and the one-shot retry with browser
+   * impersonation when a site blocks the request (spec §6.3.5).
    */
   import { open } from "@tauri-apps/plugin-dialog";
+  import { parseHeaderLines } from "$lib/addbar";
   import {
     browserNamesForTriple,
     sanitizePlayerClients,
@@ -123,7 +125,78 @@
     </div>
   </div>
 
-  <p class="field__hint">{tt("settings.accounts.comingSoon")}</p>
+</section>
+
+<section class="card settings__group" aria-labelledby="heading-requests">
+  <h2 class="settings__group-title" id="heading-requests">{tt("settings.section.requests")}</h2>
+
+  <div class="field">
+    <label class="field__label" for="setting-proxy">{tt("settings.proxy")}</label>
+    <input
+      class="input"
+      id="setting-proxy"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="socks5://127.0.0.1:1080"
+      value={settingsStore.settings.proxyUrl ?? ""}
+      onchange={(event) => void settingsStore.update({ proxyUrl: event.currentTarget.value })}
+    />
+    <p class="field__hint">{tt("settings.proxy.hint")}</p>
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="setting-referer">{tt("settings.referer")}</label>
+    <input
+      class="input"
+      id="setting-referer"
+      type="url"
+      autocomplete="off"
+      spellcheck="false"
+      value={settingsStore.settings.customReferer ?? ""}
+      onchange={(event) => void settingsStore.update({ customReferer: event.currentTarget.value })}
+    />
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="setting-user-agent">{tt("settings.userAgent")}</label>
+    <input
+      class="input"
+      id="setting-user-agent"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      value={settingsStore.settings.customUserAgent ?? ""}
+      onchange={(event) =>
+        void settingsStore.update({ customUserAgent: event.currentTarget.value })}
+    />
+  </div>
+
+  <div class="field">
+    <label class="field__label" for="setting-headers">{tt("settings.headers")}</label>
+    <textarea
+      class="input"
+      id="setting-headers"
+      rows="3"
+      spellcheck="false"
+      placeholder="Header-Name: value"
+      value={settingsStore.settings.customHeaders.join("\n")}
+      onchange={(event) =>
+        void settingsStore.update({ customHeaders: parseHeaderLines(event.currentTarget.value) })}
+    ></textarea>
+    <p class="field__hint">{tt("settings.headers.hint")}</p>
+  </div>
+
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.impersonateRetry}
+      onchange={(event) =>
+        void settingsStore.update({ impersonateRetry: event.currentTarget.checked })}
+    />
+    {tt("settings.impersonate")}
+  </label>
+  <p class="field__hint">{tt("settings.impersonate.hint")}</p>
 </section>
 
 <style>
@@ -136,6 +209,13 @@
 
   .settings__group-title {
     font-size: 15px;
+  }
+
+  .settings__check {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    font-size: 13px;
   }
 
   .settings__row {

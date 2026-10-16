@@ -11,6 +11,7 @@
  * **per-link picker** with the resolutions that video actually reports (the
  * original's behaviour, exact height with a fallback below, spec §8.2).
  */
+import type { FormatLite } from "$lib/inspect";
 import type { QualityChoice } from "$lib/queue";
 
 /** The heights the preset offers, tallest first. */
@@ -110,4 +111,52 @@ export function choiceOf(
   value: string,
 ): QualityChoice | null {
   return options.find((option) => option.value === value)?.choice ?? null;
+}
+
+/**
+ * The `Header: Value` lines of the "More options" box (spec §6.3.4, §11.3).
+ *
+ * One header per line; a line without a colon, or with a control character, is
+ * dropped rather than sent: the backend refuses them again (it never trusts the
+ * frontend), and a silent drop here would hide the mistake, so the UI shows the
+ * count of accepted lines next to the box.
+ */
+export function parseHeaderLines(text: string): string[] {
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const colon = line.indexOf(":");
+    if (colon < 1 || colon === line.length - 1) continue;
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f]/.test(line)) continue;
+    lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * The rows of the advanced format table (spec §6.3.7, §11.3): every real
+ * stream, tallest first, storyboards (`mhtml`) left out. Audio-only streams
+ * come after the video ones, best first by size when known.
+ */
+export function tableFormats(formats: readonly FormatLite[]): FormatLite[] {
+  const real = formats.filter(
+    (format) => format.protocol !== "mhtml" && format.ext !== "mhtml" && format.formatId !== "",
+  );
+  const hasVideo = (format: FormatLite): boolean =>
+    format.height !== null || (format.vcodec !== null && format.vcodec !== "none");
+  const video = real
+    .filter(hasVideo)
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || (b.fps ?? 0) - (a.fps ?? 0));
+  const audio = real.filter((format) => !hasVideo(format)).sort((a, b) => (b.filesize ?? 0) - (a.filesize ?? 0));
+  return [...video, ...audio];
+}
+
+/**
+ * The explicit quality for one table row. `hasAudio` tells the backend whether
+ * the stream already carries sound or needs the best audio merged in.
+ */
+export function explicitChoiceFor(format: FormatLite): QualityChoice {
+  const audio = format.acodec !== null && format.acodec !== "none";
+  return { kind: "explicit", formatId: format.formatId, hasAudio: audio };
 }

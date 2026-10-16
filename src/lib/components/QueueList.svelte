@@ -7,9 +7,10 @@
   component only wires it to a scroll event.
 -->
 <script lang="ts">
+  import QueueGroups from "$lib/components/QueueGroups.svelte";
   import QueueItemRow from "$lib/components/QueueItem.svelte";
   import { untrack } from "svelte";
-  import { scrollOffsetFor, visibleItems, visibleRange } from "$lib/queue";
+  import { itemsOutsideCollapsed, scrollOffsetFor, visibleItems, visibleRange } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
 
@@ -22,7 +23,18 @@
   let viewportHeight = $state(VIEWPORT_FALLBACK);
   let rowHeight = $state(ROW_HEIGHT_FALLBACK);
 
-  const items = $derived(queueStore.list);
+  /** Groups the user folded away (spec §11.5): their items leave the list. */
+  let collapsed = $state<Set<string>>(new Set());
+  const items = $derived(itemsOutsideCollapsed(queueStore.list, collapsed));
+
+  function toggleGroup(id: string): void {
+    const next = new Set(collapsed);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    collapsed = next;
+    scrollTop = 0;
+    if (scroller !== null) scroller.scrollTop = 0;
+  }
   const range = $derived(visibleRange(scrollTop, viewportHeight, rowHeight, items.length));
   const shown = $derived(visibleItems(items, range));
 
@@ -99,8 +111,9 @@
 </script>
 
 <section class="list" aria-label={tt("a11y.queueList")}>
+  <QueueGroups {collapsed} ontoggle={toggleGroup} />
   <div class="list__viewport" bind:this={scroller} onscroll={onScroll} role="list">
-    {#if items.length === 0}
+    {#if items.length === 0 && queueStore.list.length === 0}
       <div class="list__empty">
         <p class="list__empty-title">{tt("queue.list.empty.title")}</p>
         <p class="field__hint">{tt("queue.list.empty.hint")}</p>

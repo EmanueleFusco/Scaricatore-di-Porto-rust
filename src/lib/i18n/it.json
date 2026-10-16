@@ -1,10 +1,8 @@
 {
   "app.name": "Scaricatore Di Porto",
   "app.tagline": "Scarica e trascrivi, in coda.",
-
   "nav.queue": "Coda",
   "nav.settings": "Impostazioni",
-
   "queue.title": "Coda",
   "queue.empty.title": "Incolla un link per iniziare",
   "queue.empty.hint": "La coda è vuota. I download e le trascrizioni appariranno qui.",
@@ -39,7 +37,6 @@
   "queue.warning.heightLower": "yt-dlp ha salvato in {actual}p anche se ne avevi chiesti {requested}p: in quella esecuzione l'estrazione era ridotta (mancavano alcuni flussi) e il suo ripiego ha scelto un formato muxed. Riprova, o installa Deno in Impostazioni → Strumenti.",
   "queue.degraded.hint": "Questa lista potrebbe non avere tutte le risoluzioni: in questa lettura l'estrazione era ridotta (la challenge JavaScript non è riuscita). Riprova — o installa Deno in Impostazioni → Strumenti.",
   "queue.retry": "Riprova",
-
   "queue.add.label": "Link da scaricare",
   "queue.add.placeholder": "Incolla uno o più link, uno per riga",
   "queue.add.drop": "Trascina qui un file .txt di link",
@@ -61,7 +58,6 @@
   "queue.add.duplicate.confirm": "Aggiungi comunque",
   "queue.add.duplicate.cancel": "Lascia come sta",
   "queue.add.site": "Sito",
-
   "queue.list.empty.supported": "Siti supportati",
   "queue.list.pauseAll": "Sospendi tutto",
   "queue.list.resumeAll": "Riprendi tutto",
@@ -77,11 +73,9 @@
   "queue.list.collapse": "Chiudi i dettagli",
   "queue.list.count.one": "{count} link",
   "queue.list.count.other": "{count} link",
-
   "queue.list.empty.title": "La coda è vuota",
   "queue.list.empty.hint": "Incolla uno o più link qui sopra e premi Scarica: la coda fa il resto, due download alla volta.",
   "queue.list.groups": "Playlist",
-
   "queue.item.options": "Opzioni",
   "queue.item.output": "File",
   "queue.item.log": "Ultimi messaggi",
@@ -90,7 +84,6 @@
   "queue.item.runtime": "Runtime: {runtime}",
   "queue.item.retrying": "Riprovo {attempt}/2 tra poco",
   "queue.item.resumed": "Ripreso dopo un riavvio",
-
   "queue.item.action.pause": "Sospendi",
   "queue.item.action.resume": "Riprendi",
   "queue.item.action.cancel": "Annulla",
@@ -101,13 +94,11 @@
   "queue.item.action.moveToTop": "Sposta in cima",
   "queue.item.action.copyLink": "Copia il link",
   "queue.item.action.openPage": "Apri la pagina",
-
   "queue.item.quality.best": "Migliore disponibile",
   "queue.item.quality.audio": "Solo audio (.opus)",
   "queue.item.quality.exact": "{height}p",
   "queue.item.quality.explicit": "Formato scelto a mano",
   "queue.item.quality.max": "Massimo {height}p",
-
   "queue.state.queued": "In coda",
   "queue.state.inspecting": "Controllo",
   "queue.state.downloading": "Download",
@@ -120,56 +111,31 @@
   "queue.state.cancelled": "Annullato",
   "queue.state.paused": "Sospeso",
   "queue.state.interrupted": "Interrotto",
-
-
-
-
-
-
-
   "job.label.preparing": "Preparazione…",
-
   "job.label.video": "Video {index}/{total}",
-
   "job.label.audio": "Audio {index}/{total}",
-
   "job.label.merging": "Unione in corso…",
-
   "job.label.moving": "Ultimi ritocchi…",
-
   "job.label.extractingAudio": "Conversione in audio…",
-
   "job.label.embedding": "Incorporazione…",
-
   "job.label.postProcessing": "Elaborazione…",
-
   "job.deno.title": "Serve Deno per l'estrazione da YouTube",
-
   "job.deno.body": "QuickJS non ha risolto la challenge di YouTube. Deno è il ripiego automatico (spec §5.3): installalo una volta e i download continuano a funzionare.",
-
   "job.deno.install": "Installa Deno",
-
   "job.deno.dismiss": "Non ora",
-
   "footer.idle": "In attesa",
   "footer.placeholder": "Nessun processo in esecuzione",
   "footer.toolsPending": "Strumenti da controllare",
   "footer.percent": "{value}%",
-
   "footer.running": "{count} in esecuzione",
   "footer.failed": "{count} falliti",
   "footer.parked": "{count} in pausa",
   "footer.running.one": "{count} in esecuzione",
-
   "footer.queued": "{count} in coda",
   "footer.queued.one": "{count} in coda",
-
   "footer.pausedAll": "Coda sospesa",
-
   "footer.speed": "{value} Mbit/s",
-
   "footer.nothing": "La coda è vuota",
-
   "settings.title": "Impostazioni",
   "settings.general": "Generali",
   "settings.language": "Lingua",
@@ -190,12 +156,10 @@
   "settings.section.behaviour": "Comportamento",
   "settings.section.tools": "Strumenti",
   "settings.language.resolved": "In uso: {lang}",
-
   "settings.downloads.parallel": "Download in parallelo",
   "settings.downloads.parallel.hint": "Quanti download contemporaneamente (da 1 a 4). Due è il default: oltre, la rete e la CPU fanno fatica.",
   "settings.downloads.perHost": "Massimo per sito",
   "settings.downloads.perHost.hint": "Quanti download insieme dallo stesso sito. Due evita di farsi bloccare come se fossero bot.",
-
   "settings.general.pasteAnywhere": "Aggiungi i link incollati ovunque",
   "settings.general.pasteAnywhere.hint": "Incolla i link nella finestra, anche fuori dalla casella. Facoltativo.",
   "settings.general.notifyIdle": "Avvisa quando la coda finisce",
@@ -219,7 +183,6 @@
   "settings.cookies.file.clear": "Rimuovi",
   "settings.cookies.file.none": "Nessun file scelto",
   "settings.accounts.comingSoon": "Proxy, intestazioni personalizzate e impersonificazione arrivano con M3.",
-
   "tools.title": "Strumenti esterni",
   "tools.refresh": "Ricontrolla",
   "tools.table.caption": "Strumenti esterni usati dall'applicazione, con provenienza, versione e stato",
@@ -230,44 +193,25 @@
   "tools.column.actions": "Azioni",
   "tools.badge.bundled": "Incluso",
   "tools.version.unknown": "sconosciuta",
-
   "tools.action.update": "Aggiorna",
-
   "tools.action.test": "Prova",
-
   "tools.action.ownPath": "Usa il mio percorso",
-
   "tools.action.clearPath": "Torna alla ricerca automatica",
-
   "tools.action.unavailable": "Non disponibile su questo sistema",
   "tools.choosePath.title": "Scegli il percorso di {tool}",
-
   "tools.state.ok": "Pronto",
-
   "tools.state.notInstalled": "Non trovato",
-
   "tools.state.belowMinVersion": "Troppo vecchio",
-
   "tools.state.notAvailable": "Non disponibile su questo sistema",
-
   "tools.source.override": "Il tuo percorso",
-
   "tools.source.appData": "Nella cartella dati dell'app",
-
   "tools.source.bundled": "Incluso nell'installer",
-
   "tools.source.path": "Nel PATH di sistema",
-
   "tools.source.wellKnown": "Installato nel sistema",
-
   "tools.channel.title": "Aggiornamenti di yt-dlp",
-
   "tools.channel.label": "Canale",
-
   "tools.channel.stable": "Stabile",
-
   "tools.channel.nightly": "Nightly",
-
   "tools.channel.hint": "L'aggiornamento riguarda solo la copia nella cartella dati dell'app, mai quella inclusa nell'installer.",
   "tools.paths.title": "Cartelle",
   "tools.paths.target": "Piattaforma",
@@ -276,17 +220,11 @@
   "tools.paths.temp": "Cartella temporanea privata",
   "tools.paths.temp.unavailable": "Non disponibile",
   "tools.paths.hint": "Nessun segreto viene scritto qui dentro. Serve per la diagnosi.",
-
   "tools.wizard.title": "Configurazione iniziale",
-
   "tools.wizard.hint": "Riapre i passaggi iniziali: sono tutti opzionali.",
-
   "tools.wizard.open": "Riapri la procedura",
-
   "tools.action.install": "Installa",
-
   "tools.action.installing": "Installazione… {percent}%",
-
   "tools.action.installingUnknown": "Installazione…",
   "tools.action.cancel": "Annulla",
   "tools.selfTest.title": "Estrazione da YouTube",
@@ -296,15 +234,10 @@
   "tools.selfTest.ok": "Funziona con {runtime}: {seconds} s, {formats} formati.",
   "tools.selfTest.failed": "Fallito: {message}",
   "tools.selfTest.never": "Mai eseguito.",
-
   "tools.update.done": "yt-dlp aggiornato alla versione {version}.",
-
   "tools.update.upToDate": "yt-dlp è già alla versione {version}.",
-
   "tools.update.notChanged": "yt-dlp non è cambiato.",
-
   "tools.update.broken": "yt-dlp è stato aggiornato ma non risponde più: ripristina la copia dall'installer.",
-
   "wizard.title": "Configurazione iniziale",
   "wizard.previous": "Indietro",
   "wizard.next": "Avanti",
@@ -318,35 +251,21 @@
   "wizard.transcription.body": "La trascrizione offline arriva più avanti, con Whisper. Questo passaggio si può saltare.",
   "wizard.output.body": "I download finiscono nella cartella Download del sistema, se esiste.",
   "wizard.output.hint": "Puoi cambiarla quando vuoi in Impostazioni → Generali.",
-
   "plural.running": "{count} in esecuzione",
-
   "plural.running.one": "{count} in esecuzione",
-
   "plural.queued": "{count} in coda",
-
   "plural.queued.one": "{count} in coda",
-
   "toast.settingsRecovered": "Il file delle impostazioni era illeggibile: è stato spostato in {path} e sono state usate le impostazioni predefinite.",
-
   "toast.dismiss": "Chiudi",
-
   "toast.added": "{count} voci aggiunte alla coda.",
   "toast.added.one": "{count} voce aggiunta alla coda.",
-
   "toast.queueIdle.title": "Coda completata",
   "toast.queueIdle.body": "{count} download finiti.",
-
   "toast.queueIdleWithErrors": "Coda completata con errori.",
-
   "toast.queueRetrying": "Riprovo automatico {count}/2 dopo un errore di rete.",
-
   "toast.queueRecovered": "Il file della coda era illeggibile: è stato messo da parte come .bak e la coda riparte vuota.",
-
   "toast.queueInterrupted": "{count} voci erano in corso quando l'app si è chiusa: puoi riprenderle.",
-
   "toast.queueCleared": "{count} voci finite rimosse dalla coda.",
-
   "error.io": "Errore di I/O",
   "error.json": "Formato dati non valido",
   "error.tauri": "Errore interno dell'applicazione",
@@ -354,44 +273,121 @@
   "error.unsupported": "Operazione non supportata",
   "error.process": "Errore di un programma esterno",
   "error.cancelled": "Annullato",
-
   "error.ytdlp.ffmpegMissing": "Manca ffmpeg: serve sia per unire video e audio, sia per la conversione in opus",
-
   "error.ytdlp.ytChallenge": "YouTube ha rifiutato l'estrazione (challenge). Riprova, aggiorna yt-dlp, o usa i cookie",
-
   "error.ytdlp.auth": "Questo video richiede la tua sessione: imposta i cookie dal browser o da un file",
-
   "error.ytdlp.unavailable": "Il video non è disponibile (rimosso, privato o bloccato)",
-
   "error.ytdlp.geo": "Non disponibile nel tuo Paese: un proxy può aiutare",
-
   "error.ytdlp.format": "Quel formato non è disponibile: scegli un'altra qualità",
-
   "error.ytdlp.unsupported": "Questo link non ha contenuti scaricabili. Aggiornare yt-dlp può aiutare",
-
   "error.ytdlp.drm": "I contenuti protetti da DRM non sono supportati",
-
   "error.ytdlp.antibot": "Il sito ha bloccato la richiesta (anti-bot). Riprovare con l'impersonificazione del browser può aiutare (M3)",
-
   "error.ytdlp.cookies": "Non è stato possibile leggere i cookie del browser: chiudilo, o usa un file di cookie",
-
   "error.ytdlp.diskFull": "Spazio esaurito sul disco",
-
   "error.ytdlp.network": "Problema di rete: controlla la connessione e riprova",
-
   "error.ytdlp.extract": "yt-dlp non ha saputo leggere questa pagina: di solito si risolve aggiornandolo",
-
   "error.ytdlp.denoMissing": "Deno, il ripiego JavaScript, non è installato",
-
   "error.ytdlp.unknown": "Download non riuscito",
-
   "a11y.skipToContent": "Vai al contenuto",
   "a11y.sidebar": "Navigazione principale",
   "a11y.statusBar": "Stato dell'applicazione",
   "a11y.queueList": "Coda dei download",
   "a11y.queueItem": "Voce della coda",
   "a11y.progress": "Avanzamento",
-
   "common.back": "Indietro",
-  "common.close": "Chiudi"
+  "common.close": "Chiudi",
+  "playlist.add.one": "Aggiungi {count} elemento alla coda",
+  "playlist.add.other": "Aggiungi {count} elementi alla coda",
+  "playlist.cancel": "Annulla",
+  "playlist.cookies.browser": "Cookie del browser…",
+  "playlist.cookies.file": "File di cookie…",
+  "playlist.cookies.hint": "Accedi per scaricare video privati, Guarda più tardi o con limiti di età.",
+  "playlist.cookies.title": "Usa i cookie per l'autenticazione",
+  "playlist.count.one": "{count} video",
+  "playlist.count.other": "{count} video",
+  "playlist.duration": "{duration} totali",
+  "playlist.filter.label": "Filtra per titolo",
+  "playlist.filter.placeholder": "Cerca nei titoli…",
+  "playlist.list.label": "Video della playlist",
+  "playlist.loadMore": "Carica altri",
+  "playlist.loadingMore": "Caricamento…",
+  "playlist.option.archive": "Salta i video già registrati nell'archivio scaricati",
+  "playlist.option.archive.hint": "Registrati in archive.txt per non riscaricare i video che hai già.",
+  "playlist.option.folder": "Crea una sottocartella per questa playlist",
+  "playlist.option.folder.preview": "Cartella: {name}",
+  "playlist.option.numbering": "Aggiungi il numero al nome file (es. 001 - )",
+  "playlist.option.quality": "Qualità massima",
+  "playlist.option.quality.hint": "Ogni video verrà scaricato al massimo a questa risoluzione.",
+  "playlist.range.apply": "Applica",
+  "playlist.range.invalid": "Sintassi intervallo non valida (es. 1-10, 15, 20-)",
+  "playlist.range.label": "Seleziona intervallo",
+  "playlist.range.placeholder": "es. 1-10, 15, 20-",
+  "playlist.reverse": "Inverti ordine",
+  "playlist.select.all": "Seleziona tutti",
+  "playlist.select.invert": "Inverti",
+  "playlist.select.none": "Deseleziona tutti",
+  "playlist.selected": "{selected} di {total} selezionati",
+  "playlist.truncated": "Sono stati caricati solo i primi elementi.",
+  "playlist.unavailable": "Non disponibile",
+  "playlist.warning.channel": "Questo canale ha molti video. Vengono mostrati i primi {count}.",
+  "playlist.warning.mix": "I mix di YouTube sono infiniti. Limitato ai primi {count} video.",
+  "queue.add.choice.playlist": "Tutta la playlist",
+  "queue.add.choice.remember": "Ricorda la scelta per questa sessione",
+  "queue.add.choice.title": "Questo link include sia un video che una playlist. Cosa vuoi scaricare?",
+  "queue.add.choice.video": "Solo questo video",
+  "queue.add.formats.codecs": "Codec",
+  "queue.add.formats.ext": "Est",
+  "queue.add.formats.hint": "Scegli un formato esatto da yt-dlp. L'audio viene unito in automatico se necessario.",
+  "queue.add.formats.id": "ID",
+  "queue.add.formats.pick": "Scegli",
+  "queue.add.formats.resolution": "Risoluzione",
+  "queue.add.formats.size": "Dimensione",
+  "queue.add.formats.title": "Tabella formati avanzata",
+  "queue.add.live.now": "Da adesso",
+  "queue.add.live.start": "Dall'inizio",
+  "queue.add.live.title": "Registrazione live",
+  "queue.add.more.headers": "Intestazioni HTTP personalizzate",
+  "queue.add.more.headers.count.one": "{count} intestazione valida",
+  "queue.add.more.headers.count.other": "{count} intestazioni valide",
+  "queue.add.more.referer": "Referer personalizzato",
+  "queue.add.more.title": "Altre opzioni",
+  "queue.add.more.userAgent": "User-Agent personalizzato",
+  "queue.group.collapse": "Comprimi playlist",
+  "queue.group.expand": "Espandi playlist",
+  "queue.group.failed": "{count} non riusciti",
+  "queue.group.list": "Playlist",
+  "queue.group.openFolder": "Apri cartella",
+  "queue.group.pause": "Sospendi playlist",
+  "queue.group.progress": "{done} di {total} completati",
+  "queue.group.remove": "Rimuovi playlist",
+  "queue.group.resume": "Riprendi playlist",
+  "queue.group.retryFailed": "Riprova non riusciti",
+  "queue.item.skippedArchive": "Già nell'archivio (saltato)",
+  "settings.archive.clear": "Svuota archivio",
+  "settings.archive.cleared": "Archivio svuotato",
+  "settings.archive.count": "{count} video registrati in archive.txt",
+  "settings.archive.hint": "Tiene traccia degli ID dei video scaricati per non riscaricarli nelle playlist.",
+  "settings.archive.use": "Usa archivio dei download",
+  "settings.files.includeId": "Includi ID del video nel nome file",
+  "settings.files.includeId.hint": "Aggiunge [%(id)s] al nome file per garantire l'univocità.",
+  "settings.files.limitRate": "Limite velocità di download",
+  "settings.files.limitRate.hint": "Velocità massima di download (es. 5M, 500K). Lascia vuoto per illimitata.",
+  "settings.files.preferH264": "Preferisci video H.264 e audio AAC",
+  "settings.files.preferH264.hint": "Ordina i formati per favorire la compatibilità (H.264/AAC) rispetto a codec più recenti (AV1/VP9).",
+  "settings.headers": "Intestazioni HTTP predefinite",
+  "settings.headers.hint": "Una intestazione per riga (Intestazione: Valore). Passate a yt-dlp tramite --add-headers.",
+  "settings.impersonate": "Riprova richieste bloccate impersonando Chrome",
+  "settings.impersonate.hint": "Quando un sito risponde con anti-bot o 403 Forbidden, riprova una volta con --impersonate chrome.",
+  "settings.playlistUrl": "Link con video e playlist",
+  "settings.playlistUrl.ask": "Chiedi sempre",
+  "settings.playlistUrl.hint": "Comportamento predefinito quando un link ha sia watch?v=… che list=….",
+  "settings.playlistUrl.playlist": "Sempre tutta la playlist",
+  "settings.playlistUrl.video": "Sempre solo questo video",
+  "settings.proxy": "URL proxy",
+  "settings.proxy.hint": "URL del proxy HTTP, HTTPS o SOCKS5 (es. socks5://127.0.0.1:1080).",
+  "settings.referer": "Referer predefinito",
+  "settings.section.files": "File e denominazione",
+  "settings.section.playlists": "Playlist e archivio",
+  "settings.section.requests": "Rete e richieste",
+  "settings.userAgent": "User-Agent predefinito"
 }

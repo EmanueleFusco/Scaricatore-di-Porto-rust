@@ -3090,3 +3090,36 @@ Branch `m3-playlists-and-sites`.
 - Not verified / stubbed: the Svelte UI for M3 (Step 3); real `--impersonate` against a live site (needs curl_cffi in the bundled yt-dlp, not tested offline).
 - Decisions/deviations: the fake yt-dlp answers `--list-impersonate-targets` anywhere in argv (the real probe passes `--ignore-config` first).
 - Next step: Step 3 — playlist panel, AddBar URL cases, queue group headers, M3 settings UI, i18n.
+
+## 2026-10-16 — M3 / Step 3: playlist panel, AddBar URL cases, queue group headers, settings and i18n (spec §6.4, §11.3–§11.8)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Backend: Added `output_subdir` field to `AddItemRequest` in `src-tauri/src/commands/queue.rs` with safe path joining via `sanitize_component`.
+  - Frontend pure helpers and state:
+    - Implemented `src/lib/playlist.ts` with range parser (`1-10, 15, 20-`), case/accent-folding title search, shift-click range selection, default caps (mix: 50, channel: 100), safe folder name sanitisation, numbering prefix formatter (`001 - `), and queue request builder. 18 unit tests in `src/lib/playlist.test.ts`.
+    - Added header line parser, format table selector, and choice resolvers in `src/lib/addbar.ts`.
+    - Added queue group helpers (`groupStats`, `nonEmptyGroups`, `itemsOutsideCollapsed`, `groupPercent`, `wasSkippedByArchive`) in `src/lib/queue.ts` with unit tests in `src/lib/queue.test.ts`.
+    - Updated `src/lib/stores/addbar.svelte.ts` to manage choice state (`watch?v=...&list=...`), playlist slide-over state, pagination loading, live stream options, and network options.
+  - Svelte components:
+    - `src/lib/components/PlaylistPanel.svelte`: slide-over virtualized panel with search filter, range selector, select all/none/invert, reverse order toggle, quality preset, folder-per-playlist, numbering prefix, archive skip, pagination ("Load more"), and "Add N items" action.
+    - `src/lib/components/CookieBanner.svelte`: inline browser cookie picker / Netscape cookies file picker on auth error.
+    - `src/lib/components/AddBar.svelte`: integrated URL choice inline prompt, live stream radio buttons ("download from now" vs "from start"), advanced format table (`details`), network headers drawer, and cookie banner.
+    - `src/lib/components/QueueGroups.svelte`: collapsible playlist group headers showing done/total count, progress bar, folder name, and group actions (pause, resume, retry failed, open folder, remove).
+    - `src/lib/components/QueueList.svelte` & `src/lib/components/QueueItem.svelte`: group filtering of collapsed groups and archive skip status indicator ("Already in archive (skipped)").
+    - `src/lib/pages/settings/GeneralSettings.svelte`: added M3 settings (ID in filename, prefer H.264, limit rate, playlist URL behaviour, download archive toggle, and clear archive button with status count).
+    - `src/lib/pages/settings/NetworkSettings.svelte`: added M3 settings (proxy URL, custom referer, user-agent, custom headers, and `--impersonate chrome` retry checkbox).
+  - i18n: Added 94 new localized strings across `src/lib/i18n/en.json` and `src/lib/i18n/it.json` with 100% dictionary parity verified by unit tests.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → all tests pass (0 warnings, 424 passed, 3 ignored).
+  - `npm test` → 11 test suites passed, 238 tests passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm run build` → production bundle builds cleanly.
+- **Not verified / stubbed**
+  - Manual UI click testing with a live webview (requires display server / graphical environment).
+- **Spec items marked "verify" that I checked**
+  - All UI elements, labels, options and drawer behaviours follow spec §6.4, §11.3, §11.4, §11.5, §11.8.
+- **Decisions/deviations (also in DECISIONS.md)**: none.
+- **Next step**: Step 4 — Verification of acceptance criteria (spec §15 items 5 & 6) and completion of Phase M3.
+

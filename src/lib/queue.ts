@@ -204,6 +204,8 @@ export interface AddItemRequest {
   quality: QualityChoice;
   outputDir: string | null;
   groupId?: string | null;
+  /** Sub-folder under the output folder (playlist title), sanitised by the backend. */
+  outputSubdir?: string | null;
   /** M3 per-item overrides; omitted means "use the settings". */
   filenamePrefix?: string | null;
   includeIdInFilename?: boolean | null;
@@ -877,4 +879,68 @@ export function visibleRange(
 export function visibleItems<T>(items: readonly T[], range: VisibleRange): T[] {
   if (range.last < range.first) return [];
   return items.slice(range.first, range.last + 1);
+}
+// ---------------------------------------------------------------------------
+// Playlist groups (M3, spec §6.4, §11.5)
+// ---------------------------------------------------------------------------
+
+/** What a group header shows and which of its actions make sense. */
+export interface GroupStats {
+  total: number;
+  /** Finished successfully, archive skips included. */
+  done: number;
+  failed: number;
+  /** Running, queued or waiting to retry: the group still has work to do. */
+  active: number;
+  paused: number;
+  /** A folder to open: the directory of the first finished file, if any. */
+  firstFile: string | null;
+}
+
+/** Fold the items of one group into the numbers of its header. */
+export function groupStats(groupId: string, items: readonly QueueItem[]): GroupStats {
+  const stats: GroupStats = { total: 0, done: 0, failed: 0, active: 0, paused: 0, firstFile: null };
+  for (const item of items) {
+    if (item.groupId !== groupId) continue;
+    stats.total += 1;
+    if (item.state === "done") {
+      stats.done += 1;
+      if (stats.firstFile === null && item.file !== null) stats.firstFile = item.file;
+    } else if (item.state === "failed" || item.state === "cancelled") {
+      stats.failed += 1;
+    } else if (item.state === "paused" || item.state === "interrupted") {
+      stats.paused += 1;
+    } else {
+      stats.active += 1;
+    }
+  }
+  return stats;
+}
+
+/** The groups that still have items, in the order they were created. */
+export function nonEmptyGroups(
+  groups: readonly QueueGroup[],
+  items: readonly QueueItem[],
+): QueueGroup[] {
+  const used = new Set(items.map((item) => item.groupId).filter((id): id is string => id !== null));
+  return groups.filter((group) => used.has(group.id)).sort((a, b) => a.index - b.index);
+}
+
+/** Items to list: those of a collapsed group are hidden, the rest keep their order. */
+export function itemsOutsideCollapsed(
+  items: readonly QueueItem[],
+  collapsed: ReadonlySet<string>,
+): QueueItem[] {
+  if (collapsed.size === 0) return [...items];
+  return items.filter((item) => item.groupId === null || !collapsed.has(item.groupId));
+}
+
+/** Group progress, 0–100. An empty group is 0, never `NaN`. */
+export function groupPercent(stats: GroupStats): number {
+  return stats.total === 0 ? 0 : Math.round((stats.done / stats.total) * 100);
+}
+
+/** An item finished because the archive already recorded it (spec §6.4). */
+export function wasSkippedByArchive(item: QueueItem): boolean {
+  return item.state === "done" && item.progress.label === "skippedArchive";
 }
