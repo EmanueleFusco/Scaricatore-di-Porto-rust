@@ -3123,3 +3123,35 @@ Branch `m3-playlists-and-sites`.
 - **Decisions/deviations (also in DECISIONS.md)**: none.
 - **Next step**: Step 4 — Verification of acceptance criteria (spec §15 items 5 & 6) and completion of Phase M3.
 
+## 2026-10-16 — M3 / Step 4: acceptance criteria verification and Phase M3 sign-off (spec §14, §15 items 5 & 6)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Completed all deliverables of **Phase M3 (Playlists & other sites)**:
+    - Step 1 (`8556582`): Playlist & URL-case inspection, entry URL reconstruction, pagination (`-I :1000`), search/feed refusal.
+    - Step 2 (`ff88a77`): Download args (numbering, ID toggle, H.264 preference, archive, pacing, live from start, proxy, rate limit, custom headers), `--impersonate chrome` probe and one-shot retry, archive skip handling, settings v5, archive and group IPC commands.
+    - Step 3 (`77dc8ef`): UI components (virtualized `PlaylistPanel`, `AddBar` choice & live & format table & network drawer, `CookieBanner`, collapsible `QueueGroups`, `QueueItem` archive status, Settings M3 options, and full i18n dictionaries).
+  - Executed full test suite and verification scripts: backend unit and integration tests, Svelte check, Vitest unit tests, CI syntax check, runner allowlist guard, bundled tools manifest check, and production build.
+  - Verified exit criteria (spec §14 row M3) and acceptance items (spec §15 items 5 & 6):
+    - Acceptance item 5: 100-item playlist panel responsive, subset selection, folder per playlist, numbering prefix, archive skip, private/unavailable entry isolation, and video+list inline choice.
+    - Acceptance item 6: Generic video page, HLS/direct links, audio-only, cookie-protected auth hints, live stream handling, DRM message, format table, and one-shot anti-bot retry with impersonation.
+- **Verified by running**
+  - `cargo fmt --all -- --check` → ok.
+  - `cargo clippy --all-targets -- -D warnings` → 0 warnings, clean.
+  - `cargo test` → 424 passed (309 unit + 115 integration), 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 11 test files, 238 passed, 0 failed.
+  - `npm run build` → production bundle compiled in ~430ms.
+  - `npm run check:ci` → all 13 `run: |` blocks valid across 4 workflows.
+  - `npm run check:runners` → 4 workflows, no floating or deprecated images, all actions on Node 24.
+  - `npm run check:tools` → manifest OK: 2 bundled tools, schema 1.
+- **Not verified / stubbed**
+  - Live YouTube / network calls (prohibited in normal CI/test runs per AGENTS.md §6; reserved for manual self-test / nightly runs).
+  - Headed GUI testing with real display server.
+- **Spec items marked "verify" that I checked**
+  - All items verified in Steps 1–3 (`-I` syntax, `--impersonate`, `--no-playlist`, `--download-archive`, `--live-from-start`, `--sleep-interval`, etc.).
+- **Decisions/deviations**: None.
+- **Next step**: Phase M4 — Media processing (ffmpeg encode/trim, encoder probing, audio encode, embed metadata/thumbnail/chapters, SponsorBlock, spec §9, §14 row M4).
+
+
