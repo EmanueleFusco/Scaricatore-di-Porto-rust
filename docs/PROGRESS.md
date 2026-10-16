@@ -3036,3 +3036,27 @@ came from reading the code with those tests in hand.
   1. Push, then press `Checks and process tests` by hand on `windows-x64` (with
      the D117 fix) — expect all three rows green.
   2. Then the tag `v0.1.0`, and the release by dispatching `CI` **on the tag**.
+
+## 2026-10-16 — the operational guide follows the manual-only CI (D118, docs only)
+
+- **Done**: `GUIDA_OPERATIVA.md` (personal, `.gitignore`d, never committed) told
+  the reader that pushing a `v*` tag starts the release and that `check` runs on
+  every push. Both sentences became false with D118, so the guide was brought in
+  line: the release is now *tag → push the tag → dispatch `CI` **on the tag*** (a
+  dispatch on a branch skips `release` in silence); the CI section lists the two
+  buttons (`Checks and process tests` and `CI`) instead of the five jobs of one
+  workflow; `tier2` is described as its own workflow; the bundle image is
+  `ubuntu-24.04`, not 22.04; and the four guards replace the three (the release
+  one, D111, was missing).
+- **Done, numbers**: the counts in the guide were stale in three places — 415/204
+  Rust/TS tests, "619 automatici". Measured now: 305 unit + 112 integration = 417
+  Rust, 207 TypeScript, 624 in total. The figure is what `cargo test` printed, not
+  a sum done by hand.
+- **Verified by running**: `cargo test` (417 passed, breakdown above), `npm test`
+  (207 passed), `npm run check:release -- v0.1.0` (the three manifests agree:
+  0.1.0), and `grep` for the stale strings (`ogni push`, `22.04`, `415`, `204`,
+  `619`, `cinque job`) — none left.
+- **Not verified**: the redaction is only as good as my reading of the guide; the
+  parts about bundle artifact names were left alone.
+- **Next step**: the tag `v0.1.0` and the first draft release, dispatched on the
+  tag.
