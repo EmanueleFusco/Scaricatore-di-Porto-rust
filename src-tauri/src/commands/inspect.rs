@@ -1,14 +1,43 @@
 //! The inspect IPC command (spec §6.2): thin, as `commands/` must be.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::commands::env::resolve_job_tools;
 use crate::error::{AppResult, ErrorCode, ErrorInfo};
-use crate::services::inspect::{self, InspectEnvironment, InspectOutcome, Inspected};
+use crate::services::inspect::{
+    self, InspectEnvironment, InspectOptions, InspectOutcome, Inspected,
+};
 use crate::services::process;
 use crate::services::ytdlp::{self, CfgOs};
 use crate::state::AppState;
+
+/// Optional per-inspection flags from the frontend (spec §6.2, §6.4):
+/// pagination (`item_range`), forcing single-video mode on `watch?v=…&list=…`
+/// (`no_playlist`), or per-link network headers from "More options".
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InspectRequestOptions {
+    pub item_range: Option<(u32, u32)>,
+    pub no_playlist: Option<bool>,
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    pub custom_headers: Vec<String>,
+}
+
+impl InspectRequestOptions {
+    fn into_service_options(self) -> InspectOptions {
+        InspectOptions {
+            item_range: self.item_range,
+            no_playlist: self.no_playlist.unwrap_or(false),
+            impersonate_chrome: false,
+            proxy: None,
+            referer: self.referer,
+            user_agent: self.user_agent,
+            custom_headers: self.custom_headers,
+        }
+    }
+}
 
 /// Answer of one inspection. `request_id` is echoed back so the frontend can
 /// drop stale answers (spec §6.2): URLs change faster than yt-dlp replies, and
@@ -27,6 +56,7 @@ pub async fn inspect_url(
     state: State<'_, AppState>,
     request_id: u64,
     url: String,
+    options: Option<InspectRequestOptions>,
 ) -> AppResult<InspectView> {
     let url = url.trim().to_owned();
     if !process::is_allowed_url(&url) {
@@ -49,9 +79,10 @@ pub async fn inspect_url(
         private_temp: tools.private_temp,
         youtube_clients: settings.youtube_player_clients.clone(),
     };
+    let service_opts = options.unwrap_or_default().into_service_options();
 
     let token = state.start_inspection(request_id);
-    let outcome = inspect::inspect(&environment, &url, token).await;
+    let outcome = inspect::inspect_with_options(&environment, &url, &service_opts, token).await;
     state.finish_inspection(request_id);
 
     match outcome {
@@ -109,6 +140,7 @@ pub async fn inspect_urls(
     state: State<'_, AppState>,
     request_id: u64,
     urls: Vec<String>,
+    options: Option<InspectRequestOptions>,
 ) -> AppResult<Vec<BatchInspectView>> {
     let wanted: Vec<String> = urls
         .into_iter()
@@ -130,6 +162,7 @@ pub async fn inspect_urls(
         private_temp: tools.private_temp,
         youtube_clients: settings.youtube_player_clients.clone(),
     };
+    let service_opts = options.unwrap_or_default().into_service_options();
 
     let mut answers: Vec<Option<BatchInspectView>> = (0..wanted.len()).map(|_| None).collect();
     let mut next = 0;
@@ -145,7 +178,8 @@ pub async fn inspect_urls(
         let mut set = tokio::task::JoinSet::new();
         for (index, url) in batch {
             let environment = environment.clone();
-            set.spawn(async move { (index, inspect_one(&environment, url).await) });
+            let opts = service_opts.clone();
+            set.spawn(async move { (index, inspect_one(&environment, &opts, url).await) });
         }
         while let Some(joined) = set.join_next().await {
             // A panicking inspection loses its own row, not the batch: that
@@ -166,7 +200,11 @@ pub async fn inspect_urls(
 
 /// Inspect one URL inside a batch: refusal, tool failure and cancellation all
 /// become an answer for that row instead of an error for the whole batch.
-async fn inspect_one(environment: &InspectEnvironment, url: String) -> BatchInspectView {
+async fn inspect_one(
+    environment: &InspectEnvironment,
+    options: &InspectOptions,
+    url: String,
+) -> BatchInspectView {
     if !process::is_allowed_url(&url) {
         return BatchInspectView {
             inspected: None,
@@ -177,7 +215,7 @@ async fn inspect_one(environment: &InspectEnvironment, url: String) -> BatchInsp
         };
     }
     let token = tokio_util::sync::CancellationToken::new();
-    match inspect::inspect(environment, &url, token).await {
+    match inspect::inspect_with_options(environment, &url, options, token).await {
         InspectOutcome::Inspected { inspected, .. } => BatchInspectView {
             url,
             inspected: Some(*inspected),

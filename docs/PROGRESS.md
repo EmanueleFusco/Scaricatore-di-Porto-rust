@@ -3060,3 +3060,26 @@ came from reading the code with those tests in hand.
   parts about bundle artifact names were left alone.
 - **Next step**: the tag `v0.1.0` and the first draft release, dispatched on the
   tag.
+
+---
+
+## 2026-10-16 — M3 / Step 1: Playlist & URL-case inspection, entry URL reconstruction, pagination (spec §6.2, §6.4)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Extended `PlaylistStub` (re-exported as `PlaylistInfo`) in `src-tauri/src/services/inspect.rs` and `src/lib/inspect.ts` with `webpage_url` and `entries: Vec<EntryLite { index, id, url, title, duration, available }>`, plus `PLAYLIST_PAGE_SIZE = 1000` and `MIX_DEFAULT_CAP = 50`.
+  - Implemented pure URL-case classifiers (`is_video_with_list_url`, `is_mix_url`, `is_search_or_feed_url`) in both Rust (`services/inspect.rs`) and TypeScript (`src/lib/inspect.ts`).
+  - Implemented `reconstruct_entry_url` and `is_entry_available` in `services/inspect.rs` to handle full `http(s)` URLs, protocol-relative URLs, `webpage_url` fallback, and bare video IDs on YouTube/Vimeo/TwitchVod, and to flag `[Private video]`, `[Deleted video]`, `availability: private|unavailable|needs_auth|subscriber_only|premium_only`, and `live_status: is_upcoming` as `available: false`.
+  - Added `InspectOptions { item_range, no_playlist, impersonate_chrome, proxy, referer, user_agent, custom_headers }`, `inspect_args_with_options`, and `inspect_with_options` in `services/inspect.rs`, and wired `InspectRequestOptions` in `commands/inspect.rs` (`inspect_url` and `inspect_urls`).
+  - Updated `fake_ytdlp.rs` and `tests/ytdlp_job.rs` to cover full playlist entries, `--no-playlist` on `watch?v=…&list=…`, and upfront refusal of search/feed/home pages without spawning `yt-dlp`.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → 309 lib + 115 integration = **424 passed**, 3 ignored.
+  - `npm run check && npm test` → `svelte-check` 0 errors 0 warnings; Vitest **210 passed** across 10 files.
+- **Not verified / stubbed**
+  - Real multi-thousand-item YouTube channel pagination over the live network (covered by unit and fake-yt-dlp tests; UI "Load more" button arrives in Step 3).
+- **Spec items marked "verify" that I checked**
+  - `-I, --playlist-items ITEM_SPEC` (`-I :1000`, `-I :50`, `-I 1001:2000`), `--no-playlist`, `--yes-playlist`, `--impersonate`, `--proxy`, `--referer`, `--user-agent`, `--add-headers` verified against bundled `yt-dlp 2026.08.19 --help`.
+- **Decisions/deviations**: none.
+- **Next step**: M3 Step 2 — download args (`-o` prefix with `%` → `%%` and ID toggle, `-S vcodec:h264,res,acodec:m4a`, `--download-archive`, `--sleep-interval`, `--live-from-start`, `--proxy`, `--limit-rate`, custom headers), anti-bot `--impersonate chrome` probe & retry, archive commands, and queue group commands.
+

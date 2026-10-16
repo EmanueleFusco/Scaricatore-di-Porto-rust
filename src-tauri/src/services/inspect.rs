@@ -190,7 +190,7 @@ pub fn choose_next(previous: &Inspected, next: &Inspected) -> bool {
 /// What kind of playlist a URL is (spec §6.4). The distinction is made at
 /// inspection time because the UI wording differs ("playlist" vs "channel" vs
 /// the endless mix warning).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaylistKind {
     Playlist,
@@ -199,25 +199,48 @@ pub enum PlaylistKind {
     Other,
 }
 
-/// The M1 stub: classification and count, no entries (M3).
+/// One entry of a playlist or multi-video page (spec §6.2, §6.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryLite {
+    /// 1-based position in the playlist (`1`, `2`, …).
+    pub index: u32,
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub duration: Option<f64>,
+    /// `false` for private, deleted or otherwise unplayable entries (spec §6.4).
+    pub available: bool,
+}
+
+/// Default cap for standard playlists (spec §6.2, §6.4: `-I :1000`).
+pub const PLAYLIST_PAGE_SIZE: u32 = 1000;
+
+/// Default cap for YouTube Mix / Radio lists (spec §6.4: "cap to 50 items by default").
+pub const MIX_DEFAULT_CAP: u32 = 50;
+
+/// A playlist or multi-video container with its enumerated entries (spec §6.2, §6.4).
 ///
 /// The data field is `playlist_kind`, not `kind`: `Inspected` is serialised as
 /// an internally tagged enum whose tag **is** `kind`, and a second field with
 /// the same name would produce a duplicate JSON key — one that serde writes
-/// happily and every reader resolves differently. Found by the TypeScript
-/// compiler on the frontend side of the boundary.
+/// happily and every reader resolves differently.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistStub {
     pub id: String,
     pub title: String,
     pub site: String,
+    pub webpage_url: Option<String>,
     pub playlist_kind: PlaylistKind,
     pub count: Option<u32>,
-    /// True when the enumeration hit `-I :1000` and more entries exist
-    /// (always false in M1, where no cap is applied yet).
+    pub entries: Vec<EntryLite>,
+    /// True when the enumeration hit the `-I` cap and more entries exist.
     pub truncated: bool,
 }
+
+/// Alias matching the M3 terminology while keeping M1/M2 callers unbroken.
+pub type PlaylistInfo = PlaylistStub;
 
 /// The result of one inspection.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -259,6 +282,21 @@ struct RawFormat {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
+struct RawEntry {
+    id: Option<serde_json::Value>,
+    url: Option<String>,
+    webpage_url: Option<String>,
+    title: Option<String>,
+    duration: Option<f64>,
+    ie_key: Option<String>,
+    extractor_key: Option<String>,
+    availability: Option<String>,
+    live_status: Option<String>,
+    playlist_index: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
 struct RawInfo {
     #[serde(rename = "_type")]
     info_type: Option<String>,
@@ -275,14 +313,212 @@ struct RawInfo {
     entries: Option<Vec<serde_json::Value>>,
 }
 
-/// `format_id` is usually a string but YouTube numbers some formats; accept
-/// both instead of failing the whole inspection over an id.
-fn format_id(value: &Option<serde_json::Value>) -> String {
+/// `format_id` (and occasionally entry `id`) is usually a string, but some
+/// extractors emit numbers; accept both instead of failing the inspection.
+fn json_id(value: &Option<serde_json::Value>) -> String {
     match value {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(serde_json::Value::Number(n)) => n.to_string(),
         _ => String::new(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// URL-case classification & entry reconstruction (spec §6.4)
+// ---------------------------------------------------------------------------
+
+/// Does this URL have **both** a single-video target and a `list=` query
+/// parameter (e.g. `youtube.com/watch?v=xxx&list=PL…` or `youtu.be/xxx?list=PL…`)?
+///
+/// Spec §6.4: the Add bar asks inline whether to download *This video only* or
+/// the *Whole playlist*.
+pub fn is_video_with_list_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    let Some((_, query_and_frag)) = trimmed.split_once('?') else {
+        return false;
+    };
+    let query = query_and_frag.split('#').next().unwrap_or_default();
+    let mut has_v = false;
+    let mut has_list = false;
+    for pair in query.split('&') {
+        let (key, val) = pair.split_once('=').unwrap_or((pair, ""));
+        if key.eq_ignore_ascii_case("v") && !val.trim().is_empty() {
+            has_v = true;
+        } else if key.eq_ignore_ascii_case("list") && !val.trim().is_empty() {
+            has_list = true;
+        }
+    }
+    if !has_list {
+        return false;
+    }
+    if has_v {
+        return true;
+    }
+    // `https://youtu.be/<id>?list=PL...` carries the video ID in the path.
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower
+        .strip_prefix("https://youtu.be/")
+        .or_else(|| lower.strip_prefix("http://youtu.be/"))
+    {
+        let path_id = rest.split(['?', '#', '/']).next().unwrap_or_default();
+        return !path_id.is_empty();
+    }
+    false
+}
+
+/// Does this URL point to a YouTube Mix / Radio (`list=RD…`, spec §6.4)?
+pub fn is_mix_url(url: &str) -> bool {
+    let Some((_, query_and_frag)) = url.trim().split_once('?') else {
+        return false;
+    };
+    let query = query_and_frag.split('#').next().unwrap_or_default();
+    for pair in query.split('&') {
+        if let Some((key, val)) = pair.split_once('=')
+            && key.eq_ignore_ascii_case("list")
+            && val.trim().to_ascii_uppercase().starts_with("RD")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is this URL a search page, a feed, or a bare home page (spec §6.4)?
+///
+/// Such URLs are either unsupported or effectively unbounded feeds, and the
+/// spec requires refusing them with a clear message rather than enumerating
+/// thousands of unrelated items.
+pub fn is_search_or_feed_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if !jsruntime::is_youtube_url(trimmed) {
+        return false;
+    }
+    let Some(scheme_end) = trimmed.find("://") else {
+        return false;
+    };
+    let after_scheme = &trimmed[scheme_end + 3..];
+    let path_and_query = match after_scheme.find('/') {
+        Some(pos) => &after_scheme[pos..],
+        None => "",
+    };
+    let path = path_and_query
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/');
+    let lower_path = path.to_ascii_lowercase();
+
+    if lower_path.is_empty() {
+        // Bare `https://www.youtube.com/` without `?v=` or `?list=`.
+        let lower_full = path_and_query.to_ascii_lowercase();
+        return !lower_full.contains("v=") && !lower_full.contains("list=");
+    }
+    if lower_path == "/results"
+        || lower_path.starts_with("/results/")
+        || lower_path == "/feed"
+        || lower_path.starts_with("/feed/")
+        || lower_path == "/shorts"
+    {
+        return true;
+    }
+    false
+}
+
+/// Reconstruct a full `http(s)://` URL for one `--flat-playlist` entry
+/// (spec §6.4).
+///
+/// With `--flat-playlist`, `entry.url` may be a full URL or just a video ID
+/// depending on the extractor. We prefer `entry_url` when it is already an
+/// `http(s)://` URL, then `entry_webpage_url`, and otherwise combine `entry_id`
+/// (or a bare `entry_url`) with `ie_key` / `playlist_site`.
+pub fn reconstruct_entry_url(
+    entry_url: Option<&str>,
+    entry_webpage_url: Option<&str>,
+    entry_id: Option<&str>,
+    ie_key: Option<&str>,
+    playlist_site: &str,
+) -> Option<String> {
+    if let Some(url) = entry_url.map(str::trim).filter(|s| !s.is_empty()) {
+        if process::is_allowed_url(url) {
+            return Some(url.to_owned());
+        }
+        if let Some(rest) = url.strip_prefix("//") {
+            let candidate = format!("https://{rest}");
+            if process::is_allowed_url(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(web) = entry_webpage_url.map(str::trim).filter(|s| !s.is_empty())
+        && process::is_allowed_url(web)
+    {
+        return Some(web.to_owned());
+    }
+
+    let id = entry_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| entry_url.map(str::trim).filter(|s| !s.is_empty()))?;
+
+    let extractor = ie_key
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(playlist_site)
+        .to_ascii_lowercase();
+
+    if extractor.starts_with("youtube") {
+        Some(format!("https://www.youtube.com/watch?v={id}"))
+    } else if extractor == "vimeo" {
+        Some(format!("https://vimeo.com/{id}"))
+    } else if extractor == "dailymotion" {
+        Some(format!("https://www.dailymotion.com/video/{id}"))
+    } else if extractor == "twitchvod" {
+        Some(format!("https://www.twitch.tv/videos/{id}"))
+    } else {
+        None
+    }
+}
+
+/// Is a flat-playlist entry playable/available (spec §6.4)?
+///
+/// Private, deleted, unavailable and upcoming-premiere placeholders are marked
+/// `false` so the Playlist selection panel renders them greyed-out and
+/// unchecked by default.
+pub fn is_entry_available(
+    title: &str,
+    availability: Option<&str>,
+    live_status: Option<&str>,
+    has_valid_url: bool,
+) -> bool {
+    if !has_valid_url {
+        return false;
+    }
+    let lower_title = title.trim().to_ascii_lowercase();
+    if matches!(
+        lower_title.as_str(),
+        "[private video]"
+            | "[deleted video]"
+            | "[unavailable video]"
+            | "private video"
+            | "deleted video"
+            | "video unavailable"
+    ) {
+        return false;
+    }
+    if let Some(avail) = availability.map(|s| s.trim().to_ascii_lowercase())
+        && matches!(
+            avail.as_str(),
+            "private" | "unavailable" | "needs_auth" | "subscriber_only" | "premium_only"
+        )
+    {
+        return false;
+    }
+    if let Some(status) = live_status.map(|s| s.trim().to_ascii_lowercase())
+        && status == "is_upcoming"
+    {
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +528,13 @@ fn format_id(value: &Option<serde_json::Value>) -> String {
 /// Parse the JSON produced by `-J`. Never panics, never returns `Err`: a bad
 /// document becomes [`Inspected::Error`] with a readable detail.
 pub fn parse_inspect_json(raw: &str) -> Inspected {
+    parse_inspect_json_with_range(raw, 1, PLAYLIST_PAGE_SIZE)
+}
+
+/// Same as [`parse_inspect_json`], with the 1-based `start_index` and the page
+/// `limit` that `-I` asked for so `EntryLite::index` and `PlaylistStub::truncated`
+/// reflect the requested slice.
+pub fn parse_inspect_json_with_range(raw: &str, start_index: u32, limit: u32) -> Inspected {
     let trimmed = raw.trim();
     let info: RawInfo = match serde_json::from_str(trimmed) {
         Ok(info) => info,
@@ -313,7 +556,7 @@ pub fn parse_inspect_json(raw: &str) -> Inspected {
             if let Some(start) = trimmed.find('{')
                 && let Ok(recovered) = serde_json::from_str::<RawInfo>(&trimmed[start..])
             {
-                return classify_info(recovered);
+                return classify_info(recovered, start_index, limit);
             }
             return Inspected::Error(ErrorInfo {
                 code: YtdlpErrorCode::Extract.as_str().to_owned(),
@@ -324,24 +567,92 @@ pub fn parse_inspect_json(raw: &str) -> Inspected {
             });
         }
     };
-    classify_info(info)
+    classify_info(info, start_index, limit)
 }
 
-fn classify_info(info: RawInfo) -> Inspected {
-    if info.info_type.as_deref() == Some("playlist") {
+fn classify_info(info: RawInfo, start_index: u32, limit: u32) -> Inspected {
+    if matches!(info.info_type.as_deref(), Some("playlist" | "multi_video")) {
         let site = info.extractor_key.clone().unwrap_or_default();
         let url = info.webpage_url.clone().unwrap_or_default();
         let id = info.id.clone().unwrap_or_default();
-        let count = info
-            .playlist_count
-            .or_else(|| info.entries.as_ref().map(|e| e.len() as u32));
+        let kind = playlist_kind(&site, &id, &url);
+        let base_index = start_index.max(1);
+        let raw_entries = info.entries.unwrap_or_default();
+        let mut entries = Vec::with_capacity(raw_entries.len());
+
+        for (offset, value) in raw_entries.into_iter().enumerate() {
+            if value.is_null() {
+                continue;
+            }
+            let raw_entry: RawEntry = serde_json::from_value(value).unwrap_or_default();
+            let entry_id = json_id(&raw_entry.id);
+            let ie_key = raw_entry
+                .ie_key
+                .as_deref()
+                .or(raw_entry.extractor_key.as_deref());
+            let reconstructed = reconstruct_entry_url(
+                raw_entry.url.as_deref(),
+                raw_entry.webpage_url.as_deref(),
+                if entry_id.is_empty() {
+                    None
+                } else {
+                    Some(entry_id.as_str())
+                },
+                ie_key,
+                &site,
+            );
+            let has_valid_url = reconstructed.is_some();
+            let resolved_url = reconstructed.unwrap_or_default();
+            let raw_title = raw_entry.title.unwrap_or_default();
+            let available = is_entry_available(
+                &raw_title,
+                raw_entry.availability.as_deref(),
+                raw_entry.live_status.as_deref(),
+                has_valid_url,
+            );
+            let title = if raw_title.trim().is_empty() {
+                if !entry_id.is_empty() {
+                    entry_id.clone()
+                } else {
+                    resolved_url.clone()
+                }
+            } else {
+                raw_title
+            };
+            let index = raw_entry
+                .playlist_index
+                .unwrap_or_else(|| base_index.saturating_add(u32::try_from(offset).unwrap_or(0)));
+            entries.push(EntryLite {
+                index,
+                id: entry_id,
+                url: resolved_url,
+                title,
+                duration: raw_entry.duration,
+                available,
+            });
+        }
+
+        let entries_len = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+        let count = info.playlist_count.or(Some(entries_len));
+        let effective_limit = if kind == PlaylistKind::Mix && limit == PLAYLIST_PAGE_SIZE {
+            MIX_DEFAULT_CAP
+        } else {
+            limit
+        };
+        let hit_cap = effective_limit > 0 && entries_len >= effective_limit;
+        let more_exist = info.playlist_count.is_none_or(|total| {
+            total == entries_len || total > (base_index - 1).saturating_add(entries_len)
+        }) || kind == PlaylistKind::Mix;
+
         return Inspected::Playlist(PlaylistStub {
-            playlist_kind: playlist_kind(&site, &id, &url),
+            playlist_kind: kind,
             id,
             title: info.title.unwrap_or_default(),
             site,
+            webpage_url: info.webpage_url,
             count,
-            truncated: false,
+            entries,
+            truncated: hit_cap && more_exist,
         });
     }
 
@@ -352,7 +663,7 @@ fn classify_info(info: RawInfo) -> Inspected {
             .formats
             .iter()
             .map(|raw| FormatLite {
-                format_id: format_id(&raw.format_id),
+                format_id: json_id(&raw.format_id),
                 ext: raw.ext.clone().unwrap_or_default(),
                 height: raw.height,
                 width: raw.width,
@@ -432,7 +743,12 @@ pub fn playlist_kind(extractor_key: &str, id: &str, url: &str) -> PlaylistKind {
     if id.starts_with("RD") || lower_url.contains("list=rd") {
         return PlaylistKind::Mix;
     }
-    if extractor_key.eq_ignore_ascii_case("youtubetab") || lower_url.contains("/@") {
+    if extractor_key.eq_ignore_ascii_case("youtubetab")
+        || lower_url.contains("/@")
+        || lower_url.contains("/channel/")
+        || lower_url.contains("/c/")
+        || lower_url.contains("/user/")
+    {
         return PlaylistKind::Channel;
     }
     if extractor_key.eq_ignore_ascii_case("youtube") {
@@ -547,6 +863,55 @@ impl Runtimes {
     }
 }
 
+/// Extra options for a single inspection call (spec §6.2, §6.3, §6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InspectOptions {
+    /// Explicit 1-based inclusive range `(start, end)` for `-I start:end`.
+    /// When `None`, defaults to `:50` for YouTube Mix URLs (`list=RD…`) and
+    /// `:1000` for everything else (spec §6.2, §6.4).
+    pub item_range: Option<(u32, u32)>,
+    /// Pass `--no-playlist` so a `watch?v=…&list=…` URL inspects only the
+    /// video (spec §6.4).
+    pub no_playlist: bool,
+    /// Pass `--impersonate chrome` on the anti-bot retry (spec §6.3.3).
+    pub impersonate_chrome: bool,
+    /// Network options from Settings / Add bar (spec §6.3.3, §8.2).
+    pub proxy: Option<String>,
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    pub custom_headers: Vec<String>,
+}
+
+impl InspectOptions {
+    /// `(start_index, limit)` used by `parse_inspect_json_with_range`.
+    pub fn effective_range(&self, url: &str) -> (u32, u32) {
+        if let Some((start, end)) = self.item_range {
+            let s = start.max(1);
+            let e = end.max(s);
+            return (s, e - s + 1);
+        }
+        if !self.no_playlist && is_mix_url(url) {
+            (1, MIX_DEFAULT_CAP)
+        } else {
+            (1, PLAYLIST_PAGE_SIZE)
+        }
+    }
+
+    /// Value passed to `-I` (`--playlist-items`).
+    pub fn item_spec(&self, url: &str) -> String {
+        if let Some((start, end)) = self.item_range {
+            let s = start.max(1);
+            let e = end.max(s);
+            return format!("{s}:{e}");
+        }
+        if !self.no_playlist && is_mix_url(url) {
+            format!(":{MIX_DEFAULT_CAP}")
+        } else {
+            format!(":{PLAYLIST_PAGE_SIZE}")
+        }
+    }
+}
+
 /// The environment of an inspection: the resolved binary, the runtimes, the
 /// cookies and where the memory is written.
 #[derive(Clone)]
@@ -579,9 +944,33 @@ pub fn inspect_args(
     cookies: &CookieSource,
     youtube_clients: Option<&str>,
 ) -> Vec<std::ffi::OsString> {
+    inspect_args_with_options(
+        url,
+        runtime,
+        cookies,
+        youtube_clients,
+        &InspectOptions::default(),
+    )
+}
+
+/// Same as [`inspect_args`], with explicit M3 options (`-I` range,
+/// `--no-playlist`, `--impersonate chrome`, proxy and custom headers).
+pub fn inspect_args_with_options(
+    url: &str,
+    runtime: Option<(RuntimeKind, &Path)>,
+    cookies: &CookieSource,
+    youtube_clients: Option<&str>,
+    options: &InspectOptions,
+) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     for flag in ["--ignore-config", "-J", "--flat-playlist"] {
         args.push(flag.into());
+    }
+    if options.no_playlist {
+        args.push("--no-playlist".into());
+    } else {
+        args.push("-I".into());
+        args.push(options.item_spec(url).into());
     }
     // The tool writes what our reader decodes (spec §4.5): the same code page
     // that mangles a printed path would mangle the warning and error text this
@@ -598,6 +987,44 @@ pub fn inspect_args(
         args.push(extractor_args.into());
     }
     args.extend(cookies.args());
+    if let Some(proxy) = options
+        .proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--proxy".into());
+        args.push(proxy.into());
+    }
+    if let Some(referer) = options
+        .referer
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--referer".into());
+        args.push(referer.into());
+    }
+    if let Some(ua) = options
+        .user_agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.push("--user-agent".into());
+        args.push(ua.into());
+    }
+    for header in &options.custom_headers {
+        let trimmed = header.trim();
+        if !trimmed.is_empty() && trimmed.contains(':') {
+            args.push("--add-headers".into());
+            args.push(trimmed.into());
+        }
+    }
+    if options.impersonate_chrome {
+        args.push("--impersonate".into());
+        args.push("chrome".into());
+    }
     args.push("--".into());
     args.push(url.into());
     args
@@ -691,28 +1118,56 @@ pub async fn self_test(env: &InspectEnvironment, token: CancellationToken) -> Se
     }
 }
 
-/// Inspect `url`, including the retries that keep the resolution list honest.
-///
-/// The rule, in order:
-/// 1. one attempt with the chosen runtime;
-/// 2. if the result looks degraded — yt-dlp's own "solving failed: some formats
-///    may be missing" warning, or a video with no usable height (spec §5.3.2) —
-///    make **one** more attempt: with Deno when the fallback is available
-///    (spec §5.3.2/§5.3.3, remembered for 24 h), otherwise with the same
-///    runtime, because a failed challenge solve is transient (that is exactly
-///    what a user's "paste it again" fixes);
-/// 3. return the best of what was seen; if it is still degraded, the flag says
-///    so and the UI can offer a retry instead of pretending the list is
-///    complete.
-///
-/// A `YT_CHALLENGE` **error** also triggers the runtime fallback, as before.
+/// Inspect `url` with default [`InspectOptions`].
 pub async fn inspect(
     env: &InspectEnvironment,
     url: &str,
     token: CancellationToken,
 ) -> InspectOutcome {
+    inspect_with_options(env, url, &InspectOptions::default(), token).await
+}
+
+/// Inspect `url` with explicit [`InspectOptions`], including the retries that
+/// keep the resolution list honest.
+///
+/// The rule, in order:
+/// 1. refuse search/feed/home URLs upfront (spec §6.4);
+/// 2. one attempt with the chosen runtime;
+/// 3. if the result looks degraded — yt-dlp's own "solving failed: some formats
+///    may be missing" warning, or a video with no usable height (spec §5.3.2) —
+///    make **one** more attempt: with Deno when the fallback is available
+///    (spec §5.3.2/§5.3.3, remembered for 24 h), otherwise with the same
+///    runtime, because a failed challenge solve is transient (that is exactly
+///    what a user's "paste it again" fixes);
+/// 4. return the best of what was seen; if it is still degraded, the flag says
+///    so and the UI can offer a retry instead of pretending the list is
+///    complete.
+///
+/// A `YT_CHALLENGE` **error** also triggers the runtime fallback, as before.
+pub async fn inspect_with_options(
+    env: &InspectEnvironment,
+    url: &str,
+    options: &InspectOptions,
+    token: CancellationToken,
+) -> InspectOutcome {
     let now = jsruntime::now_unix();
     let mut runtime = env.runtimes.start(env.memory.get().as_ref(), now);
+
+    if is_search_or_feed_url(url) {
+        return InspectOutcome::Inspected {
+            inspected: Box::new(Inspected::Error(ErrorInfo {
+                code: YtdlpErrorCode::Unsupported.as_str().to_owned(),
+                message_key: YtdlpErrorCode::Unsupported.message_key().to_owned(),
+                detail: Some(
+                    "search results, feeds and home pages are not downloadable playlists or videos (spec §6.4)"
+                        .to_owned(),
+                ),
+            })),
+            runtime,
+            elapsed_ms: 0,
+        };
+    }
+
     let mut fell_back = false;
     let mut extra_attempt_made = false;
     let mut elapsed_ms = 0_u64;
@@ -721,7 +1176,7 @@ pub async fn inspect(
 
     loop {
         let started = std::time::Instant::now();
-        let outcome = run_once(env, url, runtime, token.clone()).await;
+        let outcome = run_once(env, url, runtime, options, token.clone()).await;
         elapsed_ms += u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match outcome {
             RunOutcome::Cancelled => return InspectOutcome::Cancelled,
@@ -832,6 +1287,7 @@ async fn run_once(
     env: &InspectEnvironment,
     url: &str,
     runtime: RuntimeKind,
+    options: &InspectOptions,
     token: CancellationToken,
 ) -> RunOutcome {
     let Some(runtime_path) = env.runtimes.path_of(runtime) else {
@@ -847,11 +1303,12 @@ async fn run_once(
         return RunOutcome::Failed(error);
     };
 
-    let args = inspect_args(
+    let args = inspect_args_with_options(
         url,
         Some((runtime, runtime_path)),
         &env.cookies,
         env.youtube_clients.as_deref(),
+        options,
     );
     let mut command = ToolCommand::new(&env.ytdlp)
         .args(args)
@@ -872,7 +1329,11 @@ async fn run_once(
         })
     };
 
-    let deadline = inspect_timeout(url);
+    let deadline = if options.no_playlist {
+        VIDEO_INSPECT_TIMEOUT
+    } else {
+        inspect_timeout(url)
+    };
     let result =
         tokio::time::timeout(deadline, process::spawn_tool(command, token.clone(), sink)).await;
 
@@ -907,8 +1368,9 @@ async fn run_once(
         Ok(text) => text.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
+    let (start_index, limit) = options.effective_range(url);
     RunOutcome::Inspected {
-        inspected: Box::new(parse_inspect_json(&raw)),
+        inspected: Box::new(parse_inspect_json_with_range(&raw, start_index, limit)),
         degraded_warning: is_challenge_degraded(&process_result.stderr_tail),
     }
 }
@@ -1094,7 +1556,10 @@ mod tests {
           "extractor_key": "Youtube",
           "webpage_url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnop",
           "playlist_count": 42,
-          "entries": [{"id": "a"}, {"id": "b"}]
+          "entries": [
+            {"id": "a", "title": "First video", "duration": 120.0},
+            {"id": "b", "title": "[Private video]", "availability": "private"}
+          ]
         }"#;
         let Inspected::Playlist(playlist) = parse_inspect_json(raw) else {
             panic!("expected a playlist");
@@ -1103,6 +1568,29 @@ mod tests {
         assert_eq!(playlist.count, Some(42));
         assert_eq!(playlist.title, "A playlist");
         assert!(!playlist.truncated);
+        assert_eq!(playlist.entries.len(), 2);
+        assert_eq!(
+            playlist.entries[0],
+            EntryLite {
+                index: 1,
+                id: "a".into(),
+                url: "https://www.youtube.com/watch?v=a".into(),
+                title: "First video".into(),
+                duration: Some(120.0),
+                available: true,
+            }
+        );
+        assert_eq!(
+            playlist.entries[1],
+            EntryLite {
+                index: 2,
+                id: "b".into(),
+                url: "https://www.youtube.com/watch?v=b".into(),
+                title: "[Private video]".into(),
+                duration: None,
+                available: false,
+            }
+        );
     }
 
     #[test]
@@ -1114,8 +1602,17 @@ mod tests {
             id: "PL1".into(),
             title: "t".into(),
             site: "Youtube".into(),
+            webpage_url: Some("https://www.youtube.com/playlist?list=PL1".into()),
             playlist_kind: PlaylistKind::Channel,
             count: Some(3),
+            entries: vec![EntryLite {
+                index: 1,
+                id: "v1".into(),
+                url: "https://www.youtube.com/watch?v=v1".into(),
+                title: "Video 1".into(),
+                duration: Some(60.0),
+                available: true,
+            }],
             truncated: false,
         });
         let json = serde_json::to_string(&playlist).expect("serialise");
@@ -1124,6 +1621,10 @@ mod tests {
         assert_eq!(value["kind"], "playlist");
         assert_eq!(value["playlistKind"], "channel");
         assert_eq!(value["count"], 3);
+        assert_eq!(
+            value["entries"][0]["url"],
+            "https://www.youtube.com/watch?v=v1"
+        );
     }
 
     #[test]
@@ -1156,6 +1657,137 @@ mod tests {
             playlist_kind("Vimeo", "album", "https://vimeo.com/album/1"),
             PlaylistKind::Other
         );
+    }
+
+    #[test]
+    fn entry_url_reconstruction_handles_full_urls_bare_ids_and_extractors() {
+        // 1. `entry.url` is already an http(s) URL.
+        assert_eq!(
+            reconstruct_entry_url(
+                Some("https://vimeo.com/12345"),
+                None,
+                Some("12345"),
+                Some("Vimeo"),
+                "Vimeo"
+            ),
+            Some("https://vimeo.com/12345".into())
+        );
+        // 2. `entry.url` is a bare ID on YouTube.
+        assert_eq!(
+            reconstruct_entry_url(
+                Some("dQw4w9WgXcQ"),
+                None,
+                Some("dQw4w9WgXcQ"),
+                Some("Youtube"),
+                "YoutubeTab"
+            ),
+            Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into())
+        );
+        // 3. `entry.url` is missing, falls back to `webpage_url`.
+        assert_eq!(
+            reconstruct_entry_url(
+                None,
+                Some("https://soundcloud.com/artist/track"),
+                Some("99"),
+                None,
+                "SoundcloudSet"
+            ),
+            Some("https://soundcloud.com/artist/track".into())
+        );
+        // 4. Protocol-relative URL.
+        assert_eq!(
+            reconstruct_entry_url(Some("//example.com/video/1"), None, None, None, "Generic"),
+            Some("https://example.com/video/1".into())
+        );
+        // 5. Bare ID on Vimeo and TwitchVod.
+        assert_eq!(
+            reconstruct_entry_url(None, None, Some("777"), Some("Vimeo"), "Vimeo"),
+            Some("https://vimeo.com/777".into())
+        );
+        assert_eq!(
+            reconstruct_entry_url(None, None, Some("888"), Some("TwitchVod"), "Twitch"),
+            Some("https://www.twitch.tv/videos/888".into())
+        );
+        // 6. Unknown site with bare ID only cannot be guessed safely.
+        assert_eq!(
+            reconstruct_entry_url(None, None, Some("id1"), None, "CustomExtractor"),
+            None
+        );
+    }
+
+    #[test]
+    fn multi_video_and_truncated_pages_are_parsed_with_indices() {
+        let raw = r#"{
+          "_type": "multi_video",
+          "id": "course-1",
+          "title": "Course Module",
+          "extractor_key": "Generic",
+          "webpage_url": "https://example.com/course",
+          "playlist_count": 105,
+          "entries": [
+            {"id": "1", "url": "https://example.com/v1", "title": "Part 1", "duration": 60.0},
+            {"id": "2", "url": "https://example.com/v2", "title": "[Deleted video]"},
+            {"id": "3", "url": "https://example.com/v3", "title": "Part 3", "live_status": "is_upcoming"}
+          ]
+        }"#;
+        let Inspected::Playlist(playlist) = parse_inspect_json_with_range(raw, 101, 3) else {
+            panic!("expected a playlist");
+        };
+        assert_eq!(playlist.playlist_kind, PlaylistKind::Other);
+        assert_eq!(playlist.count, Some(105));
+        assert!(
+            playlist.truncated,
+            "3 entries hit the page limit of 3 with 105 total"
+        );
+        assert_eq!(playlist.entries[0].index, 101);
+        assert!(playlist.entries[0].available);
+        assert_eq!(playlist.entries[1].index, 102);
+        assert!(!playlist.entries[1].available, "deleted video is disabled");
+        assert_eq!(playlist.entries[2].index, 103);
+        assert!(
+            !playlist.entries[2].available,
+            "upcoming premiere is disabled"
+        );
+    }
+
+    #[test]
+    fn url_cases_detect_video_with_list_mix_and_search_or_feed() {
+        assert!(is_video_with_list_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345"
+        ));
+        assert!(is_video_with_list_url(
+            "https://youtu.be/dQw4w9WgXcQ?list=RDdQw4w9WgXcQ"
+        ));
+        assert!(!is_video_with_list_url(
+            "https://www.youtube.com/playlist?list=PL12345"
+        ));
+        assert!(!is_video_with_list_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ));
+
+        assert!(is_mix_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"
+        ));
+        assert!(is_mix_url("https://www.youtube.com/playlist?list=RDMM"));
+        assert!(!is_mix_url("https://www.youtube.com/playlist?list=PL12345"));
+
+        assert!(is_search_or_feed_url("https://www.youtube.com/"));
+        assert!(is_search_or_feed_url(
+            "https://www.youtube.com/results?search_query=rust"
+        ));
+        assert!(is_search_or_feed_url(
+            "https://www.youtube.com/feed/subscriptions"
+        ));
+        assert!(is_search_or_feed_url("https://www.youtube.com/shorts"));
+        assert!(!is_search_or_feed_url(
+            "https://www.youtube.com/shorts/abc123xyz"
+        ));
+        assert!(!is_search_or_feed_url(
+            "https://www.youtube.com/@channel/shorts"
+        ));
+        assert!(!is_search_or_feed_url(
+            "https://www.youtube.com/playlist?list=WL"
+        ));
     }
 
     #[test]
@@ -1283,7 +1915,14 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        for required in ["--ignore-config", "-J", "--flat-playlist", "--encoding"] {
+        for required in [
+            "--ignore-config",
+            "-J",
+            "--flat-playlist",
+            "-I",
+            ":1000",
+            "--encoding",
+        ] {
             assert!(rendered.contains(&required.to_owned()), "{rendered:?}");
         }
         // The flag belongs to how we call the tool, not to one stage (D114);
@@ -1318,6 +1957,92 @@ mod tests {
             .collect();
         assert!(!rendered.contains(&jsruntime::YOUTUBE_PLAYER_CLIENTS.to_owned()));
         assert!(!rendered.contains(&"--js-runtimes".to_owned()));
+    }
+
+    #[test]
+    fn inspect_args_with_options_supports_no_playlist_mix_cap_and_network_flags() {
+        let opts = InspectOptions {
+            item_range: Some((1001, 2000)),
+            no_playlist: false,
+            impersonate_chrome: true,
+            proxy: Some("http://127.0.0.1:8080".into()),
+            referer: Some("https://site.example/page".into()),
+            user_agent: Some("CustomUA/1.0".into()),
+            custom_headers: vec!["X-Test: 1".into()],
+        };
+        let args = inspect_args_with_options(
+            "https://site.example/playlist",
+            None,
+            &CookieSource::None,
+            None,
+            &opts,
+        );
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(rendered.windows(2).any(|w| w == ["-I", "1001:2000"]));
+        assert!(
+            rendered
+                .windows(2)
+                .any(|w| w == ["--proxy", "http://127.0.0.1:8080"])
+        );
+        assert!(
+            rendered
+                .windows(2)
+                .any(|w| w == ["--referer", "https://site.example/page"])
+        );
+        assert!(
+            rendered
+                .windows(2)
+                .any(|w| w == ["--user-agent", "CustomUA/1.0"])
+        );
+        assert!(
+            rendered
+                .windows(2)
+                .any(|w| w == ["--add-headers", "X-Test: 1"])
+        );
+        assert!(
+            rendered
+                .windows(2)
+                .any(|w| w == ["--impersonate", "chrome"])
+        );
+        assert_eq!(
+            &rendered[rendered.len() - 2..],
+            &["--", "https://site.example/playlist"]
+        );
+
+        // Mix default cap (`:50`) when no explicit range is passed.
+        let mix_args = inspect_args(
+            "https://www.youtube.com/watch?v=x&list=RDx",
+            None,
+            &CookieSource::None,
+            None,
+        );
+        let mix_rendered: Vec<String> = mix_args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(mix_rendered.windows(2).any(|w| w == ["-I", ":50"]));
+
+        // `no_playlist: true` passes `--no-playlist` instead of `-I`.
+        let single_opts = InspectOptions {
+            no_playlist: true,
+            ..InspectOptions::default()
+        };
+        let single_args = inspect_args_with_options(
+            "https://www.youtube.com/watch?v=x&list=PL1",
+            None,
+            &CookieSource::None,
+            None,
+            &single_opts,
+        );
+        let single_rendered: Vec<String> = single_args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(single_rendered.contains(&"--no-playlist".to_owned()));
+        assert!(!single_rendered.contains(&"-I".to_owned()));
     }
 
     #[test]

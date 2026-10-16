@@ -842,6 +842,62 @@ async fn a_playlist_url_returns_the_stub() {
     };
     assert_eq!(playlist.title, "A playlist");
     assert_eq!(playlist.count, Some(3));
+    assert_eq!(playlist.entries.len(), 3);
+    assert_eq!(playlist.entries[0].url, "https://www.youtube.com/watch?v=a");
+    assert_eq!(playlist.entries[0].title, "Video A");
+    assert!(playlist.entries[0].available);
+    assert!(
+        !playlist.entries[1].available,
+        "private entries must be marked unavailable (spec §6.4)"
+    );
+    assert!(playlist.entries[2].available);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_video_with_list_url_respects_no_playlist_option() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
+
+    let opts = inspect::InspectOptions {
+        no_playlist: true,
+        ..Default::default()
+    };
+    let outcome = inspect::inspect_with_options(
+        &env,
+        "https://www.youtube.com/watch?v=fakeid&list=PL1",
+        &opts,
+        CancellationToken::new(),
+    )
+    .await;
+    let inspected = inspected(outcome);
+    let Inspected::Video(video) = &*inspected else {
+        panic!("expected single video when no_playlist=true, got {inspected:?}");
+    };
+    assert_eq!(video.id, "fakeid");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_search_or_feed_url_is_refused_without_spawning_ytdlp() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = inspect_env(&fixture, JsRuntimeMode::Auto, false, &memory);
+
+    let outcome = inspect::inspect(
+        &env,
+        "https://www.youtube.com/results?search_query=rust",
+        CancellationToken::new(),
+    )
+    .await;
+    let inspected = inspected(outcome);
+    let Inspected::Error(info) = &*inspected else {
+        panic!("expected unsupported error for search page, got {inspected:?}");
+    };
+    assert_eq!(info.code, "UNSUPPORTED");
+    assert!(
+        !fixture.log.exists(),
+        "search/feed pages must be refused before spawning yt-dlp (spec §6.4)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
