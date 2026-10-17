@@ -657,3 +657,78 @@ fn archive_and_group_commands_work_over_the_ipc() {
     let list = call(&window, "queue_list", json!({})).expect("queue_list");
     assert_eq!(list["groups"].as_array().expect("groups").len(), 0);
 }
+
+#[test]
+fn queue_add_treats_empty_sponsorblock_categories_or_off_as_disabled() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let _ = call(
+        &window,
+        "queue_add",
+        json!({
+            "force": false,
+            "items": [
+                {
+                    "url": "https://a.example/empty-cats",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "remove",
+                    "sponsorblockCategories": []
+                },
+                {
+                    "url": "https://a.example/mode-off",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "off",
+                    "sponsorblockCategories": ["sponsor"]
+                },
+                {
+                    "url": "https://a.example/mode-mark",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "mark",
+                    "sponsorblockCategories": ["sponsor", "intro"]
+                }
+            ]
+        }),
+    )
+    .expect("queue_add must succeed");
+
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    let items = list["items"].as_array().expect("items array");
+
+    let item0 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/empty-cats")
+        .unwrap();
+    assert_eq!(
+        item0["options"]["sponsorblockMode"],
+        serde_json::Value::Null
+    );
+
+    let item1 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/mode-off")
+        .unwrap();
+    assert_eq!(
+        item1["options"]["sponsorblockMode"],
+        serde_json::Value::Null
+    );
+
+    let item2 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/mode-mark")
+        .unwrap();
+    assert_eq!(item2["options"]["sponsorblockMode"], "mark");
+    assert_eq!(
+        item2["options"]["sponsorblockCategories"],
+        json!(["sponsor", "intro"])
+    );
+}

@@ -3346,3 +3346,24 @@ Branch `m4-media-processing`.
   - Verified `yt-dlp --help` flags: `--embed-metadata` implies chapters/infojson unless `--no-embed-chapters` and `--no-embed-info-json` are specified.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 10: gate SponsorBlock on YouTube URLs and prevent unchecking all categories (spec §8.4)
+- Done:
+  - Gated `--sponsorblock-mark` and `--sponsorblock-remove` in `src-tauri/src/services/ytdlp.rs` on `jsruntime::is_youtube_url(url)` so non-YouTube URLs never receive SponsorBlock arguments.
+  - In `src/lib/components/AddBar.svelte` and `src/lib/pages/settings/GeneralSettings.svelte`, disabled unchecking the last category when only one category is selected (`disabled={length === 1 && includes(cat)}`) and ignored uncheck events if length <= 1.
+  - In `src-tauri/src/commands/queue.rs`, resolved `sponsorblock_mode` and `sponsorblock_categories` such that empty category lists or explicit mode `"off"` are treated as `SponsorBlockMode::Off` (`None`), rather than silently falling back to global settings.
+  - In `src/lib/queue.ts` and `src/lib/stores/addbar.svelte.ts`, allowed `"off"` in `AddItemRequest.sponsorblockMode` and defaulted `row.sponsorblockMode ?? "off"` in `toRequests()`.
+  - Added unit test assertion in `src-tauri/src/services/ytdlp.rs` verifying non-YouTube URLs (e.g. Vimeo) do not get SponsorBlock flags even when enabled in spec.
+  - Added integration test `queue_add_treats_empty_sponsorblock_categories_or_off_as_disabled` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 331 unit + 127 integration = 458 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 490ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.

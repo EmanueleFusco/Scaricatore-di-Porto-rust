@@ -377,9 +377,11 @@
           <input
             type="checkbox"
             checked={settingsStore.settings.sponsorblockCategories.includes(cat)}
+            disabled={settingsStore.settings.sponsorblockCategories.length === 1 && settingsStore.settings.sponsorblockCategories.includes(cat)}
             onchange={(event) => {
               const checked = event.currentTarget.checked;
               const cur = settingsStore.settings.sponsorblockCategories;
+              if (!checked && cur.length <= 1) return;
               const next = checked ? [...cur, cat] : cur.filter((c) => c !== cat);
               void settingsStore.update({ sponsorblockCategories: next });
             }}

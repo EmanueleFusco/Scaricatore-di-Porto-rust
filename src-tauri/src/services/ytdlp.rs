@@ -606,7 +606,9 @@ pub fn download_args(
         args.push("--embed-chapters".into());
     }
 
-    if let Some(mode) = spec.sponsorblock_mode {
+    if jsruntime::is_youtube_url(url)
+        && let Some(mode) = spec.sponsorblock_mode
+    {
         let cats = if spec.sponsorblock_categories.is_empty() {
             "sponsor,selfpromo,interaction".to_owned()
         } else {
@@ -2308,6 +2310,12 @@ mod tests {
 
         assert!(strings_remove.contains(&"--sponsorblock-remove".to_string()));
         assert!(strings_remove.contains(&"sponsor,selfpromo,interaction".to_string()));
+
+        // Spec §8.4: SponsorBlock is YouTube-only; non-YouTube URLs must never get SponsorBlock flags
+        let args_non_yt = download_args("https://vimeo.com/12345", &spec, &dirs, &env, false);
+        let strings_non_yt = args_as_strings(&args_non_yt);
+        assert!(!strings_non_yt.contains(&"--sponsorblock-mark".to_string()));
+        assert!(!strings_non_yt.contains(&"--sponsorblock-remove".to_string()));
     }
 
     #[test]

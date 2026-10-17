@@ -246,7 +246,7 @@ export interface AddItemRequest {
   embedMetadata?: boolean | null;
   embedThumbnail?: boolean | null;
   embedChapters?: boolean | null;
-  sponsorblockMode?: "mark" | "remove" | null;
+  sponsorblockMode?: "mark" | "remove" | "off" | null;
   sponsorblockCategories?: string[] | null;
 }
 

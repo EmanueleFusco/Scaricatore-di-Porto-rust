@@ -434,7 +434,7 @@ class AddBarStore {
         embedMetadata: row.embedMetadata,
         embedThumbnail: row.embedThumbnail,
         embedChapters: row.embedChapters,
-        sponsorblockMode: row.sponsorblockMode,
+        sponsorblockMode: row.sponsorblockMode ?? "off",
         sponsorblockCategories: row.sponsorblockCategories,
       };
     });

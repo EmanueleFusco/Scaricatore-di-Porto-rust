@@ -692,8 +692,12 @@
                             <input
                               type="checkbox"
                               checked={row.sponsorblockCategories.includes(cat)}
+                              disabled={row.sponsorblockCategories.length === 1 && row.sponsorblockCategories.includes(cat)}
                               onchange={(event) => {
                                 const checked = event.currentTarget.checked;
+                                if (!checked && row.sponsorblockCategories.length <= 1) {
+                                  return;
+                                }
                                 const next = checked
                                   ? [...row.sponsorblockCategories, cat]
                                   : row.sponsorblockCategories.filter((c) => c !== cat);

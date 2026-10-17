@@ -347,6 +347,24 @@ pub async fn queue_add<R: Runtime>(
         )
         .map_err(|err| ErrorInfo::new(ErrorCode::Unsupported, format!("invalid trim: {err}")))?;
 
+        let (sponsorblock_mode, sponsorblock_categories) = match item.sponsorblock_mode.as_deref() {
+            Some("mark") if item.sponsorblock_categories.is_empty() => (None, Vec::new()),
+            Some("remove") if item.sponsorblock_categories.is_empty() => (None, Vec::new()),
+            Some("mark") => (
+                Some(crate::services::ytdlp::SponsorBlockMode::Mark),
+                item.sponsorblock_categories,
+            ),
+            Some("remove") => (
+                Some(crate::services::ytdlp::SponsorBlockMode::Remove),
+                item.sponsorblock_categories,
+            ),
+            Some("off") => (None, Vec::new()),
+            _ => (
+                settings.sponsorblock_mode,
+                settings.sponsorblock_categories.clone(),
+            ),
+        };
+
         let options = ItemOptions {
             kind,
             // An audio-only item whose quality says otherwise is a bug in the
@@ -398,20 +416,8 @@ pub async fn queue_add<R: Runtime>(
             embed_metadata: item.embed_metadata.unwrap_or(settings.embed_metadata),
             embed_thumbnail: item.embed_thumbnail.unwrap_or(settings.embed_thumbnail),
             embed_chapters: item.embed_chapters.unwrap_or(settings.embed_chapters),
-            sponsorblock_mode: item
-                .sponsorblock_mode
-                .as_deref()
-                .and_then(|s| match s {
-                    "mark" => Some(crate::services::ytdlp::SponsorBlockMode::Mark),
-                    "remove" => Some(crate::services::ytdlp::SponsorBlockMode::Remove),
-                    _ => None,
-                })
-                .or(settings.sponsorblock_mode),
-            sponsorblock_categories: if !item.sponsorblock_categories.is_empty() {
-                item.sponsorblock_categories
-            } else {
-                settings.sponsorblock_categories.clone()
-            },
+            sponsorblock_mode,
+            sponsorblock_categories,
         };
 
         requests.push(AddRequest {
