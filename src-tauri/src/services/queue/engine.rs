@@ -1022,7 +1022,33 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
         on_progress(&progress_inner, &sink_id, progress);
     });
 
-    let outcome = job::run_job(&environment, &request, token.clone(), sink).await;
+    // Spec §7.3/§9.1: a download already finished by an earlier attempt that
+    // stopped in Encoding (pause, crash, ffmpeg failure) goes straight to the
+    // encode stage. Re-running yt-dlp would re-download it, or with the
+    // archive on, report it as skipped and never encode it.
+    let downloaded = {
+        let state = lock(&inner.state);
+        state.item(&id).and_then(|item| {
+            let file = item.file.as_ref()?;
+            (item.options.needs_encode() && item.size_bytes.is_none() && file.is_file()).then(
+                || JobOutcome::Done {
+                    file: file.clone(),
+                    runtime: if item.runtime.as_deref() == Some("deno") {
+                        crate::services::jsruntime::RuntimeKind::Deno
+                    } else {
+                        crate::services::jsruntime::RuntimeKind::QuickJs
+                    },
+                    elapsed_ms: 0,
+                    requested_height: item.requested_height,
+                    actual_height: item.actual_height,
+                },
+            )
+        })
+    };
+    let outcome = match downloaded {
+        Some(outcome) => outcome,
+        None => job::run_job(&environment, &request, token.clone(), sink).await,
+    };
 
     match outcome {
         JobOutcome::Done {
@@ -1064,6 +1090,11 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                         return;
                     }
                     item.state = ItemState::Encoding;
+                    item.file = Some(file.clone());
+                    item.size_bytes = None;
+                    item.runtime = Some(runtime.as_str().to_owned());
+                    item.requested_height = requested_height;
+                    item.actual_height = actual_height;
                     item.progress.label = "encoding".to_owned();
                     item.progress.percent = Some(0.0);
                     item.progress.speed_bps = None;

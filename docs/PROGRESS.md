@@ -3225,3 +3225,9 @@ Branch `m4-media-processing`.
 - Verified by running: cargo fmt --check (ok), cargo clippy --all-targets -D warnings (ok), cargo test (all pass, new unit test included), npm run check (0 errors, 0 warnings).
 - Not verified: manual UI repro in `npm run tauri dev`; `toRequests()` itself is not filtered (submit is blocked in the UI and the backend rejects).
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: resume/retry after Encoding re-downloaded
+- Done: entering `Encoding` now persists `item.file` (plus runtime/heights, `size_bytes = None`); `run_item` skips yt-dlp and goes straight to the encode stage when the item needs encoding, has `file` on disk and no `size_bytes` (i.e. never reached Done). Fixes resume/crash-recovery/retry re-downloading or being archive-skipped without encoding.
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: no new automated test for the resume path; not exercised manually. ffmpeg stderr tail still goes only into the error detail, not `log_tail`.
+- Next step: continue M4 review items.
