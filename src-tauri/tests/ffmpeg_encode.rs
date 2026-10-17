@@ -433,7 +433,26 @@ async fn encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version() {
     if cfg!(windows) {
         ffmpeg_name.push_str(".exe");
     }
-    fs::copy(&fixture.fake_ffmpeg, bundled.join(ffmpeg_name)).expect("copy fake ffmpeg");
+    let target_suffixed = bundled.join(&ffmpeg_name);
+    fs::copy(&fixture.fake_ffmpeg, &target_suffixed).expect("copy fake ffmpeg");
+    let target_plain = bundled.join(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
+    fs::copy(&fixture.fake_ffmpeg, &target_plain).expect("copy fake ffmpeg plain");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&target_suffixed)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(&target_suffixed, perms);
+        let mut perms2 = fs::metadata(&target_plain).expect("metadata").permissions();
+        perms2.set_mode(0o755);
+        let _ = fs::set_permissions(&target_plain, perms2);
+    }
 
     let tools_ctx = scaricatore_di_porto_lib::state::ToolContext::in_dir(dir.path());
     let state =
@@ -458,6 +477,11 @@ async fn encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version() {
         scaricatore_di_porto_lib::commands::env::resolve_cached(&app_state, &settings, "ffmpeg")
             .await
             .expect("ffmpeg must resolve");
+    assert_eq!(
+        resolved_ffmpeg.source,
+        scaricatore_di_porto_lib::services::tools::ToolSource::Bundled,
+        "ffmpeg must be resolved from Bundled source"
+    );
     let mtime = fs::metadata(&resolved_ffmpeg.path)
         .and_then(|m| m.modified())
         .ok();

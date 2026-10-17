@@ -61,7 +61,18 @@ fn main() {
         .file_stem()
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let code = match stem.as_str() {
+    let tool = if stem == "yt-dlp" || stem.starts_with("yt-dlp-") {
+        "yt-dlp"
+    } else if stem == "qjs" || stem.starts_with("qjs-") {
+        "qjs"
+    } else if stem == "ffmpeg" || stem.starts_with("ffmpeg-") {
+        "ffmpeg"
+    } else if stem == "ffprobe" || stem.starts_with("ffprobe-") {
+        "ffprobe"
+    } else {
+        stem.as_str()
+    };
+    let code = match tool {
         "yt-dlp" => run_ytdlp(&args),
         "qjs" => run_qjs(&args),
         "ffmpeg" => run_ffmpeg(&args),

@@ -3470,3 +3470,20 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None in this step.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: proceed to M5 or next planned phase.
+
+## 2026-10-17 — M4 / CI fix: fake_tool multi-call matching for suffixed binaries (spec §5.2, §15 item 8)
+- Done:
+  - In `src-tauri/tests/bin/fake_tool.rs`, updated the multi-call dispatcher so that target-triple suffixed binary names (`<tool>-<triple>`, e.g. `ffmpeg-x86_64-unknown-linux-gnu`, `yt-dlp-*`, `qjs-*`, `ffprobe-*`) match their corresponding tool handler (`run_ffmpeg`, `run_ytdlp`, etc.) instead of falling through to generic fake_tool CLI commands with exit code 2.
+  - In `src-tauri/tests/ffmpeg_encode.rs` `encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version`, ensured the bundled fake ffmpeg binary is copied as both suffixed (`ffmpeg-{triple}`) and plain (`ffmpeg`/`ffmpeg.exe`) with Unix executable permissions, and asserted that `resolved_ffmpeg.source` resolves directly to `ToolSource::Bundled`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~476ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: push branch to remote and verify CI checks.
+
