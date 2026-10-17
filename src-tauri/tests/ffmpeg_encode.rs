@@ -13,11 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use scaricatore_di_porto_lib::commands::system::encoders_probe;
-use scaricatore_di_porto_lib::services::encoders::{AudioCodec, EncodersState, probe_all_encoders};
+use scaricatore_di_porto_lib::services::encoders::{
+    AudioCodec, EncodersState, lookup_encoder, probe_all_encoders, probe_encoder,
+};
 use scaricatore_di_porto_lib::services::ffmpeg::{
     AudioEncodeOptions, EncodeJobKind, EncodeOutcome, EncodeRequest, FfmpegProgressTracker,
-    TrimSpec, VideoEncodeOptions, build_audio_encode_args, calculate_expected_duration,
-    derive_encoded_output_path, format_duration_arg, parse_time_spec, run_encode, validate_trim,
+    TrimSpec, VideoEncodeOptions, build_audio_encode_args, build_video_encode_args,
+    calculate_expected_duration, derive_encoded_output_path, format_duration_arg, parse_time_spec,
+    run_encode, validate_trim,
 };
 use scaricatore_di_porto_lib::state::AppState;
 use tauri::Manager;
@@ -579,4 +582,86 @@ async fn hardware_encoder_fallback_informs_user_via_toast_and_log_tail() {
     );
 
     engine.shutdown();
+}
+
+#[tokio::test]
+async fn probe_videotoolbox_falls_back_to_bitrate_when_qv_rejected() {
+    let fixture = Fixture::new();
+
+    // Configure fake ffmpeg to reject -q:v
+    fs::write(fixture.dir.path().join("fail_qv.txt"), "1").expect("write fail_qv.txt");
+
+    let cancel = CancellationToken::new();
+    let def = lookup_encoder("h264_videotoolbox").expect("h264_videotoolbox exists");
+
+    let ok = probe_encoder(&fixture.fake_ffmpeg, def, cancel).await;
+    assert!(
+        ok,
+        "probe_encoder must succeed by falling back to -b:v when -q:v fails"
+    );
+}
+
+#[tokio::test]
+async fn encode_videotoolbox_retries_with_bitrate_when_qv_rejected() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("sample.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let output = derive_encoded_output_path(&original, "mp4");
+
+    // Configure fake ffmpeg to reject -q:v
+    fs::write(fixture.dir.path().join("fail_qv.txt"), "1").expect("write fail_qv.txt");
+
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "h264_videotoolbox".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: true,
+        total_duration: Some(10.0),
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+
+    match outcome {
+        EncodeOutcome::Success {
+            output_file,
+            used_cpu_fallback,
+        } => {
+            assert_eq!(output_file, output);
+            assert!(
+                !used_cpu_fallback,
+                "used_cpu_fallback must be false because videotoolbox succeeded via -b:v fallback"
+            );
+            assert!(output_file.exists());
+        }
+        other => panic!("expected EncodeOutcome::Success, got {:?}", other),
+    }
+}
+
+#[test]
+fn encode_args_hevc_vaapi_includes_hvc1_tag() {
+    let opts = VideoEncodeOptions {
+        input: PathBuf::from("in.mp4"),
+        output: PathBuf::from("out.mp4"),
+        video_encoder: "hevc_vaapi".to_string(),
+        audio_codec: None,
+        trim: None,
+    };
+    let args = build_video_encode_args(&opts);
+    let args_str: Vec<String> = args
+        .into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        args_str
+            .windows(2)
+            .any(|w| w[0] == "-tag:v" && w[1] == "hvc1"),
+        "hevc_vaapi must include -tag:v hvc1"
+    );
 }

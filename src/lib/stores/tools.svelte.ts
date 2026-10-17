@@ -12,6 +12,7 @@ import {
   normaliseSelfTest,
   normaliseToolStatus,
   normaliseToolsView,
+  InFlightDeduplicator,
   type SelfTestReport,
   type ToolProgressEvent,
   type ToolStatus,
@@ -56,20 +57,23 @@ class ToolsStore {
   /** Probed video encoders (spec §9.3). */
   probedEncoders = $state<EncoderInfo[]>([]);
   probingEncoders = $state(false);
+  #encoderDeduplicator = new InFlightDeduplicator<EncoderInfo[]>();
 
   /** Probe video encoders (spec §9.3: run in the background, cache by path/mtime/version). */
   async probeEncoders(force = false): Promise<EncoderInfo[]> {
     if (!isTauriRuntime()) return [];
-    this.probingEncoders = true;
-    try {
-      const res = await invoke<EncoderInfo[]>("encoders_probe", { force });
-      this.probedEncoders = res;
-      return res;
-    } catch {
-      return [];
-    } finally {
-      this.probingEncoders = false;
-    }
+    return this.#encoderDeduplicator.run(async () => {
+      this.probingEncoders = true;
+      try {
+        const res = await invoke<EncoderInfo[]>("encoders_probe", { force });
+        this.probedEncoders = res;
+        return res;
+      } catch {
+        return [];
+      } finally {
+        this.probingEncoders = false;
+      }
+    }, force);
   }
 
   /** Read every tool. Safe to call from `onMount` and from a Refresh button. */

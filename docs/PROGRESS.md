@@ -3367,3 +3367,25 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None in this step.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 11: videotoolbox fallback, hevc_vaapi tag, and bound probe concurrency (spec §9.3)
+- Done:
+  - Added `"-tag:v", "hvc1"` to `hevc_vaapi` in `ENCODER_CATALOGUE` in `src-tauri/src/services/encoders.rs` so all HEVC hardware encoders generate QuickTime/Apple-compatible MP4 files.
+  - Implemented VideoToolbox `-b:v` fallback (`&["-b:v", "2M"]` / `&["-b:v", "2M", "-tag:v", "hvc1"]`) in `src-tauri/src/services/encoders.rs` via `videotoolbox_fallback_args` and `probe_encoder` retry.
+  - Updated video encoding attempt flow in `src-tauri/src/services/ffmpeg.rs` (`run_encode_attempts` and `build_video_encode_args_with_custom_encoder`) to retry with VideoToolbox `-b:v` fallback before falling back to CPU encoder (`libx264`/`libx265`).
+  - Bounded concurrency in `probe_all_encoders` using `tokio::sync::Semaphore::new(2)` and `tokio::spawn`, preserving candidate catalogue order.
+  - Added `InFlightDeduplicator` in `src/lib/tools.ts` and used it in `src/lib/stores/tools.svelte.ts` to deduplicate concurrent in-flight `probeEncoders()` calls.
+  - Added unit tests in `src-tauri/src/services/encoders.rs`, integration tests in `src-tauri/tests/ffmpeg_encode.rs`, and deduplicator unit tests in `src/lib/tools.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 333 unit + 130 integration = 463 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 483ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+

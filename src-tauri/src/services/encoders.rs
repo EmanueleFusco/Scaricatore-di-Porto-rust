@@ -226,6 +226,8 @@ pub static ENCODER_CATALOGUE: &[EncoderDefinition] = &[
             "format=nv12,hwupload",
             "-qp",
             "23",
+            "-tag:v",
+            "hvc1",
         ],
     },
 ];
@@ -247,6 +249,15 @@ pub fn cpu_fallback_encoder(encoder_id: &str) -> Option<&'static str> {
     match def.codec {
         "h264" => Some("libx264"),
         "hevc" => Some("libx265"),
+        _ => None,
+    }
+}
+
+/// Fallback arguments for VideoToolbox encoders when `-q:v 60` is rejected (spec §9.3).
+pub fn videotoolbox_fallback_args(id: &str) -> Option<&'static [&'static str]> {
+    match id {
+        "h264_videotoolbox" => Some(&["-b:v", "2M"]),
+        "hevc_videotoolbox" => Some(&["-b:v", "2M", "-tag:v", "hvc1"]),
         _ => None,
     }
 }
@@ -309,8 +320,8 @@ pub fn parse_supported_encoders(stdout: &str) -> HashSet<String> {
     encoders
 }
 
-/// Arguments to probe an encoder with a short 256x256 test pattern (spec §9.3).
-pub fn build_probe_args(def: &EncoderDefinition) -> Vec<OsString> {
+/// Arguments to probe an encoder with custom extra flags and a short 256x256 test pattern (spec §9.3).
+pub fn build_probe_args_with(id: &str, extra_args: &[&str]) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-hide_banner".into(),
         "-nostdin".into(),
@@ -319,15 +330,20 @@ pub fn build_probe_args(def: &EncoderDefinition) -> Vec<OsString> {
         "-i".into(),
         "color=c=black:s=256x256:d=0.2".into(),
         "-c:v".into(),
-        def.id.into(),
+        id.into(),
     ];
-    for extra in def.args {
+    for extra in extra_args {
         args.push((*extra).into());
     }
     args.push("-f".into());
     args.push("null".into());
     args.push("-".into());
     args
+}
+
+/// Arguments to probe an encoder with a short 256x256 test pattern (spec §9.3).
+pub fn build_probe_args(def: &EncoderDefinition) -> Vec<OsString> {
+    build_probe_args_with(def.id, def.args)
 }
 
 /// Cached probing result (spec §9.3: "cache by (ffmpeg path, mtime, version)").
@@ -392,16 +408,16 @@ impl EncodersState {
     }
 }
 
-/// Probe a single encoder candidate using `ffmpeg`.
-pub async fn probe_encoder(
+async fn run_single_probe_attempt(
     ffmpeg_path: &Path,
-    def: &EncoderDefinition,
+    id: &str,
+    extra_args: &[&str],
     token: CancellationToken,
 ) -> bool {
-    let args = build_probe_args(def);
+    let args = build_probe_args_with(id, extra_args);
     let cmd = ToolCommand::new(ffmpeg_path)
         .args(args)
-        .label(format!("ffmpeg-probe-{}", def.id));
+        .label(format!("ffmpeg-probe-{id}"));
 
     let probe_token = CancellationToken::new();
     let child_token = probe_token.clone();
@@ -426,6 +442,25 @@ pub async fn probe_encoder(
             matches!(res, Ok(ProcessResult { exit_code: Some(0), .. }))
         }
     }
+}
+
+/// Probe a single encoder candidate using `ffmpeg`.
+pub async fn probe_encoder(
+    ffmpeg_path: &Path,
+    def: &EncoderDefinition,
+    token: CancellationToken,
+) -> bool {
+    if run_single_probe_attempt(ffmpeg_path, def.id, def.args, token.clone()).await {
+        return true;
+    }
+    if token.is_cancelled() {
+        return false;
+    }
+    // If videotoolbox failed with -q:v, retry once with -b:v fallback (spec §9.3)
+    if let Some(fallback_args) = videotoolbox_fallback_args(def.id) {
+        return run_single_probe_attempt(ffmpeg_path, def.id, fallback_args, token).await;
+    }
+    false
 }
 
 /// Query `ffmpeg -hide_banner -encoders` using `process::spawn_tool`.
@@ -478,29 +513,53 @@ pub async fn probe_all_encoders(
     let supported_names = query_ffmpeg_encoders(ffmpeg_path, token.clone()).await?;
     let os_candidates = candidates_for_os(CfgOs::current());
 
-    let mut probed: Vec<EncoderInfo> = Vec::new();
+    let candidates: Vec<&'static EncoderDefinition> = os_candidates
+        .iter()
+        .copied()
+        .filter(|id| supported_names.contains(*id))
+        .filter_map(lookup_encoder)
+        .collect();
 
-    for id in os_candidates {
-        if token.is_cancelled() {
-            break;
-        }
-        if !supported_names.contains(*id) {
-            continue;
-        }
-        let Some(def) = lookup_encoder(id) else {
-            continue;
-        };
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
+    let mut handles = Vec::with_capacity(candidates.len());
 
-        let ok = probe_encoder(ffmpeg_path, def, token.clone()).await;
-        if ok {
-            probed.push(EncoderInfo {
-                id: def.id.to_owned(),
-                label: def.label.to_owned(),
-                codec: def.codec.to_owned(),
-                is_hardware: def.is_hardware,
-            });
+    for (idx, def) in candidates.into_iter().enumerate() {
+        let sem = Arc::clone(&semaphore);
+        let ffmpeg = ffmpeg_path.to_path_buf();
+        let token = token.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = match sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return (idx, None),
+            };
+            if token.is_cancelled() {
+                return (idx, None);
+            }
+            let ok = probe_encoder(&ffmpeg, def, token).await;
+            if ok {
+                (
+                    idx,
+                    Some(EncoderInfo {
+                        id: def.id.to_owned(),
+                        label: def.label.to_owned(),
+                        codec: def.codec.to_owned(),
+                        is_hardware: def.is_hardware,
+                    }),
+                )
+            } else {
+                (idx, None)
+            }
+        }));
+    }
+
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        if let Ok((idx, Some(info))) = handle.await {
+            results.push((idx, info));
         }
     }
+    results.sort_by_key(|(idx, _)| *idx);
+    let probed: Vec<EncoderInfo> = results.into_iter().map(|(_, info)| info).collect();
 
     state.set_probed(EncoderCache {
         ffmpeg_path: ffmpeg_path.to_path_buf(),
@@ -649,5 +708,28 @@ Encoders:
         assert!(!cache.is_fresh(&PathBuf::from("/opt/ffmpeg"), Some(now), Some("9.0.2")));
         assert!(!cache.is_fresh(&path, None, Some("9.0.2")));
         assert!(!cache.is_fresh(&path, Some(now), Some("8.0.0")));
+    }
+
+    #[test]
+    fn hevc_vaapi_has_hvc1_tag() {
+        let def = lookup_encoder("hevc_vaapi").expect("hevc_vaapi exists");
+        assert!(
+            def.args
+                .windows(2)
+                .any(|w| w[0] == "-tag:v" && w[1] == "hvc1")
+        );
+    }
+
+    #[test]
+    fn videotoolbox_fallback_args_match_spec() {
+        assert_eq!(
+            videotoolbox_fallback_args("h264_videotoolbox"),
+            Some(&["-b:v", "2M"][..])
+        );
+        assert_eq!(
+            videotoolbox_fallback_args("hevc_videotoolbox"),
+            Some(&["-b:v", "2M", "-tag:v", "hvc1"][..])
+        );
+        assert_eq!(videotoolbox_fallback_args("libx264"), None);
     }
 }

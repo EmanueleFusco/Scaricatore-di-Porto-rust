@@ -36,7 +36,9 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
-use crate::services::encoders::{AudioCodec, cpu_fallback_encoder, lookup_encoder};
+use crate::services::encoders::{
+    AudioCodec, cpu_fallback_encoder, lookup_encoder, videotoolbox_fallback_args,
+};
 use crate::services::process::{self, ProcessResult, ToolCommand};
 
 // ---------------------------------------------------------------------------
@@ -388,10 +390,12 @@ pub fn partial_output_path(output: &Path) -> PathBuf {
     output.with_file_name(name)
 }
 
-/// Build the FFmpeg command line arguments for a video encode (spec §9.2).
-///
-/// Base command: `ffmpeg -y -nostdin -ss <start>? -t <dur>? -i <in> -c:v <venc + args> -c:a <aenc> -movflags +faststart <out>`.
-pub fn build_video_encode_args(options: &VideoEncodeOptions) -> Vec<OsString> {
+/// Build video encode args with optional custom encoder arguments (e.g. VideoToolbox fallback args).
+pub fn build_video_encode_args_with_custom_encoder(
+    options: &VideoEncodeOptions,
+    encoder_id: &str,
+    custom_args: Option<&[&str]>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-y".into(),
         "-nostdin".into(),
@@ -421,7 +425,13 @@ pub fn build_video_encode_args(options: &VideoEncodeOptions) -> Vec<OsString> {
     args.push(options.input.as_os_str().to_os_string());
 
     // Video encoder arguments
-    if let Some(def) = lookup_encoder(&options.video_encoder) {
+    if let Some(custom) = custom_args {
+        args.push("-c:v".into());
+        args.push(encoder_id.into());
+        for extra in custom {
+            args.push((*extra).into());
+        }
+    } else if let Some(def) = lookup_encoder(encoder_id) {
         args.push("-c:v".into());
         args.push(def.id.into());
         for extra in def.args {
@@ -457,6 +467,13 @@ pub fn build_video_encode_args(options: &VideoEncodeOptions) -> Vec<OsString> {
     args.push(options.output.as_os_str().to_os_string());
 
     args
+}
+
+/// Build the FFmpeg command line arguments for a video encode (spec §9.2).
+///
+/// Base command: `ffmpeg -y -nostdin -ss <start>? -t <dur>? -i <in> -c:v <venc + args> -c:a <aenc> -movflags +faststart <out>`.
+pub fn build_video_encode_args(options: &VideoEncodeOptions) -> Vec<OsString> {
+    build_video_encode_args_with_custom_encoder(options, &options.video_encoder, None)
 }
 
 /// Build the FFmpeg command line arguments for an audio encode (spec §9.4).
@@ -633,7 +650,7 @@ async fn run_encode_attempts(
     // Initial attempt
     let (outcome, used_fallback) = match &request.kind {
         EncodeJobKind::Video(video_opts) => {
-            let res = execute_single_encode(
+            let mut res = execute_single_encode(
                 &request.ffmpeg_path,
                 &build_video_encode_args(video_opts),
                 expected_dur,
@@ -642,62 +659,106 @@ async fn run_encode_attempts(
             )
             .await;
 
-            match res {
+            if matches!(
+                res,
                 Ok(ProcessResult {
-                    exit_code: Some(0), ..
-                }) => (Ok(()), false),
+                    exit_code: Some(0),
+                    ..
+                })
+            ) {
+                (Ok(()), false)
+            } else if matches!(
+                res,
                 Ok(ProcessResult {
-                    cancelled: true, ..
-                }) => return EncodeOutcome::Cancelled,
-                failed_res => {
+                    cancelled: true,
+                    ..
+                })
+            ) {
+                return EncodeOutcome::Cancelled;
+            } else {
+                // If videotoolbox failed with -q:v, retry once with -b:v fallback before CPU fallback (spec §9.3)
+                if let Some(fallback_args) = videotoolbox_fallback_args(&video_opts.video_encoder) {
+                    if token.is_cancelled() {
+                        return EncodeOutcome::Cancelled;
+                    }
+                    let vt_args = build_video_encode_args_with_custom_encoder(
+                        video_opts,
+                        &video_opts.video_encoder,
+                        Some(fallback_args),
+                    );
+                    res = execute_single_encode(
+                        &request.ffmpeg_path,
+                        &vt_args,
+                        expected_dur,
+                        token.clone(),
+                        sink.clone(),
+                    )
+                    .await;
+                }
+
+                if matches!(
+                    res,
+                    Ok(ProcessResult {
+                        exit_code: Some(0),
+                        ..
+                    })
+                ) {
+                    (Ok(()), false)
+                } else if matches!(
+                    res,
+                    Ok(ProcessResult {
+                        cancelled: true,
+                        ..
+                    })
+                ) {
+                    return EncodeOutcome::Cancelled;
+                } else if let Some(cpu_codec) = cpu_fallback_encoder(&video_opts.video_encoder) {
                     // Check if hardware encoder failed and CPU fallback is available (spec §9.3)
-                    if let Some(cpu_codec) = cpu_fallback_encoder(&video_opts.video_encoder) {
-                        let mut fallback_opts = video_opts.clone();
-                        fallback_opts.video_encoder = cpu_codec.to_owned();
+                    let mut fallback_opts = video_opts.clone();
+                    fallback_opts.video_encoder = cpu_codec.to_owned();
 
-                        let fallback_res = execute_single_encode(
-                            &request.ffmpeg_path,
-                            &build_video_encode_args(&fallback_opts),
-                            expected_dur,
-                            token.clone(),
-                            sink.clone(),
-                        )
-                        .await;
+                    let fallback_res = execute_single_encode(
+                        &request.ffmpeg_path,
+                        &build_video_encode_args(&fallback_opts),
+                        expected_dur,
+                        token.clone(),
+                        sink.clone(),
+                    )
+                    .await;
 
-                        match fallback_res {
-                            Ok(ProcessResult {
-                                exit_code: Some(0), ..
-                            }) => (Ok(()), true),
-                            Ok(ProcessResult {
-                                cancelled: true, ..
-                            }) => return EncodeOutcome::Cancelled,
-                            Ok(ProcessResult {
-                                exit_code,
-                                stderr_tail,
-                                ..
-                            }) => (
-                                Err((
-                                    format!("FFmpeg failed with exit code {:?}", exit_code),
-                                    stderr_tail,
-                                )),
-                                true,
-                            ),
-                            Err(e) => (Err((e.to_string(), Vec::new())), true),
-                        }
-                    } else {
-                        let (msg, tail) = match failed_res {
-                            Ok(ProcessResult {
-                                exit_code,
-                                stderr_tail,
-                                ..
-                            }) => (
+                    match fallback_res {
+                        Ok(ProcessResult {
+                            exit_code: Some(0), ..
+                        }) => (Ok(()), true),
+                        Ok(ProcessResult {
+                            cancelled: true, ..
+                        }) => return EncodeOutcome::Cancelled,
+                        Ok(ProcessResult {
+                            exit_code,
+                            stderr_tail,
+                            ..
+                        }) => (
+                            Err((
                                 format!("FFmpeg failed with exit code {:?}", exit_code),
                                 stderr_tail,
-                            ),
-                            Err(e) => (e.to_string(), Vec::new()),
-                        };
-                        (Err((msg, tail)), false)
+                            )),
+                            true,
+                        ),
+                        Err(e) => (Err((e.to_string(), Vec::new())), true),
                     }
+                } else {
+                    let (msg, tail) = match res {
+                        Ok(ProcessResult {
+                            exit_code,
+                            stderr_tail,
+                            ..
+                        }) => (
+                            format!("FFmpeg failed with exit code {:?}", exit_code),
+                            stderr_tail,
+                        ),
+                        Err(e) => (e.to_string(), Vec::new()),
+                    };
+                    (Err((msg, tail)), false)
                 }
             }
         }

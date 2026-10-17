@@ -196,6 +196,12 @@ fn run_ffmpeg(args: &[String]) -> i32 {
             .find(|w| w[0] == "-c:v")
             .map(|w| w[1].as_str())
             .unwrap_or_default();
+        let fail_qv =
+            read_flag("fail_qv.txt").is_some() || std::env::var("FAKE_FFMPEG_FAIL_QV").is_ok();
+        if fail_qv && args.iter().any(|a| a == "-q:v") {
+            eprintln!("fake ffmpeg: simulated -q:v rejection during probe");
+            return 1;
+        }
         let fail_enc =
             read_flag("fail_probe.txt").or_else(|| std::env::var("FAKE_FFMPEG_FAIL_PROBE").ok());
         if let Some(fail_enc) = fail_enc {
@@ -213,6 +219,13 @@ fn run_ffmpeg(args: &[String]) -> i32 {
         .find(|w| w[0] == "-c:v")
         .map(|w| w[1].as_str())
         .unwrap_or_default();
+
+    let fail_qv =
+        read_flag("fail_qv.txt").is_some() || std::env::var("FAKE_FFMPEG_FAIL_QV").is_ok();
+    if fail_qv && args.iter().any(|a| a == "-q:v") {
+        eprintln!("fake ffmpeg: simulated -q:v rejection during encode");
+        return 1;
+    }
 
     let fail_enc =
         read_flag("fail_encode.txt").or_else(|| std::env::var("FAKE_FFMPEG_FAIL_ENCODE").ok());
