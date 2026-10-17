@@ -788,6 +788,8 @@ export function progressLabelKey(label: string): string {
       return "job.label.embedding";
     case "encoding":
       return "job.label.encoding";
+    case "waitingEncode":
+      return "job.label.waitingEncode";
     case "postProcessing":
       return "job.label.postProcessing";
     default:

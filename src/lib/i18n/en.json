@@ -391,6 +391,7 @@
   "settings.section.requests": "Network & requests",
   "settings.userAgent": "Default User-Agent header",
   "job.label.encoding": "Encoding…",
+  "job.label.waitingEncode": "Waiting for the encoder…",
   "queue.add.more.encode.title": "Encode & convert",
   "queue.add.more.encode.toggle": "Encode output file",
   "queue.add.more.encode.videoCodec": "Video codec",

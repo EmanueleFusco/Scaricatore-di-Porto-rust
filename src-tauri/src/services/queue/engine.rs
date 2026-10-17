@@ -178,8 +178,11 @@ struct Inner {
     /// Toasts waiting to travel with the next event.
     pending_toasts: Mutex<Vec<QueueToast>>,
     /// Limits concurrent encode jobs (spec §7.2: "The encode lane is 1 by default").
-    /// Replaced by [`QueueEngine::configure`] when the capacity changes.
-    encode_semaphore: Mutex<Arc<tokio::sync::Semaphore>>,
+    /// Counted against the live lane config, so a change in Settings also
+    /// reaches items already waiting.
+    encodes_running: Mutex<usize>,
+    /// Woken when an encode slot frees up or the lane capacity changes.
+    encode_slot: Notify,
 }
 
 /// The handle. Cloneable, cheap, and the only thing the commands see.
@@ -194,7 +197,6 @@ impl QueueEngine {
     pub fn open(config: EngineConfig) -> Self {
         let LoadedQueue { file, recovery } = store::load(&config.path);
         let lanes = config.lanes.clamped();
-        let encode_capacity = lanes.capacity(Lane::Encode);
         // Anything still queued makes the queue active at startup, so the first
         // terminal transition is not mistaken for "the queue became idle".
         let previous = file.summary(lanes);
@@ -224,9 +226,8 @@ impl QueueEngine {
                 stopped: AtomicBool::new(false),
                 pending_removed: Mutex::new(Vec::new()),
                 pending_toasts: Mutex::new(Vec::new()),
-                encode_semaphore: Mutex::new(Arc::new(tokio::sync::Semaphore::new(
-                    encode_capacity,
-                ))),
+                encodes_running: Mutex::new(0),
+                encode_slot: Notify::new(),
             }),
         };
         if let Some(recovery) = recovery {
@@ -316,13 +317,9 @@ impl QueueEngine {
     /// the next planning pass, which happens as soon as this returns.
     pub fn configure(&self, lanes: LaneConfig, notify_on_idle: bool) {
         let lanes = lanes.clamped();
-        let previous = std::mem::replace(&mut *lock(&self.inner.lanes), lanes);
-        if previous.capacity(Lane::Encode) != lanes.capacity(Lane::Encode) {
-            // A new semaphore: encodes already running keep their permits on
-            // the old one and finish; new ones see the new capacity.
-            *lock(&self.inner.encode_semaphore) =
-                Arc::new(tokio::sync::Semaphore::new(lanes.capacity(Lane::Encode)));
-        }
+        *lock(&self.inner.lanes) = lanes;
+        // Items waiting for an encode slot re-check against the new capacity.
+        self.inner.encode_slot.notify_waiters();
         *lock(&self.inner.notify_on_idle) = notify_on_idle;
         self.inner.wake.notify_waiters();
     }
@@ -1089,9 +1086,11 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     return;
                 };
 
-                // Remember the download now, so a pause/crash while waiting
-                // for the encode lane resumes from it (spec §7.3).
-                {
+                // Move from Downloading to Encoding right away: that frees the
+                // download lane (spec §7.1). Until an encode slot is free the
+                // item says "waiting", not "Encoding 0%" (spec §7.2). The file
+                // is remembered so a pause/crash resumes from it (spec §7.3).
+                let cancelled = {
                     let mut state = lock(&inner.state);
                     let Some(item) = state.item_mut(&id) else {
                         return;
@@ -1101,56 +1100,49 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     item.runtime = Some(runtime.as_str().to_owned());
                     item.requested_height = requested_height;
                     item.actual_height = actual_height;
-                }
-                self_persist(&inner);
-
-                // Acquire the encode lane BEFORE showing Encoding, so only the
-                // items actually running ffmpeg say so (spec §7.1, §7.2).
-                let semaphore = Arc::clone(&*lock(&inner.encode_semaphore));
-                let _permit = tokio::select! {
-                    _ = token.cancelled() => {
-                        finish_item(&inner, &id, JobOutcome::Cancelled);
-                        return;
-                    }
-                    res = semaphore.acquire_owned() => {
-                        match res {
-                            Ok(permit) => permit,
-                            Err(_) => return,
-                        }
+                    if item.control == ControlSignal::None {
+                        item.state = ItemState::Encoding;
+                        item.progress.label = "waitingEncode".to_owned();
+                        item.progress.percent = None;
+                        item.progress.speed_bps = None;
+                        item.progress.eta_sec = None;
+                        item.updated_at = now_unix();
+                        false
+                    } else {
+                        true
                     }
                 };
-
-                // Move from Downloading to Encoding (spec §3, §7.2)
-                {
-                    let mut state = lock(&inner.state);
-                    let Some(item) = state.item_mut(&id) else {
-                        return;
-                    };
-                    if item.control != ControlSignal::None {
-                        finish_item(&inner, &id, JobOutcome::Cancelled);
-                        return;
-                    }
-                    item.state = ItemState::Encoding;
-                    item.progress.label = "encoding".to_owned();
-                    item.progress.percent = Some(0.0);
-                    item.progress.speed_bps = None;
-                    item.progress.eta_sec = None;
-                    item.updated_at = now_unix();
+                if cancelled {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
                 }
                 self_persist(&inner);
                 mark_dirty(&inner, &id, true);
                 // Wake scheduler: the download lane has been freed!
                 inner.wake.notify_waiters();
 
-                // Re-check control signal after waiting for encode slot
+                let Some(_slot) = acquire_encode_slot(&inner, &token).await else {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
+                };
+
                 {
-                    let state = lock(&inner.state);
-                    if let Some(item) = state.item(&id) {
-                        if item.control != ControlSignal::None {
-                            finish_item(&inner, &id, JobOutcome::Cancelled);
-                            return;
-                        }
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(&id) {
+                        item.progress.label = "encoding".to_owned();
+                        item.progress.percent = Some(0.0);
+                        item.updated_at = now_unix();
                     }
+                }
+                mark_dirty(&inner, &id, true);
+
+                // Re-check control signal after waiting for encode slot
+                let stopped = lock(&inner.state)
+                    .item(&id)
+                    .is_some_and(|item| item.control != ControlSignal::None);
+                if stopped {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
                 }
 
                 let (trim_start_sec, trim_end_sec) =
@@ -1238,7 +1230,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 let encode_outcome =
                     crate::services::ffmpeg::run_encode(encode_req, token.clone(), encode_sink)
                         .await;
-                drop(_permit);
+                drop(_slot);
                 inner.wake.notify_waiters();
 
                 match encode_outcome {
@@ -1298,6 +1290,42 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
         }
         other => {
             finish_item(&inner, &id, other);
+        }
+    }
+}
+
+/// A held encode slot; dropping it frees the slot and wakes the waiters.
+struct EncodeSlot(Arc<Inner>);
+
+impl Drop for EncodeSlot {
+    fn drop(&mut self) {
+        {
+            let mut running = lock(&self.0.encodes_running);
+            *running = running.saturating_sub(1);
+        }
+        self.0.encode_slot.notify_waiters();
+    }
+}
+
+/// Wait for a free encode slot (spec §7.1, §7.2), checked against the lane
+/// capacity in force *now*. `None` when cancelled first.
+async fn acquire_encode_slot(inner: &Arc<Inner>, token: &CancellationToken) -> Option<EncodeSlot> {
+    loop {
+        // Register for the wake-up before checking, so none is missed.
+        let notified = inner.encode_slot.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        {
+            let capacity = lock(&inner.lanes).capacity(Lane::Encode);
+            let mut running = lock(&inner.encodes_running);
+            if *running < capacity {
+                *running += 1;
+                return Some(EncodeSlot(Arc::clone(inner)));
+            }
+        }
+        tokio::select! {
+            _ = token.cancelled() => return None,
+            _ = &mut notified => {}
         }
     }
 }

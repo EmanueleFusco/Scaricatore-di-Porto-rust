@@ -391,6 +391,7 @@
   "settings.section.requests": "Rete e richieste",
   "settings.userAgent": "User-Agent predefinito",
   "job.label.encoding": "Codifica in corso…",
+  "job.label.waitingEncode": "In attesa della codifica…",
   "queue.add.more.encode.title": "Codifica e conversione",
   "queue.add.more.encode.toggle": "Codifica il file di output",
   "queue.add.more.encode.videoCodec": "Codificatore video",

@@ -3250,3 +3250,20 @@ Branch `m4-media-processing`.
 - Not verified: no new test for the ordering/resize; not exercised manually.
 - Known trade-off: an item waiting for the encode lane stays in `Downloading` (100%) and keeps its download-lane slot until it gets the permit. Items already waiting on the old semaphore when the capacity changes keep waiting on it.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 7 follow-up: dynamic encode slot & separate waiting label
+- Done:
+  - Completed downloads needing encoding immediately free the download lane (transitioning to `Encoding` with `progress.label = "waitingEncode"` and `inner.wake.notify_waiters()`).
+  - Added `job.label.waitingEncode` ("Waiting for the encoder…" / "In attesa della codifica…") in `en.json`, `it.json`, `queue.ts` and `usage.test.ts`.
+  - Replaced static semaphore with dynamic slot counter (`encodes_running`, `encode_slot: Notify`) checked against live lane capacity (`lanes.capacity(Lane::Encode)`). When `QueueEngine::configure` updates lane capacity, waiting tasks are immediately notified and re-evaluate against the new limit.
+  - Once a slot is acquired, progress transitions to `label = "encoding"` (0%). Dropping `EncodeSlot` decrements running count and notifies waiters.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 332 unit tests + integration test suites passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 259 passed.
+  - `npm run build` → production build succeeded.
+- Not verified: visual UI testing under `npm run tauri dev`.
+- Next step: continue M4 review items.
+

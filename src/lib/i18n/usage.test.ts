@@ -119,6 +119,7 @@ const PROGRESS_TOKENS = [
   "extractingAudio",
   "embedding",
   "encoding",
+  "waitingEncode",
   "postProcessing",
   "somethingTheBackendInventedLater",
 ];
