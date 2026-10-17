@@ -3267,3 +3267,23 @@ Branch `m4-media-processing`.
 - Not verified: visual UI testing under `npm run tauri dev`.
 - Next step: continue M4 review items.
 
+## 2026-10-17 — M4 / Review major 5: encoder probe cache uses ffmpeg version and resolves ffmpeg directly (spec §9.3)
+- Done:
+  - Made `resolve_cached` in `commands/env.rs` public so single tools can be resolved through session cache and user overrides without triggering job tool requirements.
+  - Updated `encoders_probe` in `commands/system.rs` to resolve `tools::FFMPEG` directly via `resolve_cached` instead of calling `resolve_job_tools`, eliminating the false failure when `yt-dlp` is not yet installed.
+  - Passed `ffmpeg.version.as_deref()` instead of `job_tools.ytdlp.version` to `probe_all_encoders`, ensuring the encoder cache is keyed by `(ffmpeg_path, ffmpeg_mtime, ffmpeg_version)` as required by spec §9.3.
+  - Added integration test `encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version` in `tests/ffmpeg_encode.rs` verifying probing works without yt-dlp and caches by the ffmpeg version.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 124 integration = 454 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 259 passed.
+  - `npm run build` → built in 471ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+

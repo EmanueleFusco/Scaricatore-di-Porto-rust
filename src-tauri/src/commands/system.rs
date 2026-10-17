@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{AppResult, ErrorCode, ErrorInfo};
 use crate::services::encoders::{self, EncoderInfo};
+use crate::services::tools;
 use crate::state::AppState;
 
 /// Open a file with the system default player/application (spec §9.5).
@@ -50,22 +51,21 @@ pub async fn encoders_probe(
     force: Option<bool>,
 ) -> AppResult<Vec<EncoderInfo>> {
     let settings = state.settings();
-    let job_tools = crate::commands::env::resolve_job_tools(&state, &settings).await?;
-    let Some(ffmpeg_path) = job_tools.ffmpeg else {
+    let Some(ffmpeg) = crate::commands::env::resolve_cached(&state, &settings, tools::FFMPEG).await
+    else {
         return Err(ErrorInfo::new(
             ErrorCode::Unsupported,
             "ffmpeg is not installed",
         ));
     };
 
-    let mtime = fs::metadata(&ffmpeg_path).and_then(|m| m.modified()).ok();
-    let version = job_tools.ytdlp.version;
+    let mtime = fs::metadata(&ffmpeg.path).and_then(|m| m.modified()).ok();
     let token = CancellationToken::new();
 
     encoders::probe_all_encoders(
-        &ffmpeg_path,
+        &ffmpeg.path,
         mtime,
-        version.as_deref(),
+        ffmpeg.version.as_deref(),
         state.encoders(),
         token,
         force.unwrap_or(false),

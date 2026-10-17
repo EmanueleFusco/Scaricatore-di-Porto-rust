@@ -63,7 +63,11 @@ pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResu
 }
 
 /// `tools::resolve`, unless this session already knows the answer.
-async fn resolve_cached(state: &AppState, settings: &Settings, tool: &str) -> Option<ResolvedTool> {
+pub async fn resolve_cached(
+    state: &AppState,
+    settings: &Settings,
+    tool: &str,
+) -> Option<ResolvedTool> {
     let override_path = settings
         .tool_override(tool)
         .map(std::path::Path::to_path_buf);

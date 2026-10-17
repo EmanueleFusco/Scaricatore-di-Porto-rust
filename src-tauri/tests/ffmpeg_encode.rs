@@ -11,12 +11,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use scaricatore_di_porto_lib::commands::system::encoders_probe;
 use scaricatore_di_porto_lib::services::encoders::{AudioCodec, EncodersState, probe_all_encoders};
 use scaricatore_di_porto_lib::services::ffmpeg::{
     AudioEncodeOptions, EncodeJobKind, EncodeOutcome, EncodeRequest, FfmpegProgressTracker,
     TrimSpec, VideoEncodeOptions, build_audio_encode_args, calculate_expected_duration,
     derive_encoded_output_path, format_duration_arg, parse_time_spec, run_encode, validate_trim,
 };
+use scaricatore_di_porto_lib::state::AppState;
+use tauri::Manager;
+use tauri::test::{mock_builder, mock_context, noop_assets};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -378,5 +382,67 @@ async fn encode_failure_preserves_original_file() {
     assert!(
         original.exists(),
         "spec §9.2: original file MUST be kept untouched when ffmpeg fails"
+    );
+}
+
+#[tokio::test]
+async fn encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version() {
+    let fixture = Fixture::new();
+    let dir = TempDir::new().expect("temp dir");
+    let triple =
+        scaricatore_di_porto_lib::services::manifest::current_target_triple().expect("triple");
+    let bundled = dir.path().join("bundled");
+    fs::create_dir_all(&bundled).expect("bundled dir");
+
+    // Only bundle fake ffmpeg, explicitly NO yt-dlp
+    let mut ffmpeg_name = format!("ffmpeg-{triple}");
+    if cfg!(windows) {
+        ffmpeg_name.push_str(".exe");
+    }
+    fs::copy(&fixture.fake_ffmpeg, bundled.join(ffmpeg_name)).expect("copy fake ffmpeg");
+
+    let tools_ctx = scaricatore_di_porto_lib::state::ToolContext::in_dir(dir.path());
+    let state =
+        AppState::from_path_with_tools(dir.path().join("settings.json"), tools_ctx).expect("state");
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    app.manage(state);
+
+    let result = encoders_probe(app.state::<AppState>(), None).await;
+    assert!(
+        result.is_ok(),
+        "encoders_probe must succeed even when yt-dlp is not installed"
+    );
+    let probed = result.unwrap();
+    assert!(!probed.is_empty(), "probed encoders must not be empty");
+
+    // Verify cache is keyed by ffmpeg version ("9.0.2") rather than yt-dlp version ("2026.01.01")
+    let app_state = app.state::<AppState>();
+    let settings = app_state.settings();
+    let resolved_ffmpeg =
+        scaricatore_di_porto_lib::commands::env::resolve_cached(&app_state, &settings, "ffmpeg")
+            .await
+            .expect("ffmpeg must resolve");
+    let mtime = fs::metadata(&resolved_ffmpeg.path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    let cached_by_ffmpeg_ver =
+        app_state
+            .encoders()
+            .get_probed(&resolved_ffmpeg.path, mtime, Some("9.0.2"));
+    assert!(
+        cached_by_ffmpeg_ver.is_some(),
+        "probe cache must be keyed by ffmpeg version"
+    );
+
+    let cached_by_ytdlp_ver =
+        app_state
+            .encoders()
+            .get_probed(&resolved_ffmpeg.path, mtime, Some("2026.01.01"));
+    assert!(
+        cached_by_ytdlp_ver.is_none(),
+        "probe cache must NOT be keyed by yt-dlp version"
     );
 }
