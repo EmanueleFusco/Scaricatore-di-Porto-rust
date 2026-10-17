@@ -1100,14 +1100,26 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     }
                 }
 
-                let trim_start_sec = options
-                    .trim_start
-                    .as_deref()
-                    .and_then(|s| crate::services::ffmpeg::parse_time_spec(s).ok());
-                let trim_end_sec = options
-                    .trim_end
-                    .as_deref()
-                    .and_then(|s| crate::services::ffmpeg::parse_time_spec(s).ok());
+                let (trim_start_sec, trim_end_sec) =
+                    match crate::services::ffmpeg::parse_and_validate_trim(
+                        options.trim_start.as_deref(),
+                        options.trim_end.as_deref(),
+                        None,
+                    ) {
+                        Ok(range) => range,
+                        Err(err) => {
+                            // Spec §9.2/§12.11: never encode a bogus range; keep the original.
+                            finish_item(
+                                &inner,
+                                &id,
+                                JobOutcome::Failed(YtdlpError::new(
+                                    YtdlpErrorCode::Unknown,
+                                    format!("Encode failed: invalid trim: {err}"),
+                                )),
+                            );
+                            return;
+                        }
+                    };
                 let trim = if trim_start_sec.is_some() || trim_end_sec.is_some() {
                     Some(crate::services::ffmpeg::TrimSpec::new(
                         trim_start_sec,

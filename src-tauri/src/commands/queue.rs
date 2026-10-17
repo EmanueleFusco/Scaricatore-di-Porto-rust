@@ -339,6 +339,14 @@ pub async fn queue_add<R: Runtime>(
         }
         let use_archive = item.use_archive.unwrap_or(settings.use_download_archive);
 
+        // Spec §9.2/§12.11: reject a malformed or inverted trim range up front.
+        crate::services::ffmpeg::parse_and_validate_trim(
+            item.trim_start.as_deref().filter(|s| !s.trim().is_empty()),
+            item.trim_end.as_deref().filter(|s| !s.trim().is_empty()),
+            item.duration_sec.map(|d| d as f64),
+        )
+        .map_err(|err| ErrorInfo::new(ErrorCode::Unsupported, format!("invalid trim: {err}")))?;
+
         let options = ItemOptions {
             kind,
             // An audio-only item whose quality says otherwise is a bug in the

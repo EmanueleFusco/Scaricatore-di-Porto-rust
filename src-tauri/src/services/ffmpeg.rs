@@ -140,6 +140,19 @@ pub fn parse_time_spec(raw: &str) -> Result<f64, TrimError> {
     Ok(seconds)
 }
 
+/// Parse optional trim strings and validate the range (spec §9.2, §12.11).
+/// A malformed value is an error, never silently treated as "no trim".
+pub fn parse_and_validate_trim(
+    start: Option<&str>,
+    end: Option<&str>,
+    media_duration: Option<f64>,
+) -> Result<(Option<f64>, Option<f64>), TrimError> {
+    let start = start.map(parse_time_spec).transpose()?;
+    let end = end.map(parse_time_spec).transpose()?;
+    validate_trim(start, end, media_duration)?;
+    Ok((start, end))
+}
+
 /// Validate a trim range against itself and the media duration (spec §9.2).
 pub fn validate_trim(
     start: Option<f64>,
@@ -727,6 +740,19 @@ async fn execute_single_encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_and_validate_trim_rejects_bogus_or_inverted_ranges() {
+        assert!(parse_and_validate_trim(Some("abc"), Some("01:00"), None).is_err());
+        assert!(parse_and_validate_trim(Some("abc"), Some("xyz"), None).is_err());
+        assert!(parse_and_validate_trim(Some("02:00"), Some("01:00"), None).is_err());
+        assert!(parse_and_validate_trim(None, Some("02:00"), Some(60.0)).is_err());
+        assert_eq!(
+            parse_and_validate_trim(Some("00:10"), Some("00:20"), Some(60.0)),
+            Ok((Some(10.0), Some(20.0)))
+        );
+        assert_eq!(parse_and_validate_trim(None, None, None), Ok((None, None)));
+    }
 
     #[test]
     fn parses_valid_time_specs() {

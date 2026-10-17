@@ -3219,3 +3219,9 @@ Branch `m4-media-processing`.
 
 
 
+
+## 2026-10-17 — M4 / Review blocker: reject invalid trim input
+- Done: new `ffmpeg::parse_and_validate_trim` (parse + `validate_trim`); `queue_add` rejects malformed/inverted trim (checked against `duration_sec` when known); engine fails the item before ffmpeg on invalid trim (original file kept) instead of silently dropping parse errors; AddBar disables submit while any ready row shows a trim error.
+- Verified by running: cargo fmt --check (ok), cargo clippy --all-targets -D warnings (ok), cargo test (all pass, new unit test included), npm run check (0 errors, 0 warnings).
+- Not verified: manual UI repro in `npm run tauri dev`; `toRequests()` itself is not filtered (submit is blocked in the UI and the backend rejects).
+- Next step: continue M4 review items.

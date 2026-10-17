@@ -57,8 +57,18 @@
 
   const rows = $derived(addBarStore.rows);
   const readyCount = $derived(addBarStore.readyCount);
+  /** A ready row has an invalid trim range: submitting it must be blocked (spec §9.2). */
+  const hasTrimError = $derived(
+    addBarStore.ready.some(
+      (row) =>
+        trimError(row, row.inspected?.kind === "video" ? (row.inspected.duration ?? null) : null) !==
+        null,
+    ),
+  );
   /** There is something to act on: a ready row, or text still to be checked. */
-  const actionable = $derived(readyCount > 0 || addBarStore.links.length > 0);
+  const actionable = $derived(
+    !hasTrimError && (readyCount > 0 || addBarStore.links.length > 0),
+  );
   const folderText = $derived(
     addBarStore.folder ?? settingsStore.settings.defaultOutputDir ?? tt("queue.folder.system"),
   );
