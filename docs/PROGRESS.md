@@ -3518,6 +3518,19 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: None.
 - Spec items marked "verify" that I checked: yt-dlp `--help` confirms `--print` implies `--quiet`, and `--no-quiet` explicitly deactivates quiet mode. Live execution with pinned yt-dlp binary confirmed `--no-quiet` restores `[download] <id>: has already been recorded in the archive`.
 - Decisions/deviations (also in DECISIONS.md): None.
-- Next step: commit and push changes.
+## 2026-10-17 — Tools / UI fix: show clearPath button whenever tool override is configured and hide install on bundled tools (spec §5.2, §11.8)
+- Done:
+  - In `src/lib/pages/ToolsPage.svelte`: updated the `clearPath` ("Ripristina") button visibility condition to check `tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])`. Previously, if a custom override path pointed to an unexecutable or missing file, `resolve()` returned `None`, which caused `tool.source` to be `null` and hid the "Ripristina" button, trapping the user without a way to reset to the bundled tool.
+  - In `src/lib/pages/ToolsPage.svelte`: updated the `install` button visibility condition to `!tool.bundled && tool.installable && !tool.path` so that bundled tools (like `qjs` and `yt-dlp`) never present an on-demand install action.
+- Verified by running:
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 474ms.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: push commit to remote.
 
 
