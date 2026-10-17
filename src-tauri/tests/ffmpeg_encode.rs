@@ -20,7 +20,7 @@ use scaricatore_di_porto_lib::services::ffmpeg::{
     AudioEncodeOptions, EncodeJobKind, EncodeOutcome, EncodeRequest, FfmpegProgressTracker,
     TrimSpec, VideoEncodeOptions, build_audio_encode_args, build_video_encode_args,
     calculate_expected_duration, derive_encoded_output_path, format_duration_arg, parse_time_spec,
-    run_encode, validate_trim,
+    probe_file_duration, run_encode, validate_trim,
 };
 use scaricatore_di_porto_lib::state::AppState;
 use tauri::Manager;
@@ -77,6 +77,25 @@ impl Fixture {
         let path = self.dir.path().join(filename);
         fs::write(&path, content).expect("write dummy media");
         path
+    }
+
+    fn ensure_fake_ffprobe(&self) -> PathBuf {
+        let fake_ffprobe = self.dir.path().join(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        if !fake_ffprobe.exists() {
+            fs::copy(fake_tool_source(), &fake_ffprobe).expect("copy fake_tool as ffprobe");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&fake_ffprobe).expect("metadata").permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&fake_ffprobe, perms).expect("chmod +x");
+            }
+        }
+        fake_ffprobe
     }
 }
 
@@ -208,7 +227,7 @@ async fn probe_encoders_detects_candidates_and_filters_failures() {
 
     let cancel = CancellationToken::new();
     let state = EncodersState::new();
-    let probed = probe_all_encoders(&fixture.fake_ffmpeg, None, None, &state, cancel, true)
+    let probed = probe_all_encoders(&fixture.fake_ffmpeg, None, None, &state, cancel, true, None)
         .await
         .expect("probe should succeed");
 
@@ -244,6 +263,7 @@ async fn video_encode_succeeds_and_deletes_original_when_keep_original_false() {
         }),
         keep_original: false,
         total_duration: Some(10.0),
+        temp_dir: None,
     };
 
     let outcome = run_encode(request, cancel, sink).await;
@@ -291,6 +311,7 @@ async fn video_encode_keeps_original_when_keep_original_true() {
         }),
         keep_original: true,
         total_duration: Some(10.0),
+        temp_dir: None,
     };
 
     let outcome = run_encode(request, cancel, sink).await;
@@ -333,6 +354,7 @@ async fn hardware_encoder_failure_falls_back_to_cpu_encoder() {
         }),
         keep_original: true,
         total_duration: Some(10.0),
+        temp_dir: None,
     };
 
     let outcome = run_encode(request, cancel, sink).await;
@@ -375,6 +397,7 @@ async fn encode_failure_preserves_original_file() {
         }),
         keep_original: false, // even with keep_original = false, original MUST NOT be deleted on failure
         total_duration: Some(10.0),
+        temp_dir: None,
     };
 
     let outcome = run_encode(request, cancel, sink).await;
@@ -487,6 +510,7 @@ async fn hardware_encoder_fallback_informs_user_via_toast_and_log_tail() {
             let env = JobEnvironment {
                 ytdlp: self.ffmpeg.clone(),
                 ffmpeg: Some(self.ffmpeg.clone()),
+                ffprobe: None,
                 runtimes: Runtimes {
                     mode: JsRuntimeMode::QuickJsOnly,
                     qjs: None,
@@ -594,7 +618,7 @@ async fn probe_videotoolbox_falls_back_to_bitrate_when_qv_rejected() {
     let cancel = CancellationToken::new();
     let def = lookup_encoder("h264_videotoolbox").expect("h264_videotoolbox exists");
 
-    let ok = probe_encoder(&fixture.fake_ffmpeg, def, cancel).await;
+    let ok = probe_encoder(&fixture.fake_ffmpeg, def, cancel, None).await;
     assert!(
         ok,
         "probe_encoder must succeed by falling back to -b:v when -q:v fails"
@@ -624,6 +648,7 @@ async fn encode_videotoolbox_retries_with_bitrate_when_qv_rejected() {
         }),
         keep_original: true,
         total_duration: Some(10.0),
+        temp_dir: None,
     };
 
     let outcome = run_encode(request, cancel, sink).await;
@@ -663,5 +688,312 @@ fn encode_args_hevc_vaapi_includes_hvc1_tag() {
             .windows(2)
             .any(|w| w[0] == "-tag:v" && w[1] == "hvc1"),
         "hevc_vaapi must include -tag:v hvc1"
+    );
+}
+
+#[tokio::test]
+async fn ffmpeg_and_encoders_pass_private_temp_dir_to_child_processes() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("temp_test.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let output = derive_encoded_output_path(&original, "mp4");
+    let expected_temp = fixture.dir.path().join("my_private_temp");
+    fs::create_dir_all(&expected_temp).expect("create temp dir");
+
+    let env_var_to_record = if cfg!(windows) { "TEMP" } else { "TMPDIR" };
+    fs::write(fixture.dir.path().join("record_env.txt"), env_var_to_record)
+        .expect("write record_env.txt");
+
+    // 1. Test execute_single_encode / run_encode passes temp_dir
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "libx264".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: true,
+        total_duration: Some(10.0),
+        temp_dir: Some(expected_temp.clone()),
+    };
+
+    let outcome = run_encode(request, cancel.clone(), sink).await;
+    assert!(matches!(outcome, EncodeOutcome::Success { .. }));
+
+    let recorded = fs::read_to_string(fixture.dir.path().join("recorded_env.txt"))
+        .expect("read recorded_env.txt");
+    assert_eq!(
+        recorded.trim(),
+        expected_temp.to_string_lossy(),
+        "run_encode must set private temp_dir on child process"
+    );
+
+    // 2. Test probe_encoder passes temp_dir
+    let _ = fs::remove_file(fixture.dir.path().join("recorded_env.txt"));
+    let def = lookup_encoder("libx264").expect("libx264 exists");
+    let ok = probe_encoder(
+        &fixture.fake_ffmpeg,
+        def,
+        cancel.clone(),
+        Some(&expected_temp),
+    )
+    .await;
+    assert!(ok);
+    let recorded_probe = fs::read_to_string(fixture.dir.path().join("recorded_env.txt"))
+        .expect("read recorded_env.txt");
+    assert_eq!(
+        recorded_probe.trim(),
+        expected_temp.to_string_lossy(),
+        "probe_encoder must set private temp_dir on child process"
+    );
+
+    // 3. Test probe_file_duration passes temp_dir
+    let _ = fs::remove_file(fixture.dir.path().join("recorded_env.txt"));
+    let fake_ffprobe = fixture.ensure_fake_ffprobe();
+    let dur = probe_file_duration(&fake_ffprobe, &original, Some(&expected_temp), cancel).await;
+    assert_eq!(dur, Some(120.0));
+    let recorded_ffprobe = fs::read_to_string(fixture.dir.path().join("recorded_env.txt"))
+        .expect("read recorded_env.txt");
+    assert_eq!(
+        recorded_ffprobe.trim(),
+        expected_temp.to_string_lossy(),
+        "probe_file_duration must set private temp_dir on child process"
+    );
+}
+
+#[tokio::test]
+async fn encode_falls_back_to_ffprobe_duration_when_total_duration_is_none() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("dur_test.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let output = derive_encoded_output_path(&original, "mp4");
+    fixture.ensure_fake_ffprobe();
+
+    // Specify fake ffprobe duration
+    fs::write(
+        fixture.dir.path().join("fake_ffprobe_duration.txt"),
+        "200.0",
+    )
+    .expect("write fake_ffprobe_duration.txt");
+
+    let cancel = CancellationToken::new();
+    let recorded_percent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rec = Arc::clone(&recorded_percent);
+    let sink = Arc::new(
+        move |prog: &scaricatore_di_porto_lib::services::ffmpeg::FfmpegProgress| {
+            if let Some(p) = prog.percent {
+                rec.lock().unwrap().push(p);
+            }
+        },
+    );
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "libx264".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: true,
+        total_duration: None, // Missing! Must be queried from ffprobe
+        temp_dir: None,
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+    assert!(matches!(outcome, EncodeOutcome::Success { .. }));
+
+    let percentages = recorded_percent.lock().unwrap().clone();
+    assert!(
+        !percentages.is_empty(),
+        "percent progress must be calculated using ffprobe duration"
+    );
+    // fake_ffmpeg outputs out_time_us=5000000 (5s) -> 5/200 = 2.5%, and progress=end -> 100%
+    assert!(percentages.iter().any(|&p| (p - 2.5).abs() < 0.1));
+    assert!(percentages.iter().any(|&p| (p - 100.0).abs() < 0.1));
+}
+
+#[tokio::test]
+async fn queue_engine_probes_duration_with_ffprobe_and_validates_trim() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("sample_queue.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    fixture.ensure_fake_ffprobe();
+
+    fs::write(
+        fixture.dir.path().join("fake_ffprobe_duration.txt"),
+        "100.0",
+    )
+    .expect("write fake_ffprobe_duration.txt");
+
+    use scaricatore_di_porto_lib::error::ErrorInfo;
+    use scaricatore_di_porto_lib::services::inspect::Runtimes;
+    use scaricatore_di_porto_lib::services::job::JobEnvironment;
+    use scaricatore_di_porto_lib::services::jsruntime::{JsRuntimeMode, RuntimeMemoryStore};
+    use scaricatore_di_porto_lib::services::queue::engine::{
+        BoxFuture, EngineConfig, QueueEngine, ToolProvider,
+    };
+    use scaricatore_di_porto_lib::services::queue::model::{
+        ItemOptions, ItemState, LaneConfig, QueueItem,
+    };
+    use scaricatore_di_porto_lib::services::queue::store::{QUEUE_SCHEMA_VERSION, QueueFile};
+
+    struct TestProvider {
+        ffmpeg: PathBuf,
+        memory: Arc<RuntimeMemoryStore>,
+    }
+
+    impl ToolProvider for TestProvider {
+        fn environment(
+            &self,
+            _options: ItemOptions,
+        ) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
+            let env = JobEnvironment {
+                ytdlp: self.ffmpeg.clone(),
+                ffmpeg: Some(self.ffmpeg.clone()),
+                ffprobe: None,
+                runtimes: Runtimes {
+                    mode: JsRuntimeMode::QuickJsOnly,
+                    qjs: None,
+                    deno: None,
+                    ytdlp_version: "2026.08.19".into(),
+                },
+                memory: Arc::clone(&self.memory),
+                private_temp: None,
+                youtube_clients: None,
+            };
+            Box::pin(std::future::ready(Ok(env)))
+        }
+    }
+
+    // 1. Success case: item with duration_sec = None gets populated from ffprobe
+    let item_id = "test-ffprobe-item".to_string();
+    let initial_item = QueueItem {
+        id: item_id.clone(),
+        url: "https://example.com/test".into(),
+        file: Some(original.clone()),
+        state: ItemState::Queued,
+        duration_sec: None, // No duration from metadata!
+        options: ItemOptions {
+            encode: true,
+            output_dir: fixture.dir.path().to_path_buf(),
+            trim_end: Some("01:00".into()), // 60s <= 100s, valid
+            ..ItemOptions::default()
+        },
+        ..QueueItem::default()
+    };
+
+    let queue_path = fixture.dir.path().join("queue_ffprobe.json");
+    let queue_file = QueueFile {
+        schema_version: QUEUE_SCHEMA_VERSION,
+        items: vec![initial_item],
+        groups: Vec::new(),
+        paused_all: false,
+    };
+    queue_file.save(&queue_path).expect("save queue file");
+
+    let engine = QueueEngine::open(EngineConfig {
+        path: queue_path,
+        provider: Arc::new(TestProvider {
+            ffmpeg: fixture.fake_ffmpeg.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(
+                fixture.dir.path().join("runtime-memory.json"),
+            )),
+        }),
+        sink: Arc::new(|_| {}),
+        lanes: LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: None,
+    });
+    engine.start();
+
+    let start = std::time::Instant::now();
+    let mut item_updated_duration = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        let snap = engine.snapshot();
+        if let Some(item) = snap.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                assert_eq!(
+                    item.duration_sec,
+                    Some(100),
+                    "item.duration_sec should be populated from ffprobe"
+                );
+                item_updated_duration = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        item_updated_duration,
+        "item should complete successfully with probed duration"
+    );
+
+    // 2. Reject trim exceeding duration probed by ffprobe (Spec §9.1, §9.2, ffmpeg.rs:183-190)
+    let original2 = fixture.create_dummy_media("sample_queue2.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let invalid_trim_id = "test-trim-exceed-item".to_string();
+    let invalid_item = QueueItem {
+        id: invalid_trim_id.clone(),
+        url: "https://example.com/test2".into(),
+        file: Some(original2.clone()),
+        state: ItemState::Queued,
+        duration_sec: None,
+        options: ItemOptions {
+            encode: true,
+            output_dir: fixture.dir.path().to_path_buf(),
+            trim_end: Some("02:00".into()), // 120s > 100s, must be rejected
+            ..ItemOptions::default()
+        },
+        ..QueueItem::default()
+    };
+    let queue_path2 = fixture.dir.path().join("queue_ffprobe_exceed.json");
+    let queue_file2 = QueueFile {
+        schema_version: QUEUE_SCHEMA_VERSION,
+        items: vec![invalid_item],
+        groups: Vec::new(),
+        paused_all: false,
+    };
+    queue_file2.save(&queue_path2).expect("save queue file");
+
+    let engine2 = QueueEngine::open(EngineConfig {
+        path: queue_path2,
+        provider: Arc::new(TestProvider {
+            ffmpeg: fixture.fake_ffmpeg.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(
+                fixture.dir.path().join("runtime-memory2.json"),
+            )),
+        }),
+        sink: Arc::new(|_| {}),
+        lanes: LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: None,
+    });
+    engine2.start();
+
+    let start = std::time::Instant::now();
+    let mut trim_rejected = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        let snap = engine2.snapshot();
+        if let Some(item) = snap.items.iter().find(|i| i.id == invalid_trim_id) {
+            if item.state == ItemState::Failed {
+                assert!(
+                    item.error
+                        .as_ref()
+                        .and_then(|e| e.detail.as_deref())
+                        .unwrap_or("")
+                        .contains("invalid trim"),
+                    "should fail with invalid trim error when trim exceeds ffprobe duration"
+                );
+                trim_rejected = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        trim_rejected,
+        "item with trim exceeding ffprobe duration must fail"
     );
 }

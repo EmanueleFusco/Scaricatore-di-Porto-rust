@@ -1065,7 +1065,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
             requested_height,
             actual_height,
         } => {
-            let (options, duration_sec) = {
+            let (options, mut duration_sec) = {
                 let state = lock(&inner.state);
                 let Some(item) = state.item(&id) else {
                     return;
@@ -1145,11 +1145,35 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     return;
                 }
 
+                let mut total_duration = duration_sec.map(|s| s as f64);
+                if total_duration.is_none() {
+                    if let Some(ffprobe) = crate::services::ffmpeg::find_ffprobe(
+                        ffmpeg_path,
+                        environment.ffprobe.as_deref(),
+                    ) {
+                        if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
+                            &ffprobe,
+                            &file,
+                            environment.private_temp.as_deref(),
+                            token.clone(),
+                        )
+                        .await
+                        {
+                            total_duration = Some(dur);
+                            duration_sec = Some(dur.round() as u64);
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                item.duration_sec = duration_sec;
+                            }
+                        }
+                    }
+                }
+
                 let (trim_start_sec, trim_end_sec) =
                     match crate::services::ffmpeg::parse_and_validate_trim(
                         options.trim_start.as_deref(),
                         options.trim_end.as_deref(),
-                        None,
+                        total_duration,
                     ) {
                         Ok(range) => range,
                         Err(err) => {
@@ -1217,7 +1241,8 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     ffmpeg_path: ffmpeg_path.clone(),
                     kind,
                     keep_original: options.keep_original,
-                    total_duration: duration_sec.map(|s| s as f64),
+                    total_duration,
+                    temp_dir: environment.private_temp.clone(),
                 };
 
                 let encode_sink_id = id.clone();
@@ -1752,6 +1777,7 @@ mod tests {
                 result: Mutex::new(Ok(JobEnvironment {
                     ytdlp: PathBuf::from("/nonexistent/yt-dlp"),
                     ffmpeg: None,
+                    ffprobe: None,
                     runtimes: crate::services::inspect::Runtimes {
                         mode: crate::services::jsruntime::JsRuntimeMode::QuickJsOnly,
                         qjs: None,

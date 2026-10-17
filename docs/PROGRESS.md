@@ -3427,3 +3427,26 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
 
+## 2026-10-17 — M4 / Review minors 14, 15, 16: ffmpeg child temp_dir, ffprobe duration fallback, and remove dead helper (spec §4.9, §9.1)
+- Done:
+  - Removed unused dead helper `EncoderDefinition::to_info` in `src-tauri/src/services/encoders.rs` (Review Minor 16).
+  - Passed `temp_dir` to `ToolCommand` in `run_single_probe_attempt`, `query_ffmpeg_encoders`, `probe_encoder`, and `probe_all_encoders` in `src-tauri/src/services/encoders.rs`, and wired `state.tools().temp_dir()` from `src-tauri/src/commands/system.rs` (Review Minor 14, Spec §4.9).
+  - Added `temp_dir: Option<PathBuf>` to `EncodeRequest` and passed `temp_dir` to `ToolCommand` in `execute_single_encode` and `run_encode` in `src-tauri/src/services/ffmpeg.rs`, passing `environment.private_temp` from `src-tauri/src/services/queue/engine.rs` (Review Minor 14, Spec §4.9).
+  - Added `find_ffprobe` and `probe_file_duration` in `src-tauri/src/services/ffmpeg.rs` using `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -- <input>` with child process `temp_dir` propagation (Review Minor 15, Spec §9.1).
+  - Added `ffprobe: Option<PathBuf>` to `JobTools` and `JobEnvironment`, resolving it in `resolve_job_tools` and passing it to jobs and queue items.
+  - In `src-tauri/src/services/queue/engine.rs`, when `duration_sec` is `None` on an item needing encode, probed the downloaded file duration with `ffprobe` before encode, updated `item.duration_sec`, and passed `total_duration` to `parse_and_validate_trim` (exercising `ffmpeg.rs:183-190`) and `EncodeRequest` (Review Minor 15, Spec §9.1).
+  - In `src-tauri/src/services/ffmpeg.rs` `run_encode`, added fallback to probe duration via `ffprobe` when `request.total_duration` is `None`, ensuring expected duration and progress percentage / ETA are computed during encode.
+  - Added `ffprobe` multi-call support and `record_env.txt` handling to `src-tauri/tests/bin/fake_tool.rs`.
+  - Added integration tests `ffmpeg_and_encoders_pass_private_temp_dir_to_child_processes`, `encode_falls_back_to_ffprobe_duration_when_total_duration_is_none`, and `queue_engine_probes_duration_with_ffprobe_and_validates_trim` in `src-tauri/tests/ffmpeg_encode.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 333 unit + 134 integration = 467 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~466ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.

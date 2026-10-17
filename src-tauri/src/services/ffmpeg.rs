@@ -30,6 +30,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -553,6 +554,99 @@ impl EncodeJobKind {
     }
 }
 
+/// Find ffprobe executable path, either from explicit config, adjacent to ffmpeg, or on PATH.
+pub fn find_ffprobe(ffmpeg_path: &Path, env_ffprobe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = env_ffprobe {
+        if p.is_file() {
+            return Some(p.to_path_buf());
+        }
+    }
+    let sibling_exe = ffmpeg_path.with_file_name(if cfg!(windows) {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    });
+    if sibling_exe.is_file() {
+        return Some(sibling_exe);
+    }
+    let sibling = ffmpeg_path.with_file_name("ffprobe");
+    if sibling.is_file() {
+        return Some(sibling);
+    }
+    let tool_name = if cfg!(windows) {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    };
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(tool_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Probe media file duration in seconds using ffprobe (spec §9.1).
+pub async fn probe_file_duration(
+    ffprobe_path: &Path,
+    input_file: &Path,
+    temp_dir: Option<&Path>,
+    token: CancellationToken,
+) -> Option<f64> {
+    let mut cmd = ToolCommand::new(ffprobe_path)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            "--",
+        ])
+        .arg(input_file)
+        .label("ffprobe-duration");
+
+    if let Some(dir) = temp_dir {
+        cmd = cmd.temp_dir(dir);
+    }
+
+    let stdout_lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stdout_sink = {
+        let lines = Arc::clone(&stdout_lines);
+        process::line_sink(move |line| {
+            if let Ok(mut l) = lines.lock() {
+                l.push(line.to_owned());
+            }
+        })
+    };
+
+    let probe_token = token.child_token();
+    let run = process::spawn_tool(cmd, probe_token.clone(), stdout_sink);
+    let outcome = match tokio::time::timeout(Duration::from_secs(10), run).await {
+        Ok(result) => result,
+        Err(_) => {
+            probe_token.cancel();
+            return None;
+        }
+    };
+
+    match outcome {
+        Ok(result) if result.success() => {
+            let output = stdout_lines.lock().ok()?.join("\n");
+            let val = output.trim().parse::<f64>().ok()?;
+            if val > 0.0 && val.is_finite() {
+                Some(val)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Request for executing an encode job.
 #[derive(Debug, Clone)]
 pub struct EncodeRequest {
@@ -560,6 +654,7 @@ pub struct EncodeRequest {
     pub kind: EncodeJobKind,
     pub keep_original: bool,
     pub total_duration: Option<f64>,
+    pub temp_dir: Option<PathBuf>,
 }
 
 /// Progress callback sink for encoding.
@@ -645,7 +740,22 @@ async fn run_encode_attempts(
         EncodeJobKind::Audio(o) => o.output.clone(),
     };
 
-    let expected_dur = calculate_expected_duration(request.kind.trim(), request.total_duration);
+    let temp_dir = request.temp_dir.as_deref();
+
+    let mut total_duration = request.total_duration;
+    if total_duration.is_none() {
+        if let Some(ffprobe) = find_ffprobe(&request.ffmpeg_path, None) {
+            let input = match &request.kind {
+                EncodeJobKind::Video(v) => &v.input,
+                EncodeJobKind::Audio(a) => &a.input,
+            };
+            if let Some(dur) = probe_file_duration(&ffprobe, input, temp_dir, token.clone()).await {
+                total_duration = Some(dur);
+            }
+        }
+    }
+
+    let expected_dur = calculate_expected_duration(request.kind.trim(), total_duration);
 
     // Initial attempt
     let (outcome, used_fallback) = match &request.kind {
@@ -656,6 +766,7 @@ async fn run_encode_attempts(
                 expected_dur,
                 token.clone(),
                 sink.clone(),
+                temp_dir,
             )
             .await;
 
@@ -692,6 +803,7 @@ async fn run_encode_attempts(
                         expected_dur,
                         token.clone(),
                         sink.clone(),
+                        temp_dir,
                     )
                     .await;
                 }
@@ -723,6 +835,7 @@ async fn run_encode_attempts(
                         expected_dur,
                         token.clone(),
                         sink.clone(),
+                        temp_dir,
                     )
                     .await;
 
@@ -769,6 +882,7 @@ async fn run_encode_attempts(
                 expected_dur,
                 token.clone(),
                 sink.clone(),
+                temp_dir,
             )
             .await;
 
@@ -836,10 +950,14 @@ async fn execute_single_encode(
     expected_dur: Option<f64>,
     token: CancellationToken,
     sink: EncodeProgressSink,
+    temp_dir: Option<&Path>,
 ) -> Result<ProcessResult, AppError> {
-    let cmd = ToolCommand::new(ffmpeg_path)
+    let mut cmd = ToolCommand::new(ffmpeg_path)
         .args(args.to_vec())
         .label("ffmpeg-encode");
+    if let Some(dir) = temp_dir {
+        cmd = cmd.temp_dir(dir);
+    }
 
     let tracker = Arc::new(std::sync::Mutex::new(FfmpegProgressTracker::new(
         expected_dur,

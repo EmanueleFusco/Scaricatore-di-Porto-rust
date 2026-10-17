@@ -47,6 +47,7 @@ pub struct JobEnvironment {
     /// conversion both need ffmpeg, and "two split files and exit 0" is not a
     /// result (spec §5.2.1, §9).
     pub ffmpeg: Option<PathBuf>,
+    pub ffprobe: Option<PathBuf>,
     pub runtimes: Runtimes,
     pub memory: Arc<jsruntime::RuntimeMemoryStore>,
     /// Spec §4.9: private TMP dir for the child processes.

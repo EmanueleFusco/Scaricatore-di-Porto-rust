@@ -102,17 +102,6 @@ pub struct EncoderDefinition {
     pub args: &'static [&'static str],
 }
 
-impl EncoderDefinition {
-    pub const fn to_info(self) -> EncoderInfo {
-        EncoderInfo {
-            id: String::new(),
-            label: String::new(),
-            codec: String::new(),
-            is_hardware: self.is_hardware,
-        }
-    }
-}
-
 /// The catalogue of supported encoders and their default encoding flags (spec §9.3).
 pub static ENCODER_CATALOGUE: &[EncoderDefinition] = &[
     EncoderDefinition {
@@ -413,11 +402,15 @@ async fn run_single_probe_attempt(
     id: &str,
     extra_args: &[&str],
     token: CancellationToken,
+    temp_dir: Option<&Path>,
 ) -> bool {
     let args = build_probe_args_with(id, extra_args);
-    let cmd = ToolCommand::new(ffmpeg_path)
+    let mut cmd = ToolCommand::new(ffmpeg_path)
         .args(args)
         .label(format!("ffmpeg-probe-{id}"));
+    if let Some(dir) = temp_dir {
+        cmd = cmd.temp_dir(dir);
+    }
 
     let probe_token = CancellationToken::new();
     let child_token = probe_token.clone();
@@ -449,8 +442,9 @@ pub async fn probe_encoder(
     ffmpeg_path: &Path,
     def: &EncoderDefinition,
     token: CancellationToken,
+    temp_dir: Option<&Path>,
 ) -> bool {
-    if run_single_probe_attempt(ffmpeg_path, def.id, def.args, token.clone()).await {
+    if run_single_probe_attempt(ffmpeg_path, def.id, def.args, token.clone(), temp_dir).await {
         return true;
     }
     if token.is_cancelled() {
@@ -458,7 +452,7 @@ pub async fn probe_encoder(
     }
     // If videotoolbox failed with -q:v, retry once with -b:v fallback (spec §9.3)
     if let Some(fallback_args) = videotoolbox_fallback_args(def.id) {
-        return run_single_probe_attempt(ffmpeg_path, def.id, fallback_args, token).await;
+        return run_single_probe_attempt(ffmpeg_path, def.id, fallback_args, token, temp_dir).await;
     }
     false
 }
@@ -467,10 +461,14 @@ pub async fn probe_encoder(
 pub async fn query_ffmpeg_encoders(
     ffmpeg_path: &Path,
     token: CancellationToken,
+    temp_dir: Option<&Path>,
 ) -> Result<HashSet<String>, AppError> {
-    let cmd = ToolCommand::new(ffmpeg_path)
+    let mut cmd = ToolCommand::new(ffmpeg_path)
         .args(["-hide_banner", "-nostdin", "-encoders"])
         .label("ffmpeg-list-encoders");
+    if let Some(dir) = temp_dir {
+        cmd = cmd.temp_dir(dir);
+    }
 
     let stdout_lines = Arc::new(Mutex::new(Vec::new()));
     let sink_lines = Arc::clone(&stdout_lines);
@@ -503,6 +501,7 @@ pub async fn probe_all_encoders(
     state: &EncodersState,
     token: CancellationToken,
     force_refresh: bool,
+    temp_dir: Option<&Path>,
 ) -> Result<Vec<EncoderInfo>, AppError> {
     if !force_refresh {
         if let Some(cached) = state.get_probed(ffmpeg_path, mtime, version) {
@@ -510,7 +509,7 @@ pub async fn probe_all_encoders(
         }
     }
 
-    let supported_names = query_ffmpeg_encoders(ffmpeg_path, token.clone()).await?;
+    let supported_names = query_ffmpeg_encoders(ffmpeg_path, token.clone(), temp_dir).await?;
     let os_candidates = candidates_for_os(CfgOs::current());
 
     let candidates: Vec<&'static EncoderDefinition> = os_candidates
@@ -522,11 +521,13 @@ pub async fn probe_all_encoders(
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
     let mut handles = Vec::with_capacity(candidates.len());
+    let temp_dir_owned = temp_dir.map(Path::to_path_buf);
 
     for (idx, def) in candidates.into_iter().enumerate() {
         let sem = Arc::clone(&semaphore);
         let ffmpeg = ffmpeg_path.to_path_buf();
         let token = token.clone();
+        let temp = temp_dir_owned.clone();
         handles.push(tokio::spawn(async move {
             let _permit = match sem.acquire_owned().await {
                 Ok(p) => p,
@@ -535,7 +536,7 @@ pub async fn probe_all_encoders(
             if token.is_cancelled() {
                 return (idx, None);
             }
-            let ok = probe_encoder(&ffmpeg, def, token).await;
+            let ok = probe_encoder(&ffmpeg, def, token, temp.as_deref()).await;
             if ok {
                 (
                     idx,

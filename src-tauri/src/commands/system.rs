@@ -69,6 +69,7 @@ pub async fn encoders_probe(
         state.encoders(),
         token,
         force.unwrap_or(false),
+        state.tools().temp_dir(),
     )
     .await
     .map_err(|err| err.to_error_info())

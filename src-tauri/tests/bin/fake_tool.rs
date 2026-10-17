@@ -65,6 +65,7 @@ fn main() {
         "yt-dlp" => run_ytdlp(&args),
         "qjs" => run_qjs(&args),
         "ffmpeg" => run_ffmpeg(&args),
+        "ffprobe" => run_ffprobe(&args),
         _ => run(&args),
     };
     std::process::exit(code);
@@ -187,6 +188,13 @@ fn run_ffmpeg(args: &[String]) -> i32 {
             .and_then(|d| std::fs::read_to_string(d.join(name)).ok())
     };
 
+    if let Some(record) = read_flag("record_env.txt") {
+        let val = std::env::var(record.trim()).unwrap_or_default();
+        if let Some(dir) = &exe_dir {
+            let _ = std::fs::write(dir.join("recorded_env.txt"), val);
+        }
+    }
+
     // Probe mode: ffmpeg ... -c:v <encoder> ... -f null -
     let is_null_sink = args.windows(2).any(|w| w[0] == "-f" && w[1] == "null")
         || args.last().map(String::as_str) == Some("-");
@@ -263,6 +271,38 @@ fn run_ffmpeg(args: &[String]) -> i32 {
         }
     }
 
+    0
+}
+
+fn run_ffprobe(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "-version") {
+        println!("ffprobe version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers");
+        return 0;
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let read_flag = |name: &str| -> Option<String> {
+        exe_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(name)).ok())
+    };
+
+    if let Some(record) = read_flag("record_env.txt") {
+        let val = std::env::var(record.trim()).unwrap_or_default();
+        if let Some(dir) = &exe_dir {
+            let _ = std::fs::write(dir.join("recorded_env.txt"), val);
+        }
+    }
+
+    if let Some(dur) = read_flag("fake_ffprobe_duration.txt") {
+        println!("{}", dur.trim());
+        return 0;
+    }
+
+    // Default duration for probe
+    println!("120.000000");
     0
 }
 

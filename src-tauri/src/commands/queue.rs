@@ -74,6 +74,7 @@ impl<R: Runtime> ToolProvider for AppToolProvider<R> {
             Ok(JobEnvironment {
                 ytdlp: tools.ytdlp.path,
                 ffmpeg: tools.ffmpeg,
+                ffprobe: tools.ffprobe,
                 runtimes: tools.runtimes,
                 memory: state.runtime_memory().clone(),
                 private_temp: tools.private_temp,

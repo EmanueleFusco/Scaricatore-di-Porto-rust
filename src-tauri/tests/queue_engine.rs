@@ -105,6 +105,7 @@ impl ToolProvider for FakeTools {
             ytdlp: self.ytdlp.clone(),
             // Presence is all the pipeline checks.
             ffmpeg: Some(self.ytdlp.clone()),
+            ffprobe: None,
             runtimes: Runtimes {
                 mode: JsRuntimeMode::QuickJsOnly,
                 qjs: Some(ResolvedRuntime {

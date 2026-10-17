@@ -118,6 +118,7 @@ impl Fixture {
         JobEnvironment {
             ytdlp: self.ytdlp.clone(),
             ffmpeg: Some(self.ytdlp.clone()), // presence is all the runner checks
+            ffprobe: None,
             runtimes: self.runtimes(mode, with_deno),
             memory: Arc::clone(memory),
             private_temp: None,
