@@ -3487,3 +3487,20 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: push branch to remote and verify CI checks.
 
+## 2026-10-17 — M4 / CI fix: eliminate flusher race condition in hardware encoder fallback test (spec §7.6, §9.3, §15)
+- Done:
+  - In `src-tauri/tests/ffmpeg_encode.rs` `hardware_encoder_fallback_informs_user_via_toast_and_log_tail`, fixed a race condition where the polling loop exited immediately upon `item.state == Done` without waiting for the asynchronous `flusher_loop` to deliver the `toast.hardwareEncoderFallback` event to the sink.
+  - Polled for both item completion and toast delivery, and shut down the engine cleanly before running assertions to prevent orphaned engine tasks from attempting file writes after fixture deletion.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~457ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: push commit to remote and verify GitHub Actions runners.
+
+

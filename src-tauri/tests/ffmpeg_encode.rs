@@ -603,40 +603,46 @@ async fn hardware_encoder_fallback_informs_user_via_toast_and_log_tail() {
     });
     engine.start();
 
-    // Poll until the item is Done
+    // Poll until the item is Done and the fallback toast has reached the sink
     let start = std::time::Instant::now();
     let mut finished = false;
+    let mut toast_emitted = false;
     while start.elapsed() < Duration::from_secs(5) {
-        let snap = engine.snapshot();
-        if let Some(item) = snap.items.iter().find(|i| i.id == item_id) {
-            if item.state == ItemState::Done {
-                finished = true;
-                assert!(
-                    item.log_tail
-                        .iter()
-                        .any(|l| l.contains("Hardware encoder failed")),
-                    "log_tail must record hardware encoder fallback notice"
-                );
-                break;
+        if !finished {
+            let snap = engine.snapshot();
+            if let Some(item) = snap.items.iter().find(|i| i.id == item_id) {
+                if item.state == ItemState::Done {
+                    assert!(
+                        item.log_tail
+                            .iter()
+                            .any(|l| l.contains("Hardware encoder failed")),
+                        "log_tail must record hardware encoder fallback notice"
+                    );
+                    finished = true;
+                }
             }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if !toast_emitted {
+            let seen_updates = updates.lock().unwrap();
+            toast_emitted = seen_updates.iter().any(|u| {
+                u.toast
+                    .as_ref()
+                    .is_some_and(|t| t.message_key == "toast.hardwareEncoderFallback")
+            });
+        }
+        if finished && toast_emitted {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(finished, "item must finish with Done state");
 
-    // Verify toast in emitted updates
-    let seen_updates = updates.lock().unwrap();
-    let toast_emitted = seen_updates.iter().any(|u| {
-        u.toast
-            .as_ref()
-            .is_some_and(|t| t.message_key == "toast.hardwareEncoderFallback")
-    });
+    engine.shutdown();
+
+    assert!(finished, "item must finish with Done state");
     assert!(
         toast_emitted,
         "a toast with messageKey 'toast.hardwareEncoderFallback' must be emitted"
     );
-
-    engine.shutdown();
 }
 
 #[tokio::test]
