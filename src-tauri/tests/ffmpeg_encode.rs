@@ -1,0 +1,382 @@
+//! Integration tests for media processing with ffmpeg (spec §9, §14 row M4, §15 item 8):
+//! - Video encode with CPU and hardware encoders
+//! - Hardware encoder fallback to CPU encoder on failure
+//! - Original file kept untouched on encode failure
+//! - Original file deleted on success only when keep_original = false
+//! - Audio-only encoding (aac -> .m4a, mp3 -> .mp3, opus -> .opus)
+//! - Trim parsing, validation, and expected duration calculation
+//! - Progress tracking with `-progress pipe:1`
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use scaricatore_di_porto_lib::services::encoders::{AudioCodec, EncodersState, probe_all_encoders};
+use scaricatore_di_porto_lib::services::ffmpeg::{
+    AudioEncodeOptions, EncodeJobKind, EncodeOutcome, EncodeRequest, FfmpegProgressTracker,
+    TrimSpec, VideoEncodeOptions, build_audio_encode_args, calculate_expected_duration,
+    derive_encoded_output_path, format_duration_arg, parse_time_spec, run_encode, validate_trim,
+};
+use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
+
+/// Locates the `fake_tool` example built by `cargo test`.
+fn fake_tool_source() -> PathBuf {
+    let profile_dir = std::env::current_exe()
+        .expect("the test binary has a path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test binary lives in <profile>/deps/")
+        .to_path_buf();
+    let mut path = profile_dir.join("examples").join("fake_tool");
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+    assert!(
+        path.is_file(),
+        "the fake_tool example was not built next to the tests (looked for {}).\n\
+         Run the suite as `cargo test`.",
+        path.display()
+    );
+    path
+}
+
+struct Fixture {
+    dir: TempDir,
+    fake_ffmpeg: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        let fake_ffmpeg = dir.path().join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
+        fs::copy(fake_tool_source(), &fake_ffmpeg).expect("copy fake_tool as ffmpeg");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_ffmpeg).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_ffmpeg, perms).expect("chmod +x");
+        }
+        Self { dir, fake_ffmpeg }
+    }
+
+    fn create_dummy_media(&self, filename: &str, content: &[u8]) -> PathBuf {
+        let path = self.dir.path().join(filename);
+        fs::write(&path, content).expect("write dummy media");
+        path
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit & Helper tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trim_timestamp_parser_accepts_valid_formats_and_rejects_garbage() {
+    assert_eq!(parse_time_spec("30").unwrap(), 30.0);
+    assert_eq!(parse_time_spec("30.5").unwrap(), 30.5);
+    assert_eq!(parse_time_spec("01:30").unwrap(), 90.0);
+    assert_eq!(parse_time_spec("01:30.25").unwrap(), 90.25);
+    assert_eq!(parse_time_spec("01:02:03").unwrap(), 3723.0);
+    assert_eq!(parse_time_spec("01:02:03.500").unwrap(), 3723.5);
+
+    // Garbage rejected
+    assert!(parse_time_spec("invalid").is_err());
+    assert!(parse_time_spec("12:65").is_err()); // seconds >= 60
+    assert!(parse_time_spec("12:75:30").is_err()); // minutes >= 60
+    assert!(parse_time_spec("-5").is_err());
+}
+
+#[test]
+fn trim_validation_and_duration_math() {
+    let spec = TrimSpec::new(Some(10.0), Some(40.0));
+    assert!(validate_trim(spec.start, spec.end, Some(60.0)).is_ok());
+    assert_eq!(
+        calculate_expected_duration(Some(&spec), Some(60.0)),
+        Some(30.0)
+    );
+
+    // start >= end
+    let inv = TrimSpec::new(Some(40.0), Some(10.0));
+    assert!(validate_trim(inv.start, inv.end, Some(60.0)).is_err());
+
+    // out of media bounds
+    let out_of_bounds = TrimSpec::new(Some(10.0), Some(100.0));
+    assert!(validate_trim(out_of_bounds.start, out_of_bounds.end, Some(60.0)).is_err());
+
+    // start only
+    let start_only = TrimSpec::new(Some(10.0), None);
+    assert_eq!(
+        calculate_expected_duration(Some(&start_only), Some(60.0)),
+        Some(50.0)
+    );
+
+    // format duration arg
+    assert_eq!(format_duration_arg(45.5), "45.500");
+}
+
+#[test]
+fn audio_args_builder_matches_spec() {
+    let in_file = PathBuf::from("/tmp/input.mp4");
+    let out_file = PathBuf::from("/tmp/output.m4a");
+    let trim = TrimSpec::new(Some(5.0), Some(15.0));
+
+    let opts = AudioEncodeOptions {
+        input: in_file.clone(),
+        output: out_file,
+        audio_codec: AudioCodec::Aac,
+        trim: Some(trim),
+    };
+    let args = build_audio_encode_args(&opts);
+    assert!(args.iter().any(|a| a == "-nostdin"));
+    assert!(args.iter().any(|a| a == "-ss"));
+    assert!(args.iter().any(|a| a == "-t"));
+    assert!(args.iter().any(|a| a == "aac"));
+    assert!(args.iter().any(|a| a == "192k"));
+
+    // mp3
+    let mp3_out = PathBuf::from("/tmp/output.mp3");
+    let mp3_opts = AudioEncodeOptions {
+        input: in_file.clone(),
+        output: mp3_out,
+        audio_codec: AudioCodec::Mp3,
+        trim: None,
+    };
+    let mp3_args = build_audio_encode_args(&mp3_opts);
+    assert!(mp3_args.iter().any(|a| a == "libmp3lame"));
+
+    // opus
+    let opus_out = PathBuf::from("/tmp/output.opus");
+    let opus_opts = AudioEncodeOptions {
+        input: in_file,
+        output: opus_out,
+        audio_codec: AudioCodec::Opus,
+        trim: None,
+    };
+    let opus_args = build_audio_encode_args(&opus_opts);
+    assert!(opus_args.iter().any(|a| a == "libopus"));
+    assert!(opus_args.iter().any(|a| a == "128k"));
+}
+
+#[test]
+fn progress_tracker_parses_pipe1_output() {
+    let mut tracker = FfmpegProgressTracker::new(Some(100.0));
+
+    let p1 = tracker.handle_line("out_time_us=25000000");
+    assert!(p1.is_some());
+    let prog = p1.unwrap();
+    assert_eq!(prog.out_time_sec, 25.0);
+    assert_eq!(prog.percent, Some(25.0));
+
+    let p2 = tracker.handle_line("speed=2.0x");
+    assert!(p2.is_none()); // speed alone doesn't trigger progress emission
+
+    let p3 = tracker.handle_line("progress=continue");
+    assert!(p3.is_none());
+
+    let p4 = tracker.handle_line("progress=end");
+    assert!(p4.is_some());
+    let end_prog = p4.unwrap();
+    assert!(end_prog.is_end);
+    assert_eq!(end_prog.speed, Some(2.0));
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests with fake ffmpeg
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn probe_encoders_detects_candidates_and_filters_failures() {
+    let fixture = Fixture::new();
+
+    // Configure fake ffmpeg to fail probe for h264_vaapi
+    fs::write(fixture.dir.path().join("fail_probe.txt"), "h264_vaapi")
+        .expect("write fail_probe.txt");
+
+    let cancel = CancellationToken::new();
+    let state = EncodersState::new();
+    let probed = probe_all_encoders(&fixture.fake_ffmpeg, None, None, &state, cancel, true)
+        .await
+        .expect("probe should succeed");
+
+    assert!(!probed.is_empty(), "must detect at least CPU encoders");
+    assert!(
+        probed.iter().any(|e| e.id == "libx264"),
+        "libx264 should be detected"
+    );
+    assert!(
+        !probed.iter().any(|e| e.id == "h264_vaapi"),
+        "h264_vaapi probe was simulated to fail and must be excluded"
+    );
+}
+
+#[tokio::test]
+async fn video_encode_succeeds_and_deletes_original_when_keep_original_false() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("sample.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    assert!(original.exists());
+    let output = derive_encoded_output_path(&original, "mp4");
+
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "libx264".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: false,
+        total_duration: Some(10.0),
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+
+    match outcome {
+        EncodeOutcome::Success {
+            output_file,
+            used_cpu_fallback,
+        } => {
+            assert!(!used_cpu_fallback);
+            assert!(output_file.exists());
+            assert_eq!(
+                output_file.file_name().unwrap().to_str().unwrap(),
+                "sample-encoded.mp4"
+            );
+        }
+        other => panic!("expected success, got {other:?}"),
+    }
+
+    // Original deleted
+    assert!(
+        !original.exists(),
+        "original file must be deleted when keep_original is false and exit code is 0"
+    );
+}
+
+#[tokio::test]
+async fn video_encode_keeps_original_when_keep_original_true() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("sample2.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    assert!(original.exists());
+    let output = derive_encoded_output_path(&original, "mp4");
+
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "libx264".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: true,
+        total_duration: Some(10.0),
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+
+    match outcome {
+        EncodeOutcome::Success { output_file, .. } => {
+            assert!(output_file.exists());
+        }
+        other => panic!("expected success, got {other:?}"),
+    }
+
+    // Original preserved
+    assert!(
+        original.exists(),
+        "original file must be preserved when keep_original is true"
+    );
+}
+
+#[tokio::test]
+async fn hardware_encoder_failure_falls_back_to_cpu_encoder() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("hw_test.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let output = derive_encoded_output_path(&original, "mp4");
+
+    // Tell fake ffmpeg to fail encode when -c:v h264_nvenc is used
+    fs::write(fixture.dir.path().join("fail_encode.txt"), "h264_nvenc")
+        .expect("write fail_encode.txt");
+
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "h264_nvenc".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: true,
+        total_duration: Some(10.0),
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+
+    match outcome {
+        EncodeOutcome::Success {
+            output_file,
+            used_cpu_fallback,
+        } => {
+            assert!(
+                used_cpu_fallback,
+                "used_cpu_fallback must be true when hardware encoder failed"
+            );
+            assert!(output_file.exists());
+        }
+        other => panic!("expected success via CPU fallback, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn encode_failure_preserves_original_file() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("fail_test.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let output = derive_encoded_output_path(&original, "mp4");
+
+    // Tell fake ffmpeg to fail all encodes
+    fs::write(fixture.dir.path().join("fail_all.txt"), "1").expect("write fail_all.txt");
+
+    let cancel = CancellationToken::new();
+    let sink = Arc::new(|_: &_| {});
+
+    let request = EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.clone(),
+            output: output.clone(),
+            video_encoder: "libx264".to_owned(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+        }),
+        keep_original: false, // even with keep_original = false, original MUST NOT be deleted on failure
+        total_duration: Some(10.0),
+    };
+
+    let outcome = run_encode(request, cancel, sink).await;
+
+    assert!(
+        matches!(outcome, EncodeOutcome::Failed { .. }),
+        "must report failure when encode fails"
+    );
+    assert!(
+        original.exists(),
+        "spec §9.2: original file MUST be kept untouched when ffmpeg fails"
+    );
+}

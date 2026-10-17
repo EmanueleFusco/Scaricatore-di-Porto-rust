@@ -53,8 +53,8 @@ use crate::services::queue::events::{
     Coalescer, EventSink, QueueSnapshot, QueueToast, QueueUpdate,
 };
 use crate::services::queue::model::{
-    ControlSignal, ItemOptions, ItemProgress, ItemState, Lane, LaneConfig, QueueGroup, QueueItem,
-    QueueSummary, aggregate, job_dirs, roll_off_history, should_auto_retry,
+    ControlSignal, ItemOptions, ItemProgress, ItemState, Kind, Lane, LaneConfig, QueueGroup,
+    QueueItem, QueueSummary, aggregate, job_dirs, roll_off_history, should_auto_retry,
 };
 use crate::services::queue::scheduler::{self, Candidate, Capacity};
 use crate::services::queue::store::{self, LoadedQueue, QueueFile};
@@ -177,6 +177,8 @@ struct Inner {
     pending_removed: Mutex<Vec<String>>,
     /// Toasts waiting to travel with the next event.
     pending_toasts: Mutex<Vec<QueueToast>>,
+    /// Limits concurrent encode jobs (spec §7.2: "The encode lane is 1 by default").
+    encode_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// The handle. Cloneable, cheap, and the only thing the commands see.
@@ -191,6 +193,7 @@ impl QueueEngine {
     pub fn open(config: EngineConfig) -> Self {
         let LoadedQueue { file, recovery } = store::load(&config.path);
         let lanes = config.lanes.clamped();
+        let encode_capacity = lanes.capacity(Lane::Encode);
         // Anything still queued makes the queue active at startup, so the first
         // terminal transition is not mistaken for "the queue became idle".
         let previous = file.summary(lanes);
@@ -220,6 +223,7 @@ impl QueueEngine {
                 stopped: AtomicBool::new(false),
                 pending_removed: Mutex::new(Vec::new()),
                 pending_toasts: Mutex::new(Vec::new()),
+                encode_semaphore: Arc::new(tokio::sync::Semaphore::new(encode_capacity)),
             }),
         };
         if let Some(recovery) = recovery {
@@ -1005,7 +1009,8 @@ fn start_item(inner: &Arc<Inner>, id: String) {
     tokio::spawn(run_item(Arc::clone(inner), id, token));
 }
 
-/// One item's whole pipeline: resolve the tools, then the M1 job runner.
+/// One item's whole pipeline: resolve the tools, download via yt-dlp, and
+/// if requested, encode/trim via ffmpeg and auto-play via opener.
 async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
     let Some((environment, request)) = prepare(&inner, &id).await else {
         return;
@@ -1017,8 +1022,244 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
         on_progress(&progress_inner, &sink_id, progress);
     });
 
-    let outcome = job::run_job(&environment, &request, token, sink).await;
-    finish_item(&inner, &id, outcome);
+    let outcome = job::run_job(&environment, &request, token.clone(), sink).await;
+
+    match outcome {
+        JobOutcome::Done {
+            file,
+            runtime,
+            elapsed_ms,
+            requested_height,
+            actual_height,
+        } => {
+            let (options, duration_sec) = {
+                let state = lock(&inner.state);
+                let Some(item) = state.item(&id) else {
+                    return;
+                };
+                (item.options.clone(), item.duration_sec)
+            };
+
+            if options.needs_encode() {
+                let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
+                    finish_item(
+                        &inner,
+                        &id,
+                        JobOutcome::Failed(YtdlpError::new(
+                            YtdlpErrorCode::FfmpegMissing,
+                            "ffmpeg is required for encoding/trimming but was not found".to_owned(),
+                        )),
+                    );
+                    return;
+                };
+
+                // Move from Downloading to Encoding (spec §3, §7.2)
+                {
+                    let mut state = lock(&inner.state);
+                    let Some(item) = state.item_mut(&id) else {
+                        return;
+                    };
+                    if item.control != ControlSignal::None {
+                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                        return;
+                    }
+                    item.state = ItemState::Encoding;
+                    item.progress.label = "encoding".to_owned();
+                    item.progress.percent = Some(0.0);
+                    item.progress.speed_bps = None;
+                    item.progress.eta_sec = None;
+                    item.updated_at = now_unix();
+                }
+                self_persist(&inner);
+                mark_dirty(&inner, &id, true);
+                // Wake scheduler: the download lane has been freed!
+                inner.wake.notify_waiters();
+
+                // Acquire permit from encode semaphore (spec §7.2: default 1)
+                let _permit = tokio::select! {
+                    _ = token.cancelled() => {
+                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                        return;
+                    }
+                    res = inner.encode_semaphore.acquire() => {
+                        match res {
+                            Ok(permit) => permit,
+                            Err(_) => return,
+                        }
+                    }
+                };
+
+                // Re-check control signal after waiting for encode slot
+                {
+                    let state = lock(&inner.state);
+                    if let Some(item) = state.item(&id) {
+                        if item.control != ControlSignal::None {
+                            finish_item(&inner, &id, JobOutcome::Cancelled);
+                            return;
+                        }
+                    }
+                }
+
+                let trim_start_sec = options
+                    .trim_start
+                    .as_deref()
+                    .and_then(|s| crate::services::ffmpeg::parse_time_spec(s).ok());
+                let trim_end_sec = options
+                    .trim_end
+                    .as_deref()
+                    .and_then(|s| crate::services::ffmpeg::parse_time_spec(s).ok());
+                let trim = if trim_start_sec.is_some() || trim_end_sec.is_some() {
+                    Some(crate::services::ffmpeg::TrimSpec::new(
+                        trim_start_sec,
+                        trim_end_sec,
+                    ))
+                } else {
+                    None
+                };
+
+                let kind = if options.kind == Kind::Audio {
+                    let audio_codec = options
+                        .audio_codec
+                        .as_deref()
+                        .and_then(crate::services::encoders::AudioCodec::parse)
+                        .unwrap_or(crate::services::encoders::AudioCodec::Opus);
+                    let output = crate::services::ffmpeg::derive_encoded_output_path(
+                        &file,
+                        audio_codec.extension(),
+                    );
+                    crate::services::ffmpeg::EncodeJobKind::Audio(
+                        crate::services::ffmpeg::AudioEncodeOptions {
+                            input: file.clone(),
+                            output,
+                            audio_codec,
+                            trim,
+                        },
+                    )
+                } else {
+                    let video_encoder = options
+                        .video_codec
+                        .clone()
+                        .unwrap_or_else(|| "libx264".to_string());
+                    let audio_codec = options
+                        .audio_codec
+                        .as_deref()
+                        .and_then(crate::services::encoders::AudioCodec::parse);
+                    let output = crate::services::ffmpeg::derive_encoded_output_path(&file, "mp4");
+                    crate::services::ffmpeg::EncodeJobKind::Video(
+                        crate::services::ffmpeg::VideoEncodeOptions {
+                            input: file.clone(),
+                            output,
+                            video_encoder,
+                            audio_codec,
+                            trim,
+                        },
+                    )
+                };
+
+                let encode_req = crate::services::ffmpeg::EncodeRequest {
+                    ffmpeg_path: ffmpeg_path.clone(),
+                    kind,
+                    keep_original: options.keep_original,
+                    total_duration: duration_sec.map(|s| s as f64),
+                };
+
+                let encode_sink_id = id.clone();
+                let encode_inner = Arc::clone(&inner);
+                let encode_sink: crate::services::ffmpeg::EncodeProgressSink =
+                    Arc::new(move |prog: &crate::services::ffmpeg::FfmpegProgress| {
+                        on_encode_progress(&encode_inner, &encode_sink_id, prog);
+                    });
+
+                let encode_outcome =
+                    crate::services::ffmpeg::run_encode(encode_req, token.clone(), encode_sink)
+                        .await;
+                drop(_permit);
+                inner.wake.notify_waiters();
+
+                match encode_outcome {
+                    crate::services::ffmpeg::EncodeOutcome::Success { output_file, .. } => {
+                        if options.auto_play {
+                            let _ = tauri_plugin_opener::open_path(
+                                output_file.to_string_lossy().as_ref(),
+                                None::<&str>,
+                            );
+                        }
+                        finish_item(
+                            &inner,
+                            &id,
+                            JobOutcome::Done {
+                                file: output_file,
+                                runtime,
+                                elapsed_ms,
+                                requested_height,
+                                actual_height,
+                            },
+                        );
+                    }
+                    crate::services::ffmpeg::EncodeOutcome::Cancelled => {
+                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                    }
+                    crate::services::ffmpeg::EncodeOutcome::Failed { error, stderr_tail } => {
+                        // Spec §9.2 and §12: keep the original file on failure!
+                        finish_item(
+                            &inner,
+                            &id,
+                            JobOutcome::Failed(YtdlpError::new(
+                                YtdlpErrorCode::Unknown,
+                                format!("Encode failed: {error}\n{}", stderr_tail.join("\n")),
+                            )),
+                        );
+                    }
+                }
+            } else {
+                if options.auto_play {
+                    let _ = tauri_plugin_opener::open_path(
+                        file.to_string_lossy().as_ref(),
+                        None::<&str>,
+                    );
+                }
+                finish_item(
+                    &inner,
+                    &id,
+                    JobOutcome::Done {
+                        file,
+                        runtime,
+                        elapsed_ms,
+                        requested_height,
+                        actual_height,
+                    },
+                );
+            }
+        }
+        other => {
+            finish_item(&inner, &id, other);
+        }
+    }
+}
+
+/// Fold one ffmpeg encode progress payload into the item (spec §3, §7.6).
+fn on_encode_progress(
+    inner: &Arc<Inner>,
+    id: &str,
+    progress: &crate::services::ffmpeg::FfmpegProgress,
+) {
+    let milestone = {
+        let mut state = lock(&inner.state);
+        let Some(item) = state.item_mut(id) else {
+            return;
+        };
+        if item.control != ControlSignal::None {
+            return;
+        }
+        item.state = ItemState::Encoding;
+        item.progress.label = "encoding".to_owned();
+        item.progress.percent = progress.percent;
+        item.progress.speed_bps = None;
+        item.progress.eta_sec = progress.eta_sec;
+        item.updated_at = now_unix();
+        progress.is_end
+    };
+    mark_dirty(inner, id, milestone);
 }
 
 /// Read the item out of the state, resolve its tools and build the job request.

@@ -55,6 +55,19 @@ export interface AddRow {
   customHeaders: string;
   /** Loading the next page of a playlist ("Load more", spec §6.4). */
   loadingMore: boolean;
+  /** M4 media options (spec §9, §8.4). */
+  encode: boolean;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  trimStart: string;
+  trimEnd: string;
+  keepOriginal: boolean;
+  autoPlay: boolean;
+  embedMetadata: boolean;
+  embedThumbnail: boolean;
+  embedChapters: boolean;
+  sponsorblockMode: "mark" | "remove" | null;
+  sponsorblockCategories: string[];
 }
 
 const MAX_ROWS = 500;
@@ -160,6 +173,18 @@ class AddBarStore {
         userAgent: "",
         customHeaders: "",
         loadingMore: false,
+        encode: false,
+        videoCodec: settingsStore.settings.defaultVideoCodec,
+        audioCodec: settingsStore.settings.defaultAudioCodec,
+        trimStart: "",
+        trimEnd: "",
+        keepOriginal: settingsStore.settings.keepOriginalAfterEncode,
+        autoPlay: settingsStore.settings.autoPlay,
+        embedMetadata: settingsStore.settings.embedMetadata,
+        embedThumbnail: settingsStore.settings.embedThumbnail,
+        embedChapters: settingsStore.settings.embedChapters,
+        sponsorblockMode: settingsStore.settings.sponsorblockMode,
+        sponsorblockCategories: [...settingsStore.settings.sponsorblockCategories],
       };
     });
     if (rows.length === 0) return;
@@ -296,6 +321,37 @@ class AddBarStore {
     this.#patch(key, options);
   }
 
+  /** Per-link media options (M4, spec §9, §8.4): encode, trim, embeds, sponsorblock. */
+  setMediaOptions(
+    key: string,
+    options: Partial<
+      Pick<
+        AddRow,
+        | "encode"
+        | "videoCodec"
+        | "audioCodec"
+        | "trimStart"
+        | "trimEnd"
+        | "keepOriginal"
+        | "autoPlay"
+        | "embedMetadata"
+        | "embedThumbnail"
+        | "embedChapters"
+        | "sponsorblockMode"
+        | "sponsorblockCategories"
+      >
+    >,
+  ): void {
+    const row = this.rows.find((r) => r.key === key);
+    if (!row) return;
+    const trimStart = options.trimStart !== undefined ? options.trimStart : row.trimStart;
+    const trimEnd = options.trimEnd !== undefined ? options.trimEnd : row.trimEnd;
+    const hasTrim = trimStart.trim() !== "" || trimEnd.trim() !== "";
+    // Spec §9.2: "Trim implies Encode (coupling kept from the original)"
+    const encode = hasTrim ? true : (options.encode !== undefined ? options.encode : row.encode);
+    this.#patch(key, { ...options, encode });
+  }
+
   removeRow(key: string): void {
     this.rows = this.rows.filter((row) => row.key !== key);
   }
@@ -368,6 +424,18 @@ class AddBarStore {
         referer: row.referer.trim() === "" ? null : row.referer.trim(),
         userAgent: row.userAgent.trim() === "" ? null : row.userAgent.trim(),
         customHeaders: headers,
+        encode: row.encode || row.trimStart.trim() !== "" || row.trimEnd.trim() !== "",
+        videoCodec: row.videoCodec,
+        audioCodec: row.audioCodec,
+        trimStart: row.trimStart.trim() !== "" ? row.trimStart.trim() : null,
+        trimEnd: row.trimEnd.trim() !== "" ? row.trimEnd.trim() : null,
+        keepOriginal: row.keepOriginal,
+        autoPlay: row.autoPlay,
+        embedMetadata: row.embedMetadata,
+        embedThumbnail: row.embedThumbnail,
+        embedChapters: row.embedChapters,
+        sponsorblockMode: row.sponsorblockMode,
+        sponsorblockCategories: row.sponsorblockCategories,
       };
     });
   }

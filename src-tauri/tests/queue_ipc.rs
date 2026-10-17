@@ -579,7 +579,11 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
     assert_eq!(answer["settings"]["perHostCap"], 4);
     assert_eq!(answer["settings"]["notifyOnIdle"], true);
     assert_eq!(answer["settings"]["pasteLinksAnywhere"], true);
-    assert_eq!(answer["settings"]["schemaVersion"], 5, "M3's schema");
+    assert_eq!(
+        answer["settings"]["schemaVersion"],
+        scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION,
+        "current schema"
+    );
 
     // And the engine was told, without a restart.
     let lanes = call(&window, "queue_lanes", json!({})).expect("must succeed");
@@ -604,7 +608,10 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
             .expect("settings.json is JSON");
     assert_eq!(on_disk["parallelDownloads"], 4);
     assert_eq!(on_disk["perHostCap"], 1);
-    assert_eq!(on_disk["schemaVersion"], 5);
+    assert_eq!(
+        on_disk["schemaVersion"],
+        scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION
+    );
 }
 
 #[test]

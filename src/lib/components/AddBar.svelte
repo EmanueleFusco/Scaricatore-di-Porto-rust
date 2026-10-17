@@ -27,7 +27,9 @@
   import PlaylistPanel from "$lib/components/PlaylistPanel.svelte";
   import { secondsToClock } from "$lib/inspect";
   import {
+    AUDIO_CODEC_OPTIONS,
     QUALITY_PRESETS,
+    SPONSORBLOCK_CATEGORY_KEYS,
     choiceOf,
     explicitChoiceFor,
     parseHeaderLines,
@@ -35,10 +37,12 @@
     rowQualityOptions,
     splitLinks,
     tableFormats,
+    validateTrimInput,
   } from "$lib/addbar";
   import { addBarStore, type AddRow } from "$lib/stores/addbar.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
+  import { toolsStore } from "$lib/stores/tools.svelte";
   import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
 
   /** Which of the two actions a click asked for. */
@@ -74,6 +78,7 @@
    * a list saved from a website is a file.
    */
   onMount(() => {
+    void toolsStore.probeEncoders();
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview()
@@ -222,6 +227,11 @@
     } catch {
       // Clipboard access can be denied; the link is on screen anyway.
     }
+  }
+
+  function trimError(row: AddRow, duration: number | null): string | null {
+    const res = validateTrimInput(row.trimStart, row.trimEnd, duration);
+    return res.valid ? null : res.errorKey;
   }
 </script>
 
@@ -479,6 +489,209 @@
             <details class="add__block">
               <summary>{tt("queue.add.more.title")}</summary>
               <div class="add__more">
+                {#if row.state === "ready"}
+                  <!-- Spec §9: Encode and trim -->
+                  <div class="field">
+                    <span class="field__label">{tt("queue.add.more.encode.title")}</span>
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.encode}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { encode: event.currentTarget.checked })}
+                      />
+                      {tt("queue.add.more.encode.toggle")}
+                    </label>
+
+                    {#if row.encode}
+                      <div class="add__controls">
+                        <div class="field">
+                          <label class="field__label" for={`more-vcodec-${row.key}`}>
+                            {tt("queue.add.more.encode.videoCodec")}
+                          </label>
+                          <select
+                            class="select"
+                            id={`more-vcodec-${row.key}`}
+                            value={row.videoCodec ?? settingsStore.settings.defaultVideoCodec ?? "libx264"}
+                            onchange={(event) =>
+                              addBarStore.setMediaOptions(row.key, { videoCodec: event.currentTarget.value })}
+                          >
+                            {#if toolsStore.probingEncoders}
+                              <option disabled value="">{tt("queue.add.more.encode.probing")}</option>
+                            {/if}
+                            {#if toolsStore.probedEncoders.length > 0}
+                              {#each toolsStore.probedEncoders as encoder (encoder.id)}
+                                <option value={encoder.id}>{encoder.label}</option>
+                              {/each}
+                            {:else}
+                              <option value="libx264">x264 (CPU)</option>
+                              <option value="libx265">x265 (CPU)</option>
+                            {/if}
+                          </select>
+                        </div>
+
+                        <div class="field">
+                          <label class="field__label" for={`more-acodec-${row.key}`}>
+                            {tt("queue.add.more.encode.audioCodec")}
+                          </label>
+                          <select
+                            class="select"
+                            id={`more-acodec-${row.key}`}
+                            value={row.audioCodec ?? settingsStore.settings.defaultAudioCodec ?? "aac"}
+                            onchange={(event) =>
+                              addBarStore.setMediaOptions(row.key, { audioCodec: event.currentTarget.value })}
+                          >
+                            {#each AUDIO_CODEC_OPTIONS as opt (opt.value)}
+                              <option value={opt.value}>{opt.label}</option>
+                            {/each}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div class="field">
+                        <span class="field__label">{tt("queue.add.trim.title")}</span>
+                        <div class="add__controls">
+                          <div class="field">
+                            <label class="field__label" for={`trim-start-${row.key}`}>
+                              {tt("queue.add.trim.start")}
+                            </label>
+                            <input
+                              class="input"
+                              id={`trim-start-${row.key}`}
+                              type="text"
+                              placeholder="00:00"
+                              value={row.trimStart}
+                              oninput={(event) =>
+                                addBarStore.setMediaOptions(row.key, { trimStart: event.currentTarget.value })}
+                            />
+                          </div>
+                          <div class="field">
+                            <label class="field__label" for={`trim-end-${row.key}`}>
+                              {tt("queue.add.trim.end")}
+                            </label>
+                            <input
+                              class="input"
+                              id={`trim-end-${row.key}`}
+                              type="text"
+                              placeholder="00:00"
+                              value={row.trimEnd}
+                              oninput={(event) =>
+                                addBarStore.setMediaOptions(row.key, { trimEnd: event.currentTarget.value })}
+                            />
+                          </div>
+                        </div>
+                        <p class="field__hint">{tt("queue.add.trim.hint")}</p>
+                        {#if trimError(row, video?.duration ?? null)}
+                          <p class="add__row-error" role="alert">{tt(trimError(row, video?.duration ?? null)!)}</p>
+                        {/if}
+                      </div>
+
+                      <label class="add__check">
+                        <input
+                          type="checkbox"
+                          checked={row.keepOriginal}
+                          onchange={(event) =>
+                            addBarStore.setMediaOptions(row.key, { keepOriginal: event.currentTarget.checked })}
+                        />
+                        {tt("queue.add.more.keepOriginal")}
+                      </label>
+
+                      <label class="add__check">
+                        <input
+                          type="checkbox"
+                          checked={row.autoPlay}
+                          onchange={(event) =>
+                            addBarStore.setMediaOptions(row.key, { autoPlay: event.currentTarget.checked })}
+                        />
+                        {tt("queue.add.more.autoPlay")}
+                      </label>
+                    {/if}
+                  </div>
+
+                  <!-- Spec §8.4: Embed metadata, thumbnail, chapters -->
+                  <div class="field">
+                    <span class="field__label">{tt("queue.add.embed.title")}</span>
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.embedMetadata}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { embedMetadata: event.currentTarget.checked })}
+                      />
+                      {tt("queue.add.embed.metadata")}
+                    </label>
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.embedThumbnail}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { embedThumbnail: event.currentTarget.checked })}
+                      />
+                      {tt("queue.add.embed.thumbnail")}
+                    </label>
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.embedChapters}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { embedChapters: event.currentTarget.checked })}
+                      />
+                      {tt("queue.add.embed.chapters")}
+                    </label>
+                  </div>
+
+                  <!-- Spec §8.4: SponsorBlock -->
+                  <div class="field">
+                    <span class="field__label">{tt("queue.add.sponsorblock.title")}</span>
+                    <div class="field">
+                      <label class="field__label" for={`sb-mode-${row.key}`}>
+                        {tt("queue.add.sponsorblock.mode")}
+                      </label>
+                      <select
+                        class="select"
+                        id={`sb-mode-${row.key}`}
+                        value={row.sponsorblockMode ?? "off"}
+                        onchange={(event) => {
+                          const val = event.currentTarget.value;
+                          addBarStore.setMediaOptions(row.key, {
+                            sponsorblockMode: val === "mark" || val === "remove" ? val : null,
+                          });
+                        }}
+                      >
+                        <option value="off">{tt("queue.add.sponsorblock.mode.off")}</option>
+                        <option value="mark">{tt("queue.add.sponsorblock.mode.mark")}</option>
+                        <option value="remove">{tt("queue.add.sponsorblock.mode.remove")}</option>
+                      </select>
+                    </div>
+
+                    {#if row.sponsorblockMode === "remove"}
+                      <p class="field__hint add__row-title--warn">{tt("queue.add.sponsorblock.removeWarning")}</p>
+                    {/if}
+
+                    {#if row.sponsorblockMode !== null}
+                      <div class="field">
+                        <span class="field__label">{tt("queue.add.sponsorblock.categories")}</span>
+                        {#each SPONSORBLOCK_CATEGORY_KEYS as cat (cat)}
+                          <label class="add__check">
+                            <input
+                              type="checkbox"
+                              checked={row.sponsorblockCategories.includes(cat)}
+                              onchange={(event) => {
+                                const checked = event.currentTarget.checked;
+                                const next = checked
+                                  ? [...row.sponsorblockCategories, cat]
+                                  : row.sponsorblockCategories.filter((c) => c !== cat);
+                                addBarStore.setMediaOptions(row.key, { sponsorblockCategories: next });
+                              }}
+                            />
+                            {tt(`sponsorblock.category.${cat}`)}
+                          </label>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+
                 <div class="field">
                   <label class="field__label" for={`more-ref-${row.key}`}>{tt("queue.add.more.referer")}</label>
                   <input

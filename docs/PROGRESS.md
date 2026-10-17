@@ -3174,5 +3174,48 @@ Branch `m3-playlists-and-sites`.
   - `npm run check:ci && npm run check:runners && npm run check:tools` → all pass.
 - **Next step**: Ready for user testing.
 
+---
+
+## 2026-10-17 — M4 / Media processing (ffmpeg encode, probing, trim, audio-only, embeds, SponsorBlock) (spec §9, §8.4, §14 row M4, §15 item 8)
+
+Branch `m4-media-processing`.
+
+- **Done**
+  - **Backend (FFmpeg encoding & encoder catalogue)**:
+    - Implemented `services/encoders.rs`: OS-specific candidate catalogue (`libx264`, `libx265`, `*_nvenc`, `*_amf`, `*_qsv`, `*_vaapi`, `*_videotoolbox`), parsing of `ffmpeg -encoders`, background probe runner with 256×256 black frame test (`color=c=black:s=256x256:d=0.2`), 10-second timeout, cache by (path, mtime, version), and CPU fallback mapping (`h264_*` → `libx264`, `hevc_*` → `libx265`).
+    - Implemented `services/ffmpeg.rs`: `TrimSpec`, timestamp parser (`SS`, `MM:SS`, `HH:MM:SS`), trim validator (`start < end <= duration`), expected duration calculator, `FfmpegProgressTracker` for `-nostdin -hide_banner -progress pipe:1 -nostats` parsing `out_time_us`, video/audio arg builders (`-ss` before `-i`, `-t`, `-movflags +faststart`), and `run_encode` runner. Output filename `<name>-encoded.<ext>`.
+    - Implemented audio-only encoding presets (spec §9.4): `aac` → `.m4a` (`-c:a aac -b:a 192k`), `mp3` → `.mp3` (`-c:a libmp3lame -q:a 2`), `opus` → `.opus` (`-c:a libopus -b:a 128k`).
+    - Implemented safe file lifecycle (spec §9.2, §12.2): original file is deleted **only** if ffmpeg exits with code 0 and output is non-empty; original is preserved on any encode failure or when `keep_original = true`.
+    - Extended `services/ytdlp.rs`: added `SponsorBlockMode` (`mark`, `remove`), embed flags (`--embed-metadata`, `--embed-thumbnail` with `--convert-thumbnails jpg`, `--embed-chapters`), `--sponsorblock-mark` and `--sponsorblock-remove`, and `JobStage::Encoding` variant.
+    - Updated `services/queue/model.rs`: added M4 fields to `ItemOptions`, added `ItemOptions::needs_encode()`, and mapped `JobStage::Encoding` to `ItemState::Encoding`.
+    - Integrated encoding stage into `services/queue/engine.rs`: sequential encode execution with `encode_semaphore` (capacity = 1), hardware-to-CPU fallback retry, auto-play via `tauri-plugin-opener`, and live encode progress dispatching.
+    - Added IPC handlers in `commands/system.rs` (`encoders_probe`, `open_path`, `reveal_path`) and mapped M4 fields in `commands/queue.rs`.
+    - Updated `tests/bin/fake_tool.rs` and created integration test suite `tests/ffmpeg_encode.rs` testing encoder probing, CPU/audio encoding, hardware failure CPU fallback, and keep_original file lifecycles.
+  - **Frontend (Settings, Stores, AddBar, GeneralSettings, and i18n)**:
+    - Updated `src/lib/settings.ts`: bumped settings schema version to 6, added `SponsorBlockMode` and M4 configuration defaults (`keepOriginalAfterEncode`, `autoPlay`, `embedMetadata`, `embedThumbnail`, `embedChapters`, `sponsorblockMode`, `sponsorblockCategories`, `defaultVideoCodec`, `defaultAudioCodec`).
+    - Updated `src/lib/queue.ts`: added M4 fields to `ItemOptions`, `AddItemRequest`, `EncoderInfo`, and mapped `"encoding"` to `"job.label.encoding"`.
+    - Updated `src/lib/stores/tools.svelte.ts`: added `probedEncoders`, `probingEncoders`, and `probeEncoders(force?: boolean)` IPC method.
+    - Implemented `src/lib/addbar.ts`: pure functions `parseTrimTime`, `validateTrimInput`, `AUDIO_CODEC_OPTIONS`, and `SPONSORBLOCK_CATEGORY_KEYS`, with 21 unit tests in `src/lib/addbar.test.ts`.
+    - Updated `src/lib/stores/addbar.svelte.ts`: added M4 fields to `AddRow`, `setMediaOptions` with trim->encode coupling, and forwarded all M4 fields in `toRequests()`.
+    - Updated `src/lib/components/AddBar.svelte`: wired media options into the "More options" drawer (re-encode toggle, probed video codecs, audio codecs, trim inputs with real-time validation error feedback, keep original, auto-play, embed checkboxes, SponsorBlock mode with remove warning, and category checklist), plus background encoder probe on mount.
+    - Updated `src/lib/pages/settings/GeneralSettings.svelte`: added "Media processing & encoders" group with default video/audio codecs, "Detect hardware encoders" button, keep original toggle, auto-play toggle, default embed checkboxes, and default SponsorBlock mode & category checklist.
+    - Localised all 43 new keys across `src/lib/i18n/en.json` and `src/lib/i18n/it.json` with 100% parity verified by tests.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 123 integration = **453 passed**, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, **259 passed**, 0 failed.
+  - `npm run build` → production bundle compiled in ~494ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+  - Acceptance checklist item 8 (spec §15): video/audio encode, encoder probing, CPU fallback on failure, trim validation and coupling, originals untouched on failure.
+- **Not verified / stubbed**
+  - OS-specific proprietary hardware encoders on macOS/Windows host (host is Linux; probed via fake tool suite and system ffmpeg).
+- **Spec items marked "verify" that I checked**
+  - `ffmpeg -progress pipe:1` microseconds (`out_time_us`), `-movflags +faststart`, `--convert-thumbnails jpg`, and `--sponsorblock-mark / --sponsorblock-remove` verified against installed tools.
+- **Decisions/deviations**: None.
+- **Next step**: Phase M5 — Whisper sidecar & transcription pipeline (spec §10.2, §14 row M5, §15 item 9).
+
+
 
 

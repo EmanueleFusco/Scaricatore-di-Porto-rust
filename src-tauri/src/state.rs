@@ -19,7 +19,7 @@ use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 6;
 
 /// Default filename for `--download-archive` under `<app-data>/` (spec §6.2.4,
 /// §8.2, §11.8).
@@ -240,6 +240,24 @@ pub struct Settings {
     /// `ANTIBOT` when the yt-dlp binary supports chrome impersonation
     /// (default `true`).
     pub impersonate_retry: bool,
+    /// Spec §9.2, §11.8: Keep original downloaded file after successful encode (default `false`).
+    pub keep_original_after_encode: bool,
+    /// Spec §9.5, §11.8: Automatically play finished media (default `false`).
+    pub auto_play: bool,
+    /// Spec §8.4, §11.8: Default embed metadata (default `false`).
+    pub embed_metadata: bool,
+    /// Spec §8.4, §11.8: Default embed thumbnail (default `false`).
+    pub embed_thumbnail: bool,
+    /// Spec §8.4, §11.8: Default embed chapters (default `false`).
+    pub embed_chapters: bool,
+    /// Spec §8.4, §11.8: Default SponsorBlock mode (default `None`).
+    pub sponsorblock_mode: Option<crate::services::ytdlp::SponsorBlockMode>,
+    /// Spec §8.4, §11.8: Default SponsorBlock categories.
+    pub sponsorblock_categories: Vec<String>,
+    /// Spec §9.3, §11.8: Default video codec (e.g. `libx264`).
+    pub default_video_codec: Option<String>,
+    /// Spec §9.4, §11.8: Default audio codec (e.g. `aac`, `mp3`, `opus`).
+    pub default_audio_codec: Option<String>,
 }
 
 impl Default for Settings {
@@ -271,6 +289,19 @@ impl Default for Settings {
             custom_user_agent: None,
             custom_headers: Vec::new(),
             impersonate_retry: true,
+            keep_original_after_encode: false,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: vec![
+                "sponsor".to_owned(),
+                "selfpromo".to_owned(),
+                "interaction".to_owned(),
+            ],
+            default_video_codec: None,
+            default_audio_codec: None,
         }
     }
 }
@@ -279,6 +310,13 @@ impl Settings {
     /// Normalise anything a user (or an older build) may have stored.
     pub fn normalise(&mut self) {
         self.schema_version = SETTINGS_SCHEMA_VERSION;
+        if self.sponsorblock_categories.is_empty() {
+            self.sponsorblock_categories = vec![
+                "sponsor".to_owned(),
+                "selfpromo".to_owned(),
+                "interaction".to_owned(),
+            ];
+        }
         if let Some(dir) = &self.default_output_dir {
             // An empty or whitespace-only path is the same as "not set".
             if dir.as_os_str().is_empty() {
@@ -451,6 +489,8 @@ pub struct AppState {
     /// system notification of spec §7.7. The webview pushes it as soon as it
     /// has resolved it (spec §11.9).
     ui_lang: LanguageHolder,
+    /// Cached probed hardware and CPU video encoders (spec §9.3).
+    encoders: Arc<crate::services::encoders::EncodersState>,
 }
 
 /// A running download, as the temporary UI knows it.
@@ -507,7 +547,13 @@ impl AppState {
             tool_cache: Mutex::new(std::collections::HashMap::new()),
             queue: Mutex::new(None),
             ui_lang: LanguageHolder::new(notify::Lang::from_environment()),
+            encoders: Arc::new(crate::services::encoders::EncodersState::new()),
         })
+    }
+
+    /// Cached hardware and CPU video encoders state (spec §9.3).
+    pub fn encoders(&self) -> &Arc<crate::services::encoders::EncodersState> {
+        &self.encoders
     }
 
     /// Where the tool layer reads its directories from.

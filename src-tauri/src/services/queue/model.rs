@@ -359,6 +359,30 @@ pub struct ItemOptions {
     pub custom_headers: Vec<String>,
     /// Allow one retry with `--impersonate chrome` on `ANTIBOT` (spec §6.3.5, §8.5).
     pub impersonate_retry: bool,
+    /// Encode with ffmpeg after download (spec §9.2).
+    pub encode: bool,
+    /// Video encoder identifier (e.g. `libx264`, `h264_nvenc`, spec §9.3).
+    pub video_codec: Option<String>,
+    /// Audio codec identifier (e.g. `aac`, `mp3`, `opus`, spec §9.4).
+    pub audio_codec: Option<String>,
+    /// Trim start timestamp string (e.g. `"00:01:30"`, spec §9.2).
+    pub trim_start: Option<String>,
+    /// Trim end timestamp string (spec §9.2).
+    pub trim_end: Option<String>,
+    /// Keep the original downloaded file after successful encode (default `false`, spec §9.2).
+    pub keep_original: bool,
+    /// Automatically open media with the system player upon completion (spec §9.5).
+    pub auto_play: bool,
+    /// `--embed-metadata` (spec §8.4).
+    pub embed_metadata: bool,
+    /// `--embed-thumbnail` with `--convert-thumbnails jpg` (spec §8.4).
+    pub embed_thumbnail: bool,
+    /// `--embed-chapters` (spec §8.4).
+    pub embed_chapters: bool,
+    /// Optional SponsorBlock mode (`mark` or `remove`, spec §8.4).
+    pub sponsorblock_mode: Option<ytdlp::SponsorBlockMode>,
+    /// User-selectable SponsorBlock categories (spec §8.4).
+    pub sponsorblock_categories: Vec<String>,
 }
 
 impl Default for ItemOptions {
@@ -381,12 +405,39 @@ impl Default for ItemOptions {
             user_agent: None,
             custom_headers: Vec::new(),
             impersonate_retry: true,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: false,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
         }
     }
 }
 
 impl ItemOptions {
-    /// The `DownloadSpec` the job runner needs (spec §8.2).
+    /// Does this item need an encode/trim stage after download? (spec §9.2)
+    ///
+    /// "Trim implies Encode (coupling kept from the original)"
+    pub fn needs_encode(&self) -> bool {
+        self.encode
+            || self
+                .trim_start
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || self
+                .trim_end
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// The `DownloadSpec` the job runner needs (spec §8.2, §8.4).
     pub fn to_download_spec(&self) -> ytdlp::DownloadSpec {
         ytdlp::DownloadSpec {
             kind: self.kind.to_job_kind(),
@@ -405,6 +456,11 @@ impl ItemOptions {
             custom_headers: self.custom_headers.clone(),
             impersonate_chrome: false,
             impersonate_retry: self.impersonate_retry,
+            embed_metadata: self.embed_metadata,
+            embed_thumbnail: self.embed_thumbnail,
+            embed_chapters: self.embed_chapters,
+            sponsorblock_mode: self.sponsorblock_mode,
+            sponsorblock_categories: self.sponsorblock_categories.clone(),
         }
     }
 
@@ -505,6 +561,7 @@ impl ItemProgress {
             JobStage::Preparing => ItemState::Queued,
             JobStage::Downloading => ItemState::Downloading,
             JobStage::PostProcessing => ItemState::PostProcessing,
+            JobStage::Encoding => ItemState::Encoding,
             JobStage::Done => ItemState::Done,
             JobStage::Failed => ItemState::Failed,
             JobStage::Cancelled => ItemState::Cancelled,

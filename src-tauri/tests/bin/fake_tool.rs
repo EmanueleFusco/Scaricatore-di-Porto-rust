@@ -151,18 +151,106 @@ fn run_qjs(args: &[String]) -> i32 {
 }
 
 fn run_ffmpeg(args: &[String]) -> i32 {
-    match args.first().map(String::as_str) {
-        // ffmpeg's documented flag is `-version`; see tools::version_args.
-        Some("-version") => {
-            println!("ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers");
-            0
-        }
-        Some(other) => {
-            eprintln!("fake ffmpeg: unsupported argument {other:?}");
-            2
-        }
-        None => 2,
+    if args.iter().any(|a| a == "-version") {
+        println!("ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers");
+        return 0;
     }
+
+    if args.iter().any(|a| a == "-encoders") {
+        println!("Encoders:");
+        println!(" V..... = Video");
+        println!(" A..... = Audio");
+        println!(" V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10");
+        println!(" V..... libx265              libx265 H.265 / HEVC");
+        println!(" V..... h264_nvenc           NVIDIA NVENC H.264 encoder");
+        println!(" V..... hevc_nvenc           NVIDIA NVENC hevc encoder");
+        println!(" V..... h264_qsv             Intel Quick Sync Video H.264 encoder");
+        println!(" V..... hevc_qsv             Intel Quick Sync Video hevc encoder");
+        println!(" V..... h264_amf             AMD AMF H.264 encoder");
+        println!(" V..... hevc_amf             AMD AMF hevc encoder");
+        println!(" V..... h264_vaapi           VAAPI H.264 encoder");
+        println!(" V..... hevc_vaapi           VAAPI hevc encoder");
+        println!(" V..... h264_videotoolbox    VideoToolbox H.264 encoder");
+        println!(" V..... hevc_videotoolbox    VideoToolbox hevc encoder");
+        println!(" A..... aac                  AAC (Advanced Audio Coding)");
+        println!(" A..... libmp3lame           libmp3lame MP3 (MPEG audio layer 3)");
+        println!(" A..... libopus              libopus Opus");
+        return 0;
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let read_flag = |name: &str| -> Option<String> {
+        exe_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(name)).ok())
+    };
+
+    // Probe mode: ffmpeg ... -c:v <encoder> ... -f null -
+    let is_null_sink = args.windows(2).any(|w| w[0] == "-f" && w[1] == "null")
+        || args.last().map(String::as_str) == Some("-");
+    if is_null_sink {
+        let v_codec = args
+            .windows(2)
+            .find(|w| w[0] == "-c:v")
+            .map(|w| w[1].as_str())
+            .unwrap_or_default();
+        let fail_enc =
+            read_flag("fail_probe.txt").or_else(|| std::env::var("FAKE_FFMPEG_FAIL_PROBE").ok());
+        if let Some(fail_enc) = fail_enc {
+            if fail_enc.split(',').any(|s| s.trim() == v_codec) {
+                eprintln!("fake ffmpeg: simulated probe failure for encoder {v_codec}");
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    // Encode run:
+    let v_codec = args
+        .windows(2)
+        .find(|w| w[0] == "-c:v")
+        .map(|w| w[1].as_str())
+        .unwrap_or_default();
+
+    let fail_enc =
+        read_flag("fail_encode.txt").or_else(|| std::env::var("FAKE_FFMPEG_FAIL_ENCODE").ok());
+    if let Some(fail_enc) = fail_enc {
+        if fail_enc.split(',').any(|s| s.trim() == v_codec) {
+            eprintln!("fake ffmpeg: simulated encode failure for encoder {v_codec}");
+            return 1;
+        }
+    }
+
+    if read_flag("fail_all.txt").is_some() || std::env::var("FAKE_FFMPEG_FAIL_ALL_ENCODE").is_ok() {
+        eprintln!("fake ffmpeg: simulated total encode failure");
+        return 1;
+    }
+
+    if args.iter().any(|a| a == "-progress") {
+        println!("out_time_us=5000000");
+        println!("speed=2.0x");
+        println!("progress=continue");
+        println!("out_time_us=10000000");
+        println!("speed=2.0x");
+        println!("progress=end");
+    }
+
+    // Write dummy output to last argument if it looks like a path
+    if let Some(out_path) = args.last() {
+        if !out_path.starts_with('-') {
+            if let Some(parent) = std::path::Path::new(out_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(err) = std::fs::write(out_path, b"DUMMY_ENCODED_OUTPUT_DATA") {
+                eprintln!("fake ffmpeg: failed to write {out_path}: {err}");
+                return 1;
+            }
+        }
+    }
+
+    0
 }
 
 fn usage() -> String {

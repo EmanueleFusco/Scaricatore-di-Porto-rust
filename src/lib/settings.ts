@@ -69,7 +69,28 @@ export interface Settings {
   customHeaders: string[];
   /** Spec §6.3.5, §11.8: retry once with `--impersonate chrome` on anti-bot failure (default true). */
   impersonateRetry: boolean;
+  /** Spec §9.2, §11.8: Keep original downloaded file after successful encode (default false). */
+  keepOriginalAfterEncode: boolean;
+  /** Spec §9.5, §11.8: Automatically play finished media (default false). */
+  autoPlay: boolean;
+  /** Spec §8.4, §11.8: Default embed metadata (default false). */
+  embedMetadata: boolean;
+  /** Spec §8.4, §11.8: Default embed thumbnail (default false). */
+  embedThumbnail: boolean;
+  /** Spec §8.4, §11.8: Default embed chapters (default false). */
+  embedChapters: boolean;
+  /** Spec §8.4, §11.8: Default SponsorBlock mode (null | "mark" | "remove"). */
+  sponsorblockMode: SponsorBlockMode | null;
+  /** Spec §8.4, §11.8: Default SponsorBlock categories. */
+  sponsorblockCategories: string[];
+  /** Spec §9.3, §11.8: Default video codec (e.g. "libx264"). */
+  defaultVideoCodec: string | null;
+  /** Spec §9.4, §11.8: Default audio codec (e.g. "aac", "mp3", "opus"). */
+  defaultAudioCodec: string | null;
 }
+
+/** SponsorBlock mode (spec §8.4): mark as chapters vs remove cuts. */
+export type SponsorBlockMode = "mark" | "remove";
 
 /** Mirror of the Rust `commands::settings::ArchiveStatusView` payload. */
 export interface ArchiveStatusView {
@@ -100,7 +121,7 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
@@ -126,6 +147,15 @@ export const DEFAULT_SETTINGS: Settings = {
   customUserAgent: null,
   customHeaders: [],
   impersonateRetry: true,
+  keepOriginalAfterEncode: false,
+  autoPlay: false,
+  embedMetadata: false,
+  embedThumbnail: false,
+  embedChapters: false,
+  sponsorblockMode: null,
+  sponsorblockCategories: ["sponsor", "selfpromo", "interaction"],
+  defaultVideoCodec: null,
+  defaultAudioCodec: null,
 };
 
 /**
@@ -146,6 +176,7 @@ const THEMES: readonly ThemePreference[] = ["system", "dark", "light"];
 const CHANNELS: readonly YtdlpChannel[] = ["stable", "nightly"];
 const RUNTIME_MODES: readonly JsRuntimeMode[] = ["auto", "quickjs", "deno"];
 const PLAYLIST_BEHAVIORS: readonly PlaylistUrlBehavior[] = ["ask", "video", "playlist"];
+export const SPONSORBLOCK_MODES: readonly SponsorBlockMode[] = ["mark", "remove"];
 
 /**
  * The browsers `--cookies-from-browser` knows (spec §8.6), in a stable order.
@@ -194,6 +225,10 @@ export function isYtdlpChannelValue(value: unknown): value is YtdlpChannel {
 
 export function isPlaylistUrlBehavior(value: unknown): value is PlaylistUrlBehavior {
   return PLAYLIST_BEHAVIORS.includes(value as PlaylistUrlBehavior);
+}
+
+export function isSponsorBlockMode(value: unknown): value is SponsorBlockMode {
+  return SPONSORBLOCK_MODES.includes(value as SponsorBlockMode);
 }
 
 function normaliseOptionalTrimmed(value: unknown): string | null {
@@ -269,6 +304,19 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
       typeof raw?.impersonateRetry === "boolean"
         ? raw.impersonateRetry
         : DEFAULT_SETTINGS.impersonateRetry,
+    keepOriginalAfterEncode: raw?.keepOriginalAfterEncode === true,
+    autoPlay: raw?.autoPlay === true,
+    embedMetadata: raw?.embedMetadata === true,
+    embedThumbnail: raw?.embedThumbnail === true,
+    embedChapters: raw?.embedChapters === true,
+    sponsorblockMode: isSponsorBlockMode(raw?.sponsorblockMode) ? raw.sponsorblockMode : null,
+    sponsorblockCategories: Array.isArray(raw?.sponsorblockCategories)
+      ? raw.sponsorblockCategories
+          .filter((c): c is string => typeof c === "string" && c.trim() !== "")
+          .map((c) => c.trim())
+      : [...DEFAULT_SETTINGS.sponsorblockCategories],
+    defaultVideoCodec: normaliseOptionalTrimmed(raw?.defaultVideoCodec),
+    defaultAudioCodec: normaliseOptionalTrimmed(raw?.defaultAudioCodec),
   };
 }
 

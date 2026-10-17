@@ -54,6 +54,26 @@ export interface ItemOptions {
   userAgent: string | null;
   customHeaders: string[];
   impersonateRetry: boolean;
+  encode: boolean;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  trimStart: string | null;
+  trimEnd: string | null;
+  keepOriginal: boolean;
+  autoPlay: boolean;
+  embedMetadata: boolean;
+  embedThumbnail: boolean;
+  embedChapters: boolean;
+  sponsorblockMode: "mark" | "remove" | null;
+  sponsorblockCategories: string[];
+}
+
+/** Mirror of the backend's `EncoderInfo` (spec §9.3). */
+export interface EncoderInfo {
+  id: string;
+  label: string;
+  codec: string;
+  isHardware: boolean;
 }
 
 /** Mirror of `services::queue::model::ItemProgress`. */
@@ -216,6 +236,18 @@ export interface AddItemRequest {
   referer?: string | null;
   userAgent?: string | null;
   customHeaders?: string[] | null;
+  encode?: boolean | null;
+  videoCodec?: string | null;
+  audioCodec?: string | null;
+  trimStart?: string | null;
+  trimEnd?: string | null;
+  keepOriginal?: boolean | null;
+  autoPlay?: boolean | null;
+  embedMetadata?: boolean | null;
+  embedThumbnail?: boolean | null;
+  embedChapters?: boolean | null;
+  sponsorblockMode?: "mark" | "remove" | null;
+  sponsorblockCategories?: string[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +353,23 @@ export function normaliseItem(raw: unknown): QueueItem {
         ? options.customHeaders.filter((h): h is string => typeof h === "string")
         : [],
       impersonateRetry: options.impersonateRetry !== false,
+      encode: options.encode === true,
+      videoCodec: asNullableString(options.videoCodec),
+      audioCodec: asNullableString(options.audioCodec),
+      trimStart: asNullableString(options.trimStart),
+      trimEnd: asNullableString(options.trimEnd),
+      keepOriginal: options.keepOriginal === true,
+      autoPlay: options.autoPlay === true,
+      embedMetadata: options.embedMetadata === true,
+      embedThumbnail: options.embedThumbnail === true,
+      embedChapters: options.embedChapters === true,
+      sponsorblockMode:
+        options.sponsorblockMode === "mark" || options.sponsorblockMode === "remove"
+          ? options.sponsorblockMode
+          : null,
+      sponsorblockCategories: Array.isArray(options.sponsorblockCategories)
+        ? options.sponsorblockCategories.filter((c): c is string => typeof c === "string")
+        : [],
     },
     groupId: asNullableString(value.groupId),
     progress: {
@@ -737,6 +786,8 @@ export function progressLabelKey(label: string): string {
       return "job.label.extractingAudio";
     case "embedding":
       return "job.label.embedding";
+    case "encoding":
+      return "job.label.encoding";
     case "postProcessing":
       return "job.label.postProcessing";
     default:

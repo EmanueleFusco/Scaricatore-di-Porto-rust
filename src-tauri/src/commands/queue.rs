@@ -149,6 +149,30 @@ pub struct AddItemRequest {
     /// §11.3).
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub custom_headers: Vec<String>,
+    #[serde(default)]
+    pub encode: Option<bool>,
+    #[serde(default)]
+    pub video_codec: Option<String>,
+    #[serde(default)]
+    pub audio_codec: Option<String>,
+    #[serde(default)]
+    pub trim_start: Option<String>,
+    #[serde(default)]
+    pub trim_end: Option<String>,
+    #[serde(default)]
+    pub keep_original: Option<bool>,
+    #[serde(default)]
+    pub auto_play: Option<bool>,
+    #[serde(default)]
+    pub embed_metadata: Option<bool>,
+    #[serde(default)]
+    pub embed_thumbnail: Option<bool>,
+    #[serde(default)]
+    pub embed_chapters: Option<bool>,
+    #[serde(default)]
+    pub sponsorblock_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    pub sponsorblock_categories: Vec<String>,
 }
 
 fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -350,6 +374,36 @@ pub async fn queue_add<R: Runtime>(
                 .or_else(|| settings.custom_user_agent.clone()),
             custom_headers,
             impersonate_retry: settings.impersonate_retry,
+            encode: item.encode.unwrap_or(false),
+            video_codec: item
+                .video_codec
+                .or_else(|| settings.default_video_codec.clone()),
+            audio_codec: item
+                .audio_codec
+                .or_else(|| settings.default_audio_codec.clone()),
+            trim_start: item.trim_start.filter(|s| !s.trim().is_empty()),
+            trim_end: item.trim_end.filter(|s| !s.trim().is_empty()),
+            keep_original: item
+                .keep_original
+                .unwrap_or(settings.keep_original_after_encode),
+            auto_play: item.auto_play.unwrap_or(settings.auto_play),
+            embed_metadata: item.embed_metadata.unwrap_or(settings.embed_metadata),
+            embed_thumbnail: item.embed_thumbnail.unwrap_or(settings.embed_thumbnail),
+            embed_chapters: item.embed_chapters.unwrap_or(settings.embed_chapters),
+            sponsorblock_mode: item
+                .sponsorblock_mode
+                .as_deref()
+                .and_then(|s| match s {
+                    "mark" => Some(crate::services::ytdlp::SponsorBlockMode::Mark),
+                    "remove" => Some(crate::services::ytdlp::SponsorBlockMode::Remove),
+                    _ => None,
+                })
+                .or(settings.sponsorblock_mode),
+            sponsorblock_categories: if !item.sponsorblock_categories.is_empty() {
+                item.sponsorblock_categories
+            } else {
+                settings.sponsorblock_categories.clone()
+            },
         };
 
         requests.push(AddRequest {
