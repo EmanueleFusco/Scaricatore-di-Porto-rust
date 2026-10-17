@@ -773,3 +773,84 @@ fn queue_add_treats_empty_sponsorblock_categories_or_off_as_disabled() {
         json!(["sponsor", "intro"])
     );
 }
+
+#[test]
+fn queue_add_scopes_download_archive_fallback_to_playlist_items() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    // By default `use_download_archive` is `true` in Settings.
+    // A single video (`groupId: null`, `useArchive` omitted) must NOT receive
+    // `archiveFile`, so the user can always re-download a standalone video even
+    // after deleting the file from disk. A playlist entry (`groupId` set) falls
+    // back to `use_download_archive` unless explicitly overridden.
+    let _ = call(
+        &window,
+        "queue_add",
+        json!({
+            "force": false,
+            "items": [
+                {
+                    "url": "https://a.example/single-default",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": null
+                },
+                {
+                    "url": "https://a.example/playlist-default",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": "g-playlist-1"
+                },
+                {
+                    "url": "https://a.example/playlist-ignore-archive",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": "g-playlist-1",
+                    "useArchive": false
+                }
+            ]
+        }),
+    )
+    .expect("queue_add must succeed");
+
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    let items = list["items"].as_array().expect("items array");
+
+    let single = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/single-default")
+        .unwrap();
+    assert_eq!(
+        single["options"]["archiveFile"],
+        serde_json::Value::Null,
+        "single-video download must not use archive.txt unless explicitly requested"
+    );
+
+    let playlist_item = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/playlist-default")
+        .unwrap();
+    assert!(
+        playlist_item["options"]["archiveFile"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("archive.txt")),
+        "playlist item must inherit archive.txt when use_download_archive is true"
+    );
+
+    let playlist_ignored = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/playlist-ignore-archive")
+        .unwrap();
+    assert_eq!(
+        playlist_ignored["options"]["archiveFile"],
+        serde_json::Value::Null,
+        "playlist item with useArchive: false must not use archive.txt"
+    );
+}

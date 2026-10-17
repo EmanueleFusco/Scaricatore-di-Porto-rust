@@ -50,10 +50,10 @@
   let reversed = $state(false);
   let folderPerPlaylist = $state(true);
   let numbering = $state(true);
-  // Spec §6.4: "skip already downloaded" is on by default for playlists, and
-  // unticking it is the "ignore the archive for this run" the spec asks for.
+  // Spec §6.4: "skip already downloaded" defaults to the user's playlist archive
+  // setting (`true` by default), and unticking it is "ignore archive for this run".
   // svelte-ignore state_referenced_locally
-  let useArchive = $state(true);
+  let useArchive = $state(settingsStore.settings.useDownloadArchive);
   let presetValue = $state("max1080");
   let anchor = $state<number | null>(null);
   let scrollTop = $state(0);

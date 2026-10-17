@@ -338,7 +338,18 @@ pub async fn queue_add<R: Runtime>(
                 custom_headers.push(trimmed.to_owned());
             }
         }
-        let use_archive = item.use_archive.unwrap_or(settings.use_download_archive);
+        // Spec §6.4: the download archive is for playlists ("skip already
+        // downloaded (download archive, default on for playlists)"). Single-video
+        // requests (`group_id == None`) do not pass `--download-archive` unless
+        // `use_archive` is explicitly requested, so a user can always re-download
+        // an individual video even if they deleted the file from disk.
+        let use_archive = item.use_archive.unwrap_or_else(|| {
+            if item.group_id.is_some() {
+                settings.use_download_archive
+            } else {
+                false
+            }
+        });
 
         // Spec §9.2/§12.11: reject a malformed or inverted trim range up front.
         crate::services::ffmpeg::parse_and_validate_trim(

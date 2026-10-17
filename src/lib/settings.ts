@@ -55,7 +55,7 @@ export interface Settings {
   preferH264: boolean;
   /** Spec §6.4, §11.8: default behaviour for `watch?v=…&list=…` URLs (default "ask"). */
   playlistUrlBehavior: PlaylistUrlBehavior;
-  /** Spec §6.4, §8.2, §11.8: skip videos already recorded in `archive.txt` (default false). */
+  /** Spec §6.4, §8.2, §11.8: skip playlist videos already recorded in `archive.txt` (default true). */
   useDownloadArchive: boolean;
   /** Spec §6.3.4, §8.2, §11.8: HTTP/HTTPS/SOCKS5 proxy URL (`--proxy`). */
   proxyUrl: string | null;
@@ -140,7 +140,7 @@ export const DEFAULT_SETTINGS: Settings = {
   includeIdInFilename: true,
   preferH264: false,
   playlistUrlBehavior: "ask",
-  useDownloadArchive: false,
+  useDownloadArchive: true,
   proxyUrl: null,
   limitRate: null,
   customReferer: null,
@@ -294,7 +294,10 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
     playlistUrlBehavior: isPlaylistUrlBehavior(raw?.playlistUrlBehavior)
       ? raw.playlistUrlBehavior
       : "ask",
-    useDownloadArchive: raw?.useDownloadArchive === true,
+    useDownloadArchive:
+      typeof raw?.useDownloadArchive === "boolean"
+        ? raw.useDownloadArchive
+        : DEFAULT_SETTINGS.useDownloadArchive,
     proxyUrl: normaliseOptionalTrimmed(raw?.proxyUrl),
     limitRate: normaliseOptionalTrimmed(raw?.limitRate),
     customReferer: normaliseOptionalTrimmed(raw?.customReferer),

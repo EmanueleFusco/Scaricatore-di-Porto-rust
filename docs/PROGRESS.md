@@ -3533,4 +3533,20 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: push commit to remote.
 
-
+## 2026-10-17 — M4 / Bug fix: scope download archive fallback to playlist items so single videos can always be re-downloaded (spec §6.4, §8.2)
+- Done:
+  - In `src-tauri/src/commands/queue.rs` `queue_add`: changed `use_archive` resolution from `item.use_archive.unwrap_or(settings.use_download_archive)` to only fall back to `settings.use_download_archive` when `item.group_id.is_some()` (playlist items), and `false` for standalone single-video items (`group_id == None`). Previously, single-video requests from the Add bar omitted `useArchive`, inherited `use_download_archive: true` from global settings, recorded their video IDs in `archive.txt`, and prevented the user from ever re-downloading a video whose output file had been deleted from disk.
+  - In `src/lib/components/PlaylistPanel.svelte`: initialised `useArchive` from `settingsStore.settings.useDownloadArchive` instead of a hard-coded `true`, so the global "Use download archive" setting in the "Playlists & archive" section governs the playlist panel's default while allowing per-run overrides ("Ignore archive for this run").
+  - In `src/lib/settings.ts` and `src/lib/settings.test.ts`: aligned `DEFAULT_SETTINGS.useDownloadArchive` (`true`) and `normaliseSettings` with the Rust backend default (`Settings::default().use_download_archive == true`, spec §6.4).
+  - Added integration test `queue_add_scopes_download_archive_fallback_to_playlist_items` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 136 integration = 471 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 442ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: Spec §6.4 specifies `--download-archive <app data>/archive.txt` under "YouTube playlists and channels" ("skip already downloaded (download archive, default on for playlists)").
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: commit changes.
