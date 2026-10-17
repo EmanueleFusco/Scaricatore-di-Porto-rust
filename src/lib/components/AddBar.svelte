@@ -507,6 +507,8 @@
                       <input
                         type="checkbox"
                         checked={row.encode}
+                        disabled={row.trimStart.trim() !== "" || row.trimEnd.trim() !== ""}
+                        aria-describedby={`trim-hint-${row.key}`}
                         onchange={(event) =>
                           addBarStore.setMediaOptions(row.key, { encode: event.currentTarget.checked })}
                       />
@@ -557,45 +559,47 @@
                           </select>
                         </div>
                       </div>
+                    {/if}
 
-                      <div class="field">
-                        <span class="field__label">{tt("queue.add.trim.title")}</span>
-                        <div class="add__controls">
-                          <div class="field">
-                            <label class="field__label" for={`trim-start-${row.key}`}>
-                              {tt("queue.add.trim.start")}
-                            </label>
-                            <input
-                              class="input"
-                              id={`trim-start-${row.key}`}
-                              type="text"
-                              placeholder="00:00"
-                              value={row.trimStart}
-                              oninput={(event) =>
-                                addBarStore.setMediaOptions(row.key, { trimStart: event.currentTarget.value })}
-                            />
-                          </div>
-                          <div class="field">
-                            <label class="field__label" for={`trim-end-${row.key}`}>
-                              {tt("queue.add.trim.end")}
-                            </label>
-                            <input
-                              class="input"
-                              id={`trim-end-${row.key}`}
-                              type="text"
-                              placeholder="00:00"
-                              value={row.trimEnd}
-                              oninput={(event) =>
-                                addBarStore.setMediaOptions(row.key, { trimEnd: event.currentTarget.value })}
-                            />
-                          </div>
+                    <div class="field">
+                      <span class="field__label">{tt("queue.add.trim.title")}</span>
+                      <div class="add__controls">
+                        <div class="field">
+                          <label class="field__label" for={`trim-start-${row.key}`}>
+                            {tt("queue.add.trim.start")}
+                          </label>
+                          <input
+                            class="input"
+                            id={`trim-start-${row.key}`}
+                            type="text"
+                            placeholder="00:00"
+                            value={row.trimStart}
+                            oninput={(event) =>
+                              addBarStore.setMediaOptions(row.key, { trimStart: event.currentTarget.value })}
+                          />
                         </div>
-                        <p class="field__hint">{tt("queue.add.trim.hint")}</p>
-                        {#if trimError(row, video?.duration ?? null)}
-                          <p class="add__row-error" role="alert">{tt(trimError(row, video?.duration ?? null)!)}</p>
-                        {/if}
+                        <div class="field">
+                          <label class="field__label" for={`trim-end-${row.key}`}>
+                            {tt("queue.add.trim.end")}
+                          </label>
+                          <input
+                            class="input"
+                            id={`trim-end-${row.key}`}
+                            type="text"
+                            placeholder="00:00"
+                            value={row.trimEnd}
+                            oninput={(event) =>
+                              addBarStore.setMediaOptions(row.key, { trimEnd: event.currentTarget.value })}
+                          />
+                        </div>
                       </div>
+                      <p class="field__hint" id={`trim-hint-${row.key}`}>{tt("queue.add.trim.hint")}</p>
+                      {#if trimError(row, video?.duration ?? null)}
+                        <p class="add__row-error" role="alert">{tt(trimError(row, video?.duration ?? null)!)}</p>
+                      {/if}
+                    </div>
 
+                    {#if row.encode}
                       <label class="add__check">
                         <input
                           type="checkbox"
@@ -605,17 +609,17 @@
                         />
                         {tt("queue.add.more.keepOriginal")}
                       </label>
-
-                      <label class="add__check">
-                        <input
-                          type="checkbox"
-                          checked={row.autoPlay}
-                          onchange={(event) =>
-                            addBarStore.setMediaOptions(row.key, { autoPlay: event.currentTarget.checked })}
-                        />
-                        {tt("queue.add.more.autoPlay")}
-                      </label>
                     {/if}
+
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.autoPlay}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { autoPlay: event.currentTarget.checked })}
+                      />
+                      {tt("queue.add.more.autoPlay")}
+                    </label>
                   </div>
 
                   <!-- Spec §8.4: Embed metadata, thumbnail, chapters -->

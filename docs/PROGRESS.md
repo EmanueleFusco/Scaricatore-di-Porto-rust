@@ -3237,3 +3237,9 @@ Branch `m4-media-processing`.
 - Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass, incl. existing ffmpeg_encode integration tests + new unit test), npm run check (0 errors, 0 warnings).
 - Not verified: no integration test asserting the partial file is removed on cancel; not exercised manually.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: Trim and Auto-play hidden behind Encode
+- Done: in `AddBar.svelte` the Trim fields and per-item Auto-play are now outside `{#if row.encode}` (only codecs and Keep original stay inside). The Encode checkbox is disabled while a trim range is set, with `aria-describedby` pointing at the existing trim hint ("Entering a trim range automatically enables re-encoding").
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: visual check in `npm run tauri dev` not done.
+- Next step: continue M4 review items.
