@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use scaricatore_di_porto_lib::commands::system::encoders_probe;
 use scaricatore_di_porto_lib::services::encoders::{AudioCodec, EncodersState, probe_all_encoders};
@@ -445,4 +446,137 @@ async fn encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version() {
         cached_by_ytdlp_ver.is_none(),
         "probe cache must NOT be keyed by yt-dlp version"
     );
+}
+
+#[tokio::test]
+async fn hardware_encoder_fallback_informs_user_via_toast_and_log_tail() {
+    use scaricatore_di_porto_lib::error::ErrorInfo;
+    use scaricatore_di_porto_lib::services::inspect::Runtimes;
+    use scaricatore_di_porto_lib::services::job::JobEnvironment;
+    use scaricatore_di_porto_lib::services::jsruntime::{JsRuntimeMode, RuntimeMemoryStore};
+    use scaricatore_di_porto_lib::services::queue::engine::{
+        BoxFuture, EngineConfig, QueueEngine, ToolProvider,
+    };
+    use scaricatore_di_porto_lib::services::queue::events::QueueUpdate;
+    use scaricatore_di_porto_lib::services::queue::model::{
+        ItemOptions, ItemState, LaneConfig, QueueItem,
+    };
+    use scaricatore_di_porto_lib::services::queue::store::{QUEUE_SCHEMA_VERSION, QueueFile};
+    use std::sync::Mutex;
+
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("hw_fallback.mp4", b"ORIGINAL_VIDEO_CONTENT");
+
+    // Tell fake ffmpeg to fail encode when -c:v h264_nvenc is used
+    fs::write(fixture.dir.path().join("fail_encode.txt"), "h264_nvenc")
+        .expect("write fail_encode.txt");
+
+    struct FakeProvider {
+        ffmpeg: PathBuf,
+        memory: Arc<RuntimeMemoryStore>,
+    }
+
+    impl ToolProvider for FakeProvider {
+        fn environment(
+            &self,
+            _options: ItemOptions,
+        ) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
+            let env = JobEnvironment {
+                ytdlp: self.ffmpeg.clone(),
+                ffmpeg: Some(self.ffmpeg.clone()),
+                runtimes: Runtimes {
+                    mode: JsRuntimeMode::QuickJsOnly,
+                    qjs: None,
+                    deno: None,
+                    ytdlp_version: "2026.08.19".into(),
+                },
+                memory: Arc::clone(&self.memory),
+                private_temp: None,
+                youtube_clients: None,
+            };
+            Box::pin(std::future::ready(Ok(env)))
+        }
+    }
+
+    let item_id = "test-hw-fallback-item".to_string();
+    let initial_item = QueueItem {
+        id: item_id.clone(),
+        url: "https://example.com/test".into(),
+        title: Some("Hardware encode fallback test".into()),
+        file: Some(original.clone()),
+        state: ItemState::Queued,
+        options: ItemOptions {
+            encode: true,
+            video_codec: Some("h264_nvenc".into()),
+            output_dir: fixture.dir.path().to_path_buf(),
+            ..ItemOptions::default()
+        },
+        ..QueueItem::default()
+    };
+
+    let queue_path = fixture.dir.path().join("queue.json");
+    let queue_file = QueueFile {
+        schema_version: QUEUE_SCHEMA_VERSION,
+        items: vec![initial_item],
+        groups: Vec::new(),
+        paused_all: false,
+    };
+    queue_file.save(&queue_path).expect("save queue file");
+
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&updates);
+
+    let engine = QueueEngine::open(EngineConfig {
+        path: queue_path,
+        provider: Arc::new(FakeProvider {
+            ffmpeg: fixture.fake_ffmpeg.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(
+                fixture.dir.path().join("runtime-memory.json"),
+            )),
+        }),
+        sink: Arc::new(move |update: &QueueUpdate| {
+            if let Ok(mut seen) = seen.lock() {
+                seen.push(update.clone());
+            }
+        }),
+        lanes: LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: None,
+    });
+    engine.start();
+
+    // Poll until the item is Done
+    let start = std::time::Instant::now();
+    let mut finished = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        let snap = engine.snapshot();
+        if let Some(item) = snap.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                assert!(
+                    item.log_tail
+                        .iter()
+                        .any(|l| l.contains("Hardware encoder failed")),
+                    "log_tail must record hardware encoder fallback notice"
+                );
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(finished, "item must finish with Done state");
+
+    // Verify toast in emitted updates
+    let seen_updates = updates.lock().unwrap();
+    let toast_emitted = seen_updates.iter().any(|u| {
+        u.toast
+            .as_ref()
+            .is_some_and(|t| t.message_key == "toast.hardwareEncoderFallback")
+    });
+    assert!(
+        toast_emitted,
+        "a toast with messageKey 'toast.hardwareEncoderFallback' must be emitted"
+    );
+
+    engine.shutdown();
 }

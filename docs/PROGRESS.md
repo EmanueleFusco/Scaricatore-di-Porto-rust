@@ -3307,5 +3307,21 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
 
-
-
+## 2026-10-17 — M4 / Review major 8: inform user on hardware-to-CPU encoder fallback (spec §9.3)
+- Done:
+  - Matched `used_cpu_fallback` from `ffmpeg::run_encode` in `services/queue/engine.rs`.
+  - When true, appended notice to `item.log_tail` and pushed user-facing toast `toast.hardwareEncoderFallback`.
+  - Added localized strings for `toast.hardwareEncoderFallback` in `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+  - Added integration test `hardware_encoder_fallback_informs_user_via_toast_and_log_tail` in `tests/ffmpeg_encode.rs` verifying toast emission and log tail notice.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 125 integration = 455 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 476ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.

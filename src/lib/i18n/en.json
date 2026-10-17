@@ -266,6 +266,7 @@
   "toast.queueRecovered": "The queue file was unreadable: it was kept as .bak and the queue starts empty.",
   "toast.queueInterrupted": "{count} items were running when the app closed: you can resume them.",
   "toast.queueCleared": "{count} finished items removed from the queue.",
+  "toast.hardwareEncoderFallback": "Hardware encoder failed: finished with CPU encoder.",
   "error.io": "I/O error",
   "error.json": "Invalid data format",
   "error.tauri": "Internal application error",

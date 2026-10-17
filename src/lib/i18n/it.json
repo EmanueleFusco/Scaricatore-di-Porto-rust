@@ -266,6 +266,7 @@
   "toast.queueRecovered": "Il file della coda era illeggibile: è stato messo da parte come .bak e la coda riparte vuota.",
   "toast.queueInterrupted": "{count} voci erano in corso quando l'app si è chiusa: puoi riprenderle.",
   "toast.queueCleared": "{count} voci finite rimosse dalla coda.",
+  "toast.hardwareEncoderFallback": "Codifica hardware non riuscita: completata con la codifica CPU.",
   "error.io": "Errore di I/O",
   "error.json": "Formato dati non valido",
   "error.tauri": "Errore interno dell'applicazione",

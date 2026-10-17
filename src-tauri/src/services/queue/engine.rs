@@ -1234,7 +1234,22 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 inner.wake.notify_waiters();
 
                 match encode_outcome {
-                    crate::services::ffmpeg::EncodeOutcome::Success { output_file, .. } => {
+                    crate::services::ffmpeg::EncodeOutcome::Success {
+                        output_file,
+                        used_cpu_fallback,
+                    } => {
+                        if used_cpu_fallback {
+                            // Spec §9.3: tell the user when hardware encoder failed and retried with CPU encoder
+                            {
+                                let mut state = lock(&inner.state);
+                                if let Some(item) = state.item_mut(&id) {
+                                    item.push_log(
+                                        "Hardware encoder failed; fell back to CPU encoder.",
+                                    );
+                                }
+                            }
+                            push_toast(&inner, QueueToast::new("toast.hardwareEncoderFallback"));
+                        }
                         if options.auto_play {
                             let _ = tauri_plugin_opener::open_path(
                                 output_file.to_string_lossy().as_ref(),
