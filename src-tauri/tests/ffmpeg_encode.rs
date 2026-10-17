@@ -158,6 +158,7 @@ fn audio_args_builder_matches_spec() {
         output: out_file,
         audio_codec: AudioCodec::Aac,
         trim: Some(trim),
+        embed_thumbnail: false,
     };
     let args = build_audio_encode_args(&opts);
     assert!(args.iter().any(|a| a == "-nostdin"));
@@ -173,6 +174,7 @@ fn audio_args_builder_matches_spec() {
         output: mp3_out,
         audio_codec: AudioCodec::Mp3,
         trim: None,
+        embed_thumbnail: false,
     };
     let mp3_args = build_audio_encode_args(&mp3_opts);
     assert!(mp3_args.iter().any(|a| a == "libmp3lame"));
@@ -184,6 +186,7 @@ fn audio_args_builder_matches_spec() {
         output: opus_out,
         audio_codec: AudioCodec::Opus,
         trim: None,
+        embed_thumbnail: false,
     };
     let opus_args = build_audio_encode_args(&opus_opts);
     assert!(opus_args.iter().any(|a| a == "libopus"));
@@ -260,6 +263,7 @@ async fn video_encode_succeeds_and_deletes_original_when_keep_original_false() {
             video_encoder: "libx264".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: false,
         total_duration: Some(10.0),
@@ -308,6 +312,7 @@ async fn video_encode_keeps_original_when_keep_original_true() {
             video_encoder: "libx264".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: true,
         total_duration: Some(10.0),
@@ -351,6 +356,7 @@ async fn hardware_encoder_failure_falls_back_to_cpu_encoder() {
             video_encoder: "h264_nvenc".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: true,
         total_duration: Some(10.0),
@@ -394,6 +400,7 @@ async fn encode_failure_preserves_original_file() {
             video_encoder: "libx264".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: false, // even with keep_original = false, original MUST NOT be deleted on failure
         total_duration: Some(10.0),
@@ -645,6 +652,7 @@ async fn encode_videotoolbox_retries_with_bitrate_when_qv_rejected() {
             video_encoder: "h264_videotoolbox".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: true,
         total_duration: Some(10.0),
@@ -677,6 +685,7 @@ fn encode_args_hevc_vaapi_includes_hvc1_tag() {
         video_encoder: "hevc_vaapi".to_string(),
         audio_codec: None,
         trim: None,
+        embed_thumbnail: false,
     };
     let args = build_video_encode_args(&opts);
     let args_str: Vec<String> = args
@@ -714,6 +723,7 @@ async fn ffmpeg_and_encoders_pass_private_temp_dir_to_child_processes() {
             video_encoder: "libx264".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: true,
         total_duration: Some(10.0),
@@ -797,6 +807,7 @@ async fn encode_falls_back_to_ffprobe_duration_when_total_duration_is_none() {
             video_encoder: "libx264".to_owned(),
             audio_codec: Some(AudioCodec::Aac),
             trim: None,
+            embed_thumbnail: false,
         }),
         keep_original: true,
         total_duration: None, // Missing! Must be queried from ffprobe
@@ -816,6 +827,43 @@ async fn encode_falls_back_to_ffprobe_duration_when_total_duration_is_none() {
     assert!(percentages.iter().any(|&p| (p - 100.0).abs() < 0.1));
 }
 
+use scaricatore_di_porto_lib::error::ErrorInfo;
+use scaricatore_di_porto_lib::services::inspect::Runtimes;
+use scaricatore_di_porto_lib::services::job::JobEnvironment;
+use scaricatore_di_porto_lib::services::jsruntime::{JsRuntimeMode, RuntimeMemoryStore};
+use scaricatore_di_porto_lib::services::queue::engine::{
+    BoxFuture, EngineConfig, QueueEngine, ToolProvider,
+};
+use scaricatore_di_porto_lib::services::queue::model::{
+    ItemOptions, ItemState, LaneConfig, QueueItem,
+};
+use scaricatore_di_porto_lib::services::queue::store::{QUEUE_SCHEMA_VERSION, QueueFile};
+
+struct TestProvider {
+    ffmpeg: PathBuf,
+    memory: Arc<RuntimeMemoryStore>,
+}
+
+impl ToolProvider for TestProvider {
+    fn environment(&self, _options: ItemOptions) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
+        let env = JobEnvironment {
+            ytdlp: self.ffmpeg.clone(),
+            ffmpeg: Some(self.ffmpeg.clone()),
+            ffprobe: None,
+            runtimes: Runtimes {
+                mode: JsRuntimeMode::QuickJsOnly,
+                qjs: None,
+                deno: None,
+                ytdlp_version: "2026.08.19".into(),
+            },
+            memory: Arc::clone(&self.memory),
+            private_temp: None,
+            youtube_clients: None,
+        };
+        Box::pin(std::future::ready(Ok(env)))
+    }
+}
+
 #[tokio::test]
 async fn queue_engine_probes_duration_with_ffprobe_and_validates_trim() {
     let fixture = Fixture::new();
@@ -827,46 +875,6 @@ async fn queue_engine_probes_duration_with_ffprobe_and_validates_trim() {
         "100.0",
     )
     .expect("write fake_ffprobe_duration.txt");
-
-    use scaricatore_di_porto_lib::error::ErrorInfo;
-    use scaricatore_di_porto_lib::services::inspect::Runtimes;
-    use scaricatore_di_porto_lib::services::job::JobEnvironment;
-    use scaricatore_di_porto_lib::services::jsruntime::{JsRuntimeMode, RuntimeMemoryStore};
-    use scaricatore_di_porto_lib::services::queue::engine::{
-        BoxFuture, EngineConfig, QueueEngine, ToolProvider,
-    };
-    use scaricatore_di_porto_lib::services::queue::model::{
-        ItemOptions, ItemState, LaneConfig, QueueItem,
-    };
-    use scaricatore_di_porto_lib::services::queue::store::{QUEUE_SCHEMA_VERSION, QueueFile};
-
-    struct TestProvider {
-        ffmpeg: PathBuf,
-        memory: Arc<RuntimeMemoryStore>,
-    }
-
-    impl ToolProvider for TestProvider {
-        fn environment(
-            &self,
-            _options: ItemOptions,
-        ) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
-            let env = JobEnvironment {
-                ytdlp: self.ffmpeg.clone(),
-                ffmpeg: Some(self.ffmpeg.clone()),
-                ffprobe: None,
-                runtimes: Runtimes {
-                    mode: JsRuntimeMode::QuickJsOnly,
-                    qjs: None,
-                    deno: None,
-                    ytdlp_version: "2026.08.19".into(),
-                },
-                memory: Arc::clone(&self.memory),
-                private_temp: None,
-                youtube_clients: None,
-            };
-            Box::pin(std::future::ready(Ok(env)))
-        }
-    }
 
     // 1. Success case: item with duration_sec = None gets populated from ffprobe
     let item_id = "test-ffprobe-item".to_string();
@@ -996,4 +1004,141 @@ async fn queue_engine_probes_duration_with_ffprobe_and_validates_trim() {
         trim_rejected,
         "item with trim exceeding ffprobe duration must fail"
     );
+}
+
+#[tokio::test]
+async fn queue_engine_pushes_ffmpeg_stderr_to_log_tail_on_failure() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("fail_log_tail.mp4", b"ORIGINAL_VIDEO_CONTENT");
+    let item_id = "test-fail-log-tail-item".to_string();
+
+    // Tell fake ffmpeg to fail all encodes
+    fs::write(fixture.dir.path().join("fail_all.txt"), "1").expect("write fail_all.txt");
+
+    let item = QueueItem {
+        id: item_id.clone(),
+        url: "https://example.com/test-fail".into(),
+        file: Some(original.clone()),
+        state: ItemState::Queued,
+        duration_sec: Some(10),
+        options: ItemOptions {
+            encode: true,
+            output_dir: fixture.dir.path().to_path_buf(),
+            ..ItemOptions::default()
+        },
+        ..QueueItem::default()
+    };
+    let queue_path = fixture.dir.path().join("queue_fail_log_tail.json");
+    let queue_file = QueueFile {
+        schema_version: QUEUE_SCHEMA_VERSION,
+        items: vec![item],
+        groups: Vec::new(),
+        paused_all: false,
+    };
+    queue_file.save(&queue_path).expect("save queue file");
+
+    let engine = QueueEngine::open(EngineConfig {
+        path: queue_path,
+        provider: Arc::new(TestProvider {
+            ffmpeg: fixture.fake_ffmpeg.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(
+                fixture.dir.path().join("runtime-memory-fail.json"),
+            )),
+        }),
+        sink: Arc::new(|_| {}),
+        lanes: LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: None,
+    });
+    engine.start();
+
+    let start = std::time::Instant::now();
+    let mut failure_recorded_with_log = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        let snap = engine.snapshot();
+        if let Some(item) = snap.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                assert!(
+                    item.log_tail
+                        .iter()
+                        .any(|line| line.contains("simulated total encode failure")),
+                    "item.log_tail should contain stderr lines from failed ffmpeg process"
+                );
+                failure_recorded_with_log = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        failure_recorded_with_log,
+        "item should fail and have stderr in log_tail"
+    );
+}
+
+#[test]
+fn embed_thumbnail_preserves_attached_pic_in_ffmpeg_args() {
+    // 1. Video encode with embed_thumbnail
+    let v_opts = VideoEncodeOptions {
+        input: PathBuf::from("video.mkv"),
+        output: PathBuf::from("video-encoded.mp4"),
+        video_encoder: "libx264".to_string(),
+        audio_codec: Some(AudioCodec::Aac),
+        trim: None,
+        embed_thumbnail: true,
+    };
+    let v_args: Vec<String> = build_video_encode_args(&v_opts)
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert!(v_args.contains(&"0:V:0?".to_string()));
+    assert!(v_args.contains(&"0:v:disp:attached_pic?".to_string()));
+    assert!(v_args.contains(&"-c:v:disp:attached_pic".to_string()));
+    assert!(v_args.contains(&"-disposition:v:disp:attached_pic".to_string()));
+
+    // 2. Audio encode AAC with embed_thumbnail
+    let a_opts_aac = AudioEncodeOptions {
+        input: PathBuf::from("audio.webm"),
+        output: PathBuf::from("audio-encoded.m4a"),
+        audio_codec: AudioCodec::Aac,
+        trim: None,
+        embed_thumbnail: true,
+    };
+    let a_args_aac: Vec<String> = build_audio_encode_args(&a_opts_aac)
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert!(!a_args_aac.contains(&"-vn".to_string()));
+    assert!(a_args_aac.contains(&"0:a:0?".to_string()));
+    assert!(a_args_aac.contains(&"0:v:disp:attached_pic?".to_string()));
+
+    // 3. Audio encode MP3 with embed_thumbnail
+    let a_opts_mp3 = AudioEncodeOptions {
+        input: PathBuf::from("audio.webm"),
+        output: PathBuf::from("audio-encoded.mp3"),
+        audio_codec: AudioCodec::Mp3,
+        trim: None,
+        embed_thumbnail: true,
+    };
+    let a_args_mp3: Vec<String> = build_audio_encode_args(&a_opts_mp3)
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert!(!a_args_mp3.contains(&"-vn".to_string()));
+    assert!(a_args_mp3.contains(&"0:a:0?".to_string()));
+    assert!(a_args_mp3.contains(&"0:v:disp:attached_pic?".to_string()));
+
+    // 4. Audio encode Opus with embed_thumbnail strips video (-vn) due to lack of attached_pic stream support
+    let a_opts_opus = AudioEncodeOptions {
+        input: PathBuf::from("audio.webm"),
+        output: PathBuf::from("audio-encoded.opus"),
+        audio_codec: AudioCodec::Opus,
+        trim: None,
+        embed_thumbnail: true,
+    };
+    let a_args_opus: Vec<String> = build_audio_encode_args(&a_opts_opus)
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert!(a_args_opus.contains(&"-vn".to_string()));
 }

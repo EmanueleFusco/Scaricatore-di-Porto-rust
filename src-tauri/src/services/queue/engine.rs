@@ -1214,6 +1214,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             output,
                             audio_codec,
                             trim,
+                            embed_thumbnail: options.embed_thumbnail,
                         },
                     )
                 } else {
@@ -1233,6 +1234,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             video_encoder,
                             audio_codec,
                             trim,
+                            embed_thumbnail: options.embed_thumbnail,
                         },
                     )
                 };
@@ -1298,6 +1300,14 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     }
                     crate::services::ffmpeg::EncodeOutcome::Failed { error, stderr_tail } => {
                         // Spec §9.2 and §12: keep the original file on failure!
+                        {
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                for line in &stderr_tail {
+                                    item.push_log(line);
+                                }
+                            }
+                        }
                         finish_item(
                             &inner,
                             &id,

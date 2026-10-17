@@ -351,6 +351,7 @@ pub struct VideoEncodeOptions {
     pub video_encoder: String,
     pub audio_codec: Option<AudioCodec>,
     pub trim: Option<TrimSpec>,
+    pub embed_thumbnail: bool,
 }
 
 /// Options for an audio-only encode / trim operation (spec §9.4).
@@ -360,6 +361,7 @@ pub struct AudioEncodeOptions {
     pub output: PathBuf,
     pub audio_codec: AudioCodec,
     pub trim: Option<TrimSpec>,
+    pub embed_thumbnail: bool,
 }
 
 /// Derive the encoded output path following the spec: `<name>-encoded.<ext>`.
@@ -425,6 +427,16 @@ pub fn build_video_encode_args_with_custom_encoder(
     args.push("-i".into());
     args.push(options.input.as_os_str().to_os_string());
 
+    if options.embed_thumbnail {
+        // Map primary video, audio, and attached thumbnail picture
+        args.push("-map".into());
+        args.push("0:V:0?".into());
+        args.push("-map".into());
+        args.push("0:a?".into());
+        args.push("-map".into());
+        args.push("0:v:disp:attached_pic?".into());
+    }
+
     // Video encoder arguments
     if let Some(custom) = custom_args {
         args.push("-c:v".into());
@@ -459,6 +471,14 @@ pub fn build_video_encode_args_with_custom_encoder(
         // If no explicit audio re-encode requested, copy original audio
         args.push("-c:a".into());
         args.push("copy".into());
+    }
+
+    if options.embed_thumbnail {
+        // Preserve attached picture disposition without re-encoding it with the video encoder
+        args.push("-c:v:disp:attached_pic".into());
+        args.push("copy".into());
+        args.push("-disposition:v:disp:attached_pic".into());
+        args.push("attached_pic".into());
     }
 
     // Faststart for web streaming & quick metadata reading
@@ -507,12 +527,25 @@ pub fn build_audio_encode_args(options: &AudioEncodeOptions) -> Vec<OsString> {
     args.push("-i".into());
     args.push(options.input.as_os_str().to_os_string());
 
-    // Audio only: strip video
-    args.push("-vn".into());
-
-    // Audio codec arguments
-    for arg in options.audio_codec.ffmpeg_args() {
-        args.push((*arg).into());
+    if options.embed_thumbnail && matches!(options.audio_codec, AudioCodec::Aac | AudioCodec::Mp3) {
+        // Preserve embedded thumbnail for audio containers supporting attached_pic (m4a, mp3)
+        args.push("-map".into());
+        args.push("0:a:0?".into());
+        args.push("-map".into());
+        args.push("0:v:disp:attached_pic?".into());
+        for arg in options.audio_codec.ffmpeg_args() {
+            args.push((*arg).into());
+        }
+        args.push("-c:v:disp:attached_pic".into());
+        args.push("copy".into());
+        args.push("-disposition:v:disp:attached_pic".into());
+        args.push("attached_pic".into());
+    } else {
+        // Audio only: strip video
+        args.push("-vn".into());
+        for arg in options.audio_codec.ffmpeg_args() {
+            args.push((*arg).into());
+        }
     }
 
     args.push(options.output.as_os_str().to_os_string());
@@ -1125,6 +1158,7 @@ mod tests {
             video_encoder: "libx264".to_string(),
             audio_codec: Some(AudioCodec::Aac),
             trim: Some(TrimSpec::new(Some(15.0), Some(45.0))),
+            embed_thumbnail: false,
         };
 
         let args = build_video_encode_args(&opts);
@@ -1154,12 +1188,36 @@ mod tests {
     }
 
     #[test]
+    fn builds_video_encode_args_with_embed_thumbnail() {
+        let opts = VideoEncodeOptions {
+            input: PathBuf::from("/media/input.mkv"),
+            output: PathBuf::from("/media/output-encoded.mp4"),
+            video_encoder: "libx264".to_string(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+            embed_thumbnail: true,
+        };
+
+        let args = build_video_encode_args(&opts);
+        let args_str: Vec<String> = args
+            .into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(args_str.contains(&"0:V:0?".to_string()));
+        assert!(args_str.contains(&"0:v:disp:attached_pic?".to_string()));
+        assert!(args_str.contains(&"-c:v:disp:attached_pic".to_string()));
+        assert!(args_str.contains(&"-disposition:v:disp:attached_pic".to_string()));
+    }
+
+    #[test]
     fn builds_audio_encode_args_with_trim() {
         let opts = AudioEncodeOptions {
             input: PathBuf::from("/media/input.mkv"),
             output: PathBuf::from("/media/output-encoded.mp3"),
             audio_codec: AudioCodec::Mp3,
             trim: Some(TrimSpec::new(Some(5.0), Some(15.0))),
+            embed_thumbnail: false,
         };
 
         let args = build_audio_encode_args(&opts);
@@ -1175,5 +1233,28 @@ mod tests {
             args_str.last().map(|s| s.as_str()),
             Some("/media/output-encoded.mp3")
         );
+    }
+
+    #[test]
+    fn builds_audio_encode_args_with_embed_thumbnail() {
+        let opts = AudioEncodeOptions {
+            input: PathBuf::from("/media/input.mkv"),
+            output: PathBuf::from("/media/output-encoded.m4a"),
+            audio_codec: AudioCodec::Aac,
+            trim: None,
+            embed_thumbnail: true,
+        };
+
+        let args = build_audio_encode_args(&opts);
+        let args_str: Vec<String> = args
+            .into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(!args_str.contains(&"-vn".to_string()));
+        assert!(args_str.contains(&"0:a:0?".to_string()));
+        assert!(args_str.contains(&"0:v:disp:attached_pic?".to_string()));
+        assert!(args_str.contains(&"-c:v:disp:attached_pic".to_string()));
+        assert!(args_str.contains(&"-disposition:v:disp:attached_pic".to_string()));
     }
 }

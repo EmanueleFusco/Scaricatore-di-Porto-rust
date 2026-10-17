@@ -3450,3 +3450,23 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None in this step.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
+## 2026-10-17 — M4 / Review follow-up: push stderr to item log_tail on ffmpeg failure and preserve attached thumbnails during re-encode (spec §8.4, §9.2, §9.4)
+- Done:
+  - In `src-tauri/src/services/queue/engine.rs`, updated `EncodeOutcome::Failed` to iterate over `stderr_tail` and push each line to `item.push_log(line)` so the card's log viewer displays the failure output, matching CPU fallback behavior.
+  - Added `embed_thumbnail: bool` to `VideoEncodeOptions` and `AudioEncodeOptions` in `src-tauri/src/services/ffmpeg.rs`, wired from `options.embed_thumbnail` in `engine.rs`.
+  - In `src-tauri/src/services/ffmpeg.rs` `build_video_encode_args_with_custom_encoder`: when `embed_thumbnail` is true, map `0:V:0?`, `0:a?`, `0:v:disp:attached_pic?` and add `-c:v:disp:attached_pic copy -disposition:v:disp:attached_pic attached_pic` so the embedded thumbnail/cover art is preserved and not dropped or re-encoded with the video codec.
+  - In `src-tauri/src/services/ffmpeg.rs` `build_audio_encode_args`: when `embed_thumbnail` is true and the container supports attached picture streams (`AudioCodec::Aac` `.m4a` and `AudioCodec::Mp3` `.mp3`), map `0:a:0?` and `0:v:disp:attached_pic?` with copy disposition instead of passing `-vn`, preserving embedded thumbnails during audio re-encoding. (Opus keeps `-vn` as Ogg/Opus does not support video attached_pic streams).
+  - Added unit tests in `src-tauri/src/services/ffmpeg.rs` for `build_video_encode_args` and `build_audio_encode_args` with `embed_thumbnail: true`.
+  - Added integration tests `queue_engine_pushes_ffmpeg_stderr_to_log_tail_on_failure` and `embed_thumbnail_preserves_attached_pic_in_ffmpeg_args` in `src-tauri/tests/ffmpeg_encode.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~486ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: proceed to M5 or next planned phase.
