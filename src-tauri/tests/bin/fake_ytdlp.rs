@@ -502,6 +502,10 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
     let file = home.join(name);
     let _ = std::fs::write(&file, b"fake media bytes");
     print_file_line(args, &file);
+    if url.contains("embed-fail") {
+        eprintln!("ERROR: [EmbedThumbnail] Only mp4, mkv and ogg support embedding thumbnails");
+        return 1;
+    }
     0
 }
 

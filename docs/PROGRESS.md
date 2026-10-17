@@ -3325,3 +3325,24 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None in this step.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 9: treat embedding failures as warnings and fix metadata flags (spec §8.4)
+- Done:
+  - Updated `download_args` in `src-tauri/src/services/ytdlp.rs` so that when `spec.embed_metadata` is true, `--no-embed-info-json` is always passed and `--no-embed-chapters` is passed if `!spec.embed_chapters`, preventing implicit embedding of chapters and info-json.
+  - Updated `run_attempt` in `src-tauri/src/services/job.rs` to treat postprocessor-only embedding errors (`YtdlpErrorCode::Unknown` when an embed option was requested and the output media file already exists on disk) as non-fatal warnings instead of failing the job.
+  - Added unit test `embed_metadata_without_chapters_passes_no_embed_chapters` in `src-tauri/src/services/ytdlp.rs`.
+  - Updated `src-tauri/tests/bin/fake_ytdlp.rs` to simulate embedding failure after writing the output media file on `embed-fail` URLs.
+  - Added integration tests `an_embedding_failure_is_treated_as_a_warning_when_output_file_exists` and `a_job_fails_when_tool_fails_and_no_embed_option_was_requested` in `src-tauri/tests/ytdlp_job.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 331 unit + 126 integration = 457 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 482ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked:
+  - Verified `yt-dlp --help` flags: `--embed-metadata` implies chapters/infojson unless `--no-embed-chapters` and `--no-embed-info-json` are specified.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.

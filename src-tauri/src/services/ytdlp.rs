@@ -592,6 +592,10 @@ pub fn download_args(
 
     if spec.embed_metadata {
         args.push("--embed-metadata".into());
+        args.push("--no-embed-info-json".into());
+        if !spec.embed_chapters {
+            args.push("--no-embed-chapters".into());
+        }
     }
     if spec.embed_thumbnail {
         args.push("--embed-thumbnail".into());
@@ -2281,10 +2285,12 @@ mod tests {
         let strings = args_as_strings(&args);
 
         assert!(strings.contains(&"--embed-metadata".to_string()));
+        assert!(strings.contains(&"--no-embed-info-json".to_string()));
         assert!(strings.contains(&"--embed-thumbnail".to_string()));
         assert!(strings.contains(&"--convert-thumbnails".to_string()));
         assert!(strings.contains(&"jpg".to_string()));
         assert!(strings.contains(&"--embed-chapters".to_string()));
+        assert!(!strings.contains(&"--no-embed-chapters".to_string()));
         assert!(strings.contains(&"--sponsorblock-mark".to_string()));
         assert!(strings.contains(&"sponsor,interaction".to_string()));
 
@@ -2302,5 +2308,40 @@ mod tests {
 
         assert!(strings_remove.contains(&"--sponsorblock-remove".to_string()));
         assert!(strings_remove.contains(&"sponsor,selfpromo,interaction".to_string()));
+    }
+
+    #[test]
+    fn embed_metadata_without_chapters_passes_no_embed_chapters() {
+        let env = plain_env();
+        let dirs = JobDirs {
+            home: PathBuf::from("/home/user/downloads"),
+            temp: PathBuf::from("/home/user/downloads/.tmp-123"),
+        };
+        let mut spec = DownloadSpec::video(FormatChoice::Best);
+        spec.embed_metadata = true;
+        spec.embed_chapters = false;
+
+        let args = download_args("https://youtube.com/watch?v=abc", &spec, &dirs, &env, false);
+        let strings = args_as_strings(&args);
+
+        assert!(strings.contains(&"--embed-metadata".to_string()));
+        assert!(strings.contains(&"--no-embed-info-json".to_string()));
+        assert!(strings.contains(&"--no-embed-chapters".to_string()));
+        assert!(!strings.contains(&"--embed-chapters".to_string()));
+
+        let spec_none = DownloadSpec::video(FormatChoice::Best);
+        let args_none = download_args(
+            "https://youtube.com/watch?v=abc",
+            &spec_none,
+            &dirs,
+            &env,
+            false,
+        );
+        let strings_none = args_as_strings(&args_none);
+
+        assert!(!strings_none.contains(&"--embed-metadata".to_string()));
+        assert!(!strings_none.contains(&"--no-embed-info-json".to_string()));
+        assert!(!strings_none.contains(&"--no-embed-chapters".to_string()));
+        assert!(!strings_none.contains(&"--embed-chapters".to_string()));
     }
 }
