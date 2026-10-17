@@ -1179,7 +1179,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                         .audio_codec
                         .as_deref()
                         .and_then(crate::services::encoders::AudioCodec::parse)
-                        .unwrap_or(crate::services::encoders::AudioCodec::Opus);
+                        .unwrap_or(crate::services::encoders::AudioCodec::Aac);
                     let output = crate::services::ffmpeg::derive_encoded_output_path(
                         &file,
                         audio_codec.extension(),

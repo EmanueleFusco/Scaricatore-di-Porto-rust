@@ -83,6 +83,15 @@ describe("M3 settings", () => {
   });
 });
 
+describe("M4 settings", () => {
+  it("defaults defaultAudioCodec to aac and preserves it in normalisation", () => {
+    expect(DEFAULT_SETTINGS.defaultAudioCodec).toBe("aac");
+    expect(normaliseSettings({}).defaultAudioCodec).toBe("aac");
+    expect(normaliseSettings({ defaultAudioCodec: "mp3" }).defaultAudioCodec).toBe("mp3");
+    expect(normaliseSettings({ defaultAudioCodec: "  " }).defaultAudioCodec).toBe("aac");
+  });
+});
+
 describe("sanitizePlayerClients() (spec §5.3.7, D74)", () => {
   it("normalises a real client list", () => {
     expect(sanitizePlayerClients("  WEB_EMBEDDED,web,Tv ")).toBe("web_embedded,web,tv");

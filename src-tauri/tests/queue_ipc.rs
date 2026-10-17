@@ -400,6 +400,7 @@ fn an_audio_only_quality_wins_over_the_kind_the_frontend_sent() {
         snapshot["items"][0]["options"]["quality"]["kind"],
         "audioOnly"
     );
+    assert_eq!(snapshot["items"][0]["options"]["audioCodec"], "aac");
 }
 
 #[test]

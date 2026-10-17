@@ -3286,4 +3286,26 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
 
+## 2026-10-17 — M4 / Review major 6: align default audioCodec with UI and hide video codec for audioOnly (spec §9.3, §11.3, §11.6)
+- Done:
+  - Defaulted `default_audio_codec` to `Some("aac".to_owned())` in `src-tauri/src/state.rs` (`Settings::default()` and `Settings::normalise()`).
+  - Defaulted `defaultAudioCodec` to `"aac"` in `src/lib/settings.ts` (`DEFAULT_SETTINGS` and `normaliseSettings()`).
+  - Initialized `audioCodec` in `src/lib/stores/addbar.svelte.ts` to `defaultAudioCodec ?? "aac"`.
+  - Updated audio encode fallback in `src-tauri/src/services/queue/engine.rs` from `Opus` to `AudioCodec::Aac` to align with the UI default.
+  - Hid the video codec dropdown in `src/lib/components/AddBar.svelte` when `choiceFor(row).kind === "audioOnly"`.
+  - Added assertions in `src/lib/settings.test.ts`, `src-tauri/tests/settings_ipc.rs`, and `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 124 integration = 454 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 464ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+
 

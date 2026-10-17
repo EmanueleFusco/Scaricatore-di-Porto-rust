@@ -301,7 +301,7 @@ impl Default for Settings {
                 "interaction".to_owned(),
             ],
             default_video_codec: None,
-            default_audio_codec: None,
+            default_audio_codec: Some("aac".to_owned()),
         }
     }
 }
@@ -369,6 +369,10 @@ impl Settings {
             .filter(|h| !h.is_empty() && h.contains(':') && !h.contains(['\r', '\n']))
             .map(str::to_owned)
             .collect();
+
+        self.default_video_codec = clean_optional_text(self.default_video_codec.take());
+        self.default_audio_codec =
+            clean_optional_text(self.default_audio_codec.take()).or_else(|| Some("aac".to_owned()));
     }
 
     /// The user's override for `tool`, if any.

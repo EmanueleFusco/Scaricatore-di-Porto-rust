@@ -175,7 +175,7 @@ class AddBarStore {
         loadingMore: false,
         encode: false,
         videoCodec: settingsStore.settings.defaultVideoCodec,
-        audioCodec: settingsStore.settings.defaultAudioCodec,
+        audioCodec: settingsStore.settings.defaultAudioCodec ?? "aac",
         trimStart: "",
         trimEnd: "",
         keepOriginal: settingsStore.settings.keepOriginalAfterEncode,

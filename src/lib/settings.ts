@@ -155,7 +155,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sponsorblockMode: null,
   sponsorblockCategories: ["sponsor", "selfpromo", "interaction"],
   defaultVideoCodec: null,
-  defaultAudioCodec: null,
+  defaultAudioCodec: "aac",
 };
 
 /**
@@ -316,7 +316,8 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
           .map((c) => c.trim())
       : [...DEFAULT_SETTINGS.sponsorblockCategories],
     defaultVideoCodec: normaliseOptionalTrimmed(raw?.defaultVideoCodec),
-    defaultAudioCodec: normaliseOptionalTrimmed(raw?.defaultAudioCodec),
+    defaultAudioCodec:
+      normaliseOptionalTrimmed(raw?.defaultAudioCodec) ?? DEFAULT_SETTINGS.defaultAudioCodec,
   };
 }
 

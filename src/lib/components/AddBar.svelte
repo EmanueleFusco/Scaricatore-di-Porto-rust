@@ -517,30 +517,32 @@
 
                     {#if row.encode}
                       <div class="add__controls">
-                        <div class="field">
-                          <label class="field__label" for={`more-vcodec-${row.key}`}>
-                            {tt("queue.add.more.encode.videoCodec")}
-                          </label>
-                          <select
-                            class="select"
-                            id={`more-vcodec-${row.key}`}
-                            value={row.videoCodec ?? settingsStore.settings.defaultVideoCodec ?? "libx264"}
-                            onchange={(event) =>
-                              addBarStore.setMediaOptions(row.key, { videoCodec: event.currentTarget.value })}
-                          >
-                            {#if toolsStore.probingEncoders}
-                              <option disabled value="">{tt("queue.add.more.encode.probing")}</option>
-                            {/if}
-                            {#if toolsStore.probedEncoders.length > 0}
-                              {#each toolsStore.probedEncoders as encoder (encoder.id)}
-                                <option value={encoder.id}>{encoder.label}</option>
-                              {/each}
-                            {:else}
-                              <option value="libx264">x264 (CPU)</option>
-                              <option value="libx265">x265 (CPU)</option>
-                            {/if}
-                          </select>
-                        </div>
+                        {#if choiceFor(row).kind !== "audioOnly"}
+                          <div class="field">
+                            <label class="field__label" for={`more-vcodec-${row.key}`}>
+                              {tt("queue.add.more.encode.videoCodec")}
+                            </label>
+                            <select
+                              class="select"
+                              id={`more-vcodec-${row.key}`}
+                              value={row.videoCodec ?? settingsStore.settings.defaultVideoCodec ?? "libx264"}
+                              onchange={(event) =>
+                                addBarStore.setMediaOptions(row.key, { videoCodec: event.currentTarget.value })}
+                            >
+                              {#if toolsStore.probingEncoders}
+                                <option disabled value="">{tt("queue.add.more.encode.probing")}</option>
+                              {/if}
+                              {#if toolsStore.probedEncoders.length > 0}
+                                {#each toolsStore.probedEncoders as encoder (encoder.id)}
+                                  <option value={encoder.id}>{encoder.label}</option>
+                                {/each}
+                              {:else}
+                                <option value="libx264">x264 (CPU)</option>
+                                <option value="libx265">x265 (CPU)</option>
+                              {/if}
+                            </select>
+                          </div>
+                        {/if}
 
                         <div class="field">
                           <label class="field__label" for={`more-acodec-${row.key}`}>
