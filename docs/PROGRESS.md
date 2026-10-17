@@ -3389,3 +3389,21 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: continue M4 review items.
 
+## 2026-10-17 — M4 / Review major 12: duplicate queue detection distinguishes M4 options (spec §7.3)
+- Done:
+  - Included `encode`, `video_codec`, `audio_codec`, `trim_start`, `trim_end`, `keep_original`, `embed_metadata`, `embed_thumbnail`, `embed_chapters`, `sponsorblock_mode`, and `sponsorblock_categories` in `ItemOptions::signature` in `src-tauri/src/services/queue/model.rs`.
+  - Added unit test `the_options_signature_separates_m4_options` in `src-tauri/src/services/queue/model.rs`.
+  - Added integration test `queue_add_does_not_treat_different_m4_options_as_duplicates` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 334 unit + 131 integration = 465 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 440ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+

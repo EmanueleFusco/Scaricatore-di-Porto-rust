@@ -366,6 +366,47 @@ fn queue_add_reports_duplicates_and_the_second_call_forces_them() {
 }
 
 #[test]
+fn queue_add_does_not_treat_different_m4_options_as_duplicates() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let result = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [
+                    {
+                        "url": "https://a.example/clip",
+                        "kind": "video",
+                        "quality": { "kind": "best" },
+                        "outputDir": out.display().to_string(),
+                        "trimStart": "00:00",
+                        "trimEnd": "00:10"
+                    },
+                    {
+                        "url": "https://a.example/clip",
+                        "kind": "video",
+                        "quality": { "kind": "best" },
+                        "outputDir": out.display().to_string(),
+                        "trimStart": "00:20",
+                        "trimEnd": "00:30"
+                    }
+                ]
+            }),
+        )
+    })
+    .expect("must succeed");
+
+    assert_eq!(result["added"].as_array().map(Vec::len), Some(2));
+    assert!(result["duplicates"].as_array().expect("array").is_empty());
+}
+
+#[test]
 fn an_audio_only_quality_wins_over_the_kind_the_frontend_sent() {
     let dir = TempDir::new().expect("temp dir");
     let out = dir.path().join("out");

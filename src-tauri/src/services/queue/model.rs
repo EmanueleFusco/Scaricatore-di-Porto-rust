@@ -471,12 +471,30 @@ impl ItemOptions {
             CookieChoice::Browser(name) => format!("browser:{name}"),
             CookieChoice::File(path) => format!("file:{}", path.display()),
         };
+        let sb_mode = match self.sponsorblock_mode {
+            None => "none",
+            Some(ytdlp::SponsorBlockMode::Mark) => "mark",
+            Some(ytdlp::SponsorBlockMode::Remove) => "remove",
+        };
+        let mut sb_categories = self.sponsorblock_categories.clone();
+        sb_categories.sort();
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind.as_str(),
             self.quality.signature(),
             self.output_dir.display(),
-            cookies
+            cookies,
+            self.encode,
+            self.video_codec.as_deref().unwrap_or(""),
+            self.audio_codec.as_deref().unwrap_or(""),
+            self.trim_start.as_deref().unwrap_or(""),
+            self.trim_end.as_deref().unwrap_or(""),
+            self.keep_original,
+            self.embed_metadata,
+            self.embed_thumbnail,
+            self.embed_chapters,
+            sb_mode,
+            sb_categories.join(","),
         )
     }
 }
@@ -1189,6 +1207,79 @@ mod tests {
         assert_ne!(base.signature(), other_folder.signature());
         assert_ne!(base.signature(), other_cookies.signature());
         assert_eq!(base.signature(), ItemOptions::default().signature());
+    }
+
+    #[test]
+    fn the_options_signature_separates_m4_options() {
+        let base = ItemOptions::default();
+        let other_encode = ItemOptions {
+            encode: true,
+            ..base.clone()
+        };
+        let other_vcodec = ItemOptions {
+            video_codec: Some("libx264".into()),
+            ..base.clone()
+        };
+        let other_acodec = ItemOptions {
+            audio_codec: Some("opus".into()),
+            ..base.clone()
+        };
+        let other_trim_start = ItemOptions {
+            trim_start: Some("00:10".into()),
+            ..base.clone()
+        };
+        let other_trim_end = ItemOptions {
+            trim_end: Some("00:20".into()),
+            ..base.clone()
+        };
+        let other_keep_original = ItemOptions {
+            keep_original: true,
+            ..base.clone()
+        };
+        let other_embed_metadata = ItemOptions {
+            embed_metadata: true,
+            ..base.clone()
+        };
+        let other_embed_thumbnail = ItemOptions {
+            embed_thumbnail: true,
+            ..base.clone()
+        };
+        let other_embed_chapters = ItemOptions {
+            embed_chapters: true,
+            ..base.clone()
+        };
+        let other_sb_mode = ItemOptions {
+            sponsorblock_mode: Some(ytdlp::SponsorBlockMode::Mark),
+            ..base.clone()
+        };
+        let other_sb_cats = ItemOptions {
+            sponsorblock_categories: vec!["sponsor".into()],
+            ..base.clone()
+        };
+
+        assert_ne!(base.signature(), other_encode.signature());
+        assert_ne!(base.signature(), other_vcodec.signature());
+        assert_ne!(base.signature(), other_acodec.signature());
+        assert_ne!(base.signature(), other_trim_start.signature());
+        assert_ne!(base.signature(), other_trim_end.signature());
+        assert_ne!(base.signature(), other_keep_original.signature());
+        assert_ne!(base.signature(), other_embed_metadata.signature());
+        assert_ne!(base.signature(), other_embed_thumbnail.signature());
+        assert_ne!(base.signature(), other_embed_chapters.signature());
+        assert_ne!(base.signature(), other_sb_mode.signature());
+        assert_ne!(base.signature(), other_sb_cats.signature());
+
+        let clip_a = ItemOptions {
+            trim_start: Some("00:00".into()),
+            trim_end: Some("00:10".into()),
+            ..base.clone()
+        };
+        let clip_b = ItemOptions {
+            trim_start: Some("00:20".into()),
+            trim_end: Some("00:30".into()),
+            ..base
+        };
+        assert_ne!(clip_a.signature(), clip_b.signature());
     }
 
     #[test]
