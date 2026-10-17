@@ -364,11 +364,28 @@ pub struct AudioEncodeOptions {
 /// Example: `/path/to/Video.webm` -> `/path/to/Video-encoded.mp4`
 pub fn derive_encoded_output_path(input: &Path, target_ext: &str) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
+    let mut name = input
         .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    parent.join(format!("{}-encoded.{}", stem, target_ext))
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("output"));
+    name.push(format!("-encoded.{target_ext}"));
+    parent.join(name)
+}
+
+/// The temporary file ffmpeg writes to before the atomic rename to `output`
+/// (spec §7.3, §15.12). It keeps the extension, which ffmpeg needs to pick
+/// the muxer: `Video-encoded.mp4` -> `Video-encoded.sdp-part.mp4`.
+pub fn partial_output_path(output: &Path) -> PathBuf {
+    let mut name = output
+        .file_stem()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("output"));
+    name.push(".sdp-part");
+    if let Some(ext) = output.extension() {
+        name.push(".");
+        name.push(ext);
+    }
+    output.with_file_name(name)
 }
 
 /// Build the FFmpeg command line arguments for a video encode (spec §9.2).
@@ -548,14 +565,64 @@ pub enum EncodeOutcome {
 /// Run an encode / trim job with ffmpeg, implementing hardware-to-CPU fallback
 /// and safe file lifecycle (spec §9.2, §9.3).
 pub async fn run_encode(
+    mut request: EncodeRequest,
+    token: CancellationToken,
+    sink: EncodeProgressSink,
+) -> EncodeOutcome {
+    // ffmpeg writes to a partial file; only a complete encode is renamed onto
+    // the final name, so a cancel/pause/failure never leaves a corrupt
+    // `-encoded` file nor truncates an existing one (spec §7.3, §15.12).
+    let (input, final_output) = match &mut request.kind {
+        EncodeJobKind::Video(o) => {
+            let fin = std::mem::replace(&mut o.output, PathBuf::new());
+            o.output = partial_output_path(&fin);
+            (o.input.clone(), fin)
+        }
+        EncodeJobKind::Audio(o) => {
+            let fin = std::mem::replace(&mut o.output, PathBuf::new());
+            o.output = partial_output_path(&fin);
+            (o.input.clone(), fin)
+        }
+    };
+    let keep_original = request.keep_original;
+    let partial = partial_output_path(&final_output);
+
+    match run_encode_attempts(request, token, sink).await {
+        EncodeOutcome::Success {
+            used_cpu_fallback, ..
+        } => match fs::rename(&partial, &final_output) {
+            Ok(()) => {
+                // Delete original only if requested and successful
+                if !keep_original && input != final_output {
+                    let _ = fs::remove_file(&input);
+                }
+                EncodeOutcome::Success {
+                    output_file: final_output,
+                    used_cpu_fallback,
+                }
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&partial);
+                EncodeOutcome::Failed {
+                    error: format!("could not move the encoded file into place: {err}"),
+                    stderr_tail: Vec::new(),
+                }
+            }
+        },
+        other => {
+            let _ = fs::remove_file(&partial);
+            other
+        }
+    }
+}
+
+/// The ffmpeg attempts (with hardware-to-CPU fallback) against the output
+/// path in `request`, which [`run_encode`] points at the partial file.
+async fn run_encode_attempts(
     request: EncodeRequest,
     token: CancellationToken,
     sink: EncodeProgressSink,
 ) -> EncodeOutcome {
-    let input = match &request.kind {
-        EncodeJobKind::Video(o) => o.input.clone(),
-        EncodeJobKind::Audio(o) => o.input.clone(),
-    };
     let output = match &request.kind {
         EncodeJobKind::Video(o) => o.output.clone(),
         EncodeJobKind::Audio(o) => o.output.clone(),
@@ -673,10 +740,6 @@ pub async fn run_encode(
             let is_valid_output = fs::metadata(&output).map(|m| m.len() > 0).unwrap_or(false);
 
             if is_valid_output {
-                // Delete original only if requested and successful
-                if !request.keep_original && input != output {
-                    let _ = fs::remove_file(&input);
-                }
                 EncodeOutcome::Success {
                     output_file: output,
                     used_cpu_fallback: used_fallback,
@@ -865,6 +928,14 @@ mod tests {
         let audio_path = PathBuf::from("/path/to/Song.opus");
         let audio_out = derive_encoded_output_path(&audio_path, "m4a");
         assert_eq!(audio_out, PathBuf::from("/path/to/Song-encoded.m4a"));
+    }
+
+    #[test]
+    fn partial_output_keeps_extension_and_folder() {
+        assert_eq!(
+            partial_output_path(Path::new("/path/to/My Video-encoded.mp4")),
+            PathBuf::from("/path/to/My Video-encoded.sdp-part.mp4")
+        );
     }
 
     #[test]

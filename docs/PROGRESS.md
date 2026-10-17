@@ -3231,3 +3231,9 @@ Branch `m4-media-processing`.
 - Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
 - Not verified: no new automated test for the resume path; not exercised manually. ffmpeg stderr tail still goes only into the error detail, not `log_tail`.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: partial encode output left on cancel
+- Done: `run_encode` points ffmpeg at `<stem>-encoded.sdp-part.<ext>` (`partial_output_path`), removes it on Cancelled/Failed, and renames it onto the final name only after a successful non-empty encode; the original is deleted only after that rename. A pre-existing `-encoded` file is no longer truncated/deleted by a failed or cancelled encode. `derive_encoded_output_path` builds the stem as `OsString` (no `"output"` fallback for non-UTF-8 names).
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass, incl. existing ffmpeg_encode integration tests + new unit test), npm run check (0 errors, 0 warnings).
+- Not verified: no integration test asserting the partial file is removed on cancel; not exercised manually.
+- Next step: continue M4 review items.
