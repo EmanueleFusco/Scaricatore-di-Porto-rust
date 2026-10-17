@@ -570,6 +570,11 @@ impl AttemptShared {
     }
 
     fn on_stderr_line(&self, line: &str) {
+        if ytdlp::is_archive_skip_line(line) {
+            self.challenge_pending.store(false, Ordering::Relaxed);
+            self.skipped_archive.store(true, Ordering::Relaxed);
+            return;
+        }
         if let Some((status, name)) = ytdlp::parse_postprocess_line(line) {
             self.challenge_pending.store(false, Ordering::Relaxed);
             let progress = match self.tracker.lock() {

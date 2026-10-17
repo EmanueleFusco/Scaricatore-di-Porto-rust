@@ -300,7 +300,13 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         }
     }
     if url.contains("archive-skip") && args.iter().any(|arg| arg == "--download-archive") {
-        println!("[download] fakeid: has already been recorded in the archive");
+        // Real yt-dlp implies `--quiet` when `--print` is present; it only
+        // outputs the skip message if `--no-quiet` is also passed.
+        let quiet =
+            args.iter().any(|arg| arg == "--print") && !args.iter().any(|arg| arg == "--no-quiet");
+        if !quiet {
+            println!("[download] fakeid: has already been recorded in the archive");
+        }
         return 0;
     }
     // A transient network failure that heals on the second attempt: the queue's

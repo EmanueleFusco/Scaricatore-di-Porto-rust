@@ -3501,6 +3501,23 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: None.
 - Spec items marked "verify" that I checked: None in this step.
 - Decisions/deviations (also in DECISIONS.md): None.
-- Next step: push commit to remote and verify GitHub Actions runners.
+## 2026-10-17 — M4 / Bug fix: pass --no-quiet to prevent --print from silencing archive skip output (spec §6.4, §8.3)
+- Done:
+  - In `src-tauri/src/services/ytdlp.rs` `download_args`: added `--no-quiet` to base flags and following `--print`. In yt-dlp, `--print` implies `--quiet`, which suppressed the archive skip line (`[download] <id>: has already been recorded in the archive`). Because the video was already recorded in `--download-archive`, yt-dlp skipped downloading it without printing `SDP_FILE`, but because `--print` enabled quiet mode, stdout was empty and `job.rs` never saw the archive skip line, causing the job to fail with `yt-dlp exited 0 but never printed the final path (SDP_FILE)`.
+  - In `src-tauri/src/services/job.rs` `AttemptShared::on_stderr_line`: also checked `ytdlp::is_archive_skip_line(line)` as a defensive measure.
+  - In `src-tauri/src/services/ytdlp.rs` unit tests: verified `--no-quiet` is present in `the_base_arguments_are_all_present_and_the_url_comes_last_after_double_dash`.
+  - In `src-tauri/tests/bin/fake_ytdlp.rs`: updated `archive-skip` handling to mirror real yt-dlp by silencing the skip line if `--print` is passed without `--no-quiet`, preventing regressions.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~450ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: yt-dlp `--help` confirms `--print` implies `--quiet`, and `--no-quiet` explicitly deactivates quiet mode. Live execution with pinned yt-dlp binary confirmed `--no-quiet` restores `[download] <id>: has already been recorded in the archive`.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: commit and push changes.
 
 

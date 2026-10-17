@@ -448,6 +448,7 @@ pub fn download_args(
         "--ignore-config",
         "--no-playlist",
         "--newline",
+        "--no-quiet",
         "--progress",
         "--no-warnings",
         "--color",
@@ -634,6 +635,10 @@ pub fn download_args(
     args.push(PRINT_FORMAT_ARG.into());
     args.push("--print".into());
     args.push(PRINT_FILE_ARG.into());
+    // Passing `--print` implies `--quiet` in yt-dlp, which would suppress
+    // the archive skip line (`[download] <id>: has already been recorded in the archive`).
+    // Explicitly counteract it with `--no-quiet`.
+    args.push("--no-quiet".into());
 
     if spec.quality.extracts_audio() {
         // `-x --audio-format opus` selects `ba/b` and converts to Ogg Opus
@@ -1437,6 +1442,7 @@ mod tests {
             "--ignore-config",
             "--no-playlist",
             "--newline",
+            "--no-quiet",
             "--progress",
             "--no-warnings",
             "--color",
