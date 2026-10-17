@@ -3243,3 +3243,10 @@ Branch `m4-media-processing`.
 - Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
 - Not verified: visual check in `npm run tauri dev` not done.
 - Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 7: items shown as Encoding while waiting for the lane
+- Done: `run_item` now persists the downloaded file, then acquires the encode-lane permit, and only then switches the item to `Encoding` (so only items running ffmpeg show it). `encode_semaphore` is a `Mutex<Arc<Semaphore>>`; `QueueEngine::configure` replaces it when the encode capacity changes (running encodes keep their old permits).
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: no new test for the ordering/resize; not exercised manually.
+- Known trade-off: an item waiting for the encode lane stays in `Downloading` (100%) and keeps its download-lane slot until it gets the permit. Items already waiting on the old semaphore when the capacity changes keep waiting on it.
+- Next step: continue M4 review items.

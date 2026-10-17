@@ -178,7 +178,8 @@ struct Inner {
     /// Toasts waiting to travel with the next event.
     pending_toasts: Mutex<Vec<QueueToast>>,
     /// Limits concurrent encode jobs (spec §7.2: "The encode lane is 1 by default").
-    encode_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Replaced by [`QueueEngine::configure`] when the capacity changes.
+    encode_semaphore: Mutex<Arc<tokio::sync::Semaphore>>,
 }
 
 /// The handle. Cloneable, cheap, and the only thing the commands see.
@@ -223,7 +224,9 @@ impl QueueEngine {
                 stopped: AtomicBool::new(false),
                 pending_removed: Mutex::new(Vec::new()),
                 pending_toasts: Mutex::new(Vec::new()),
-                encode_semaphore: Arc::new(tokio::sync::Semaphore::new(encode_capacity)),
+                encode_semaphore: Mutex::new(Arc::new(tokio::sync::Semaphore::new(
+                    encode_capacity,
+                ))),
             }),
         };
         if let Some(recovery) = recovery {
@@ -312,7 +315,14 @@ impl QueueEngine {
     /// Adopt new lane capacities and the notification setting. Takes effect on
     /// the next planning pass, which happens as soon as this returns.
     pub fn configure(&self, lanes: LaneConfig, notify_on_idle: bool) {
-        *lock(&self.inner.lanes) = lanes.clamped();
+        let lanes = lanes.clamped();
+        let previous = std::mem::replace(&mut *lock(&self.inner.lanes), lanes);
+        if previous.capacity(Lane::Encode) != lanes.capacity(Lane::Encode) {
+            // A new semaphore: encodes already running keep their permits on
+            // the old one and finish; new ones see the new capacity.
+            *lock(&self.inner.encode_semaphore) =
+                Arc::new(tokio::sync::Semaphore::new(lanes.capacity(Lane::Encode)));
+        }
         *lock(&self.inner.notify_on_idle) = notify_on_idle;
         self.inner.wake.notify_waiters();
     }
@@ -1079,6 +1089,37 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     return;
                 };
 
+                // Remember the download now, so a pause/crash while waiting
+                // for the encode lane resumes from it (spec §7.3).
+                {
+                    let mut state = lock(&inner.state);
+                    let Some(item) = state.item_mut(&id) else {
+                        return;
+                    };
+                    item.file = Some(file.clone());
+                    item.size_bytes = None;
+                    item.runtime = Some(runtime.as_str().to_owned());
+                    item.requested_height = requested_height;
+                    item.actual_height = actual_height;
+                }
+                self_persist(&inner);
+
+                // Acquire the encode lane BEFORE showing Encoding, so only the
+                // items actually running ffmpeg say so (spec §7.1, §7.2).
+                let semaphore = Arc::clone(&*lock(&inner.encode_semaphore));
+                let _permit = tokio::select! {
+                    _ = token.cancelled() => {
+                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                        return;
+                    }
+                    res = semaphore.acquire_owned() => {
+                        match res {
+                            Ok(permit) => permit,
+                            Err(_) => return,
+                        }
+                    }
+                };
+
                 // Move from Downloading to Encoding (spec §3, §7.2)
                 {
                     let mut state = lock(&inner.state);
@@ -1090,11 +1131,6 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                         return;
                     }
                     item.state = ItemState::Encoding;
-                    item.file = Some(file.clone());
-                    item.size_bytes = None;
-                    item.runtime = Some(runtime.as_str().to_owned());
-                    item.requested_height = requested_height;
-                    item.actual_height = actual_height;
                     item.progress.label = "encoding".to_owned();
                     item.progress.percent = Some(0.0);
                     item.progress.speed_bps = None;
@@ -1105,20 +1141,6 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 mark_dirty(&inner, &id, true);
                 // Wake scheduler: the download lane has been freed!
                 inner.wake.notify_waiters();
-
-                // Acquire permit from encode semaphore (spec §7.2: default 1)
-                let _permit = tokio::select! {
-                    _ = token.cancelled() => {
-                        finish_item(&inner, &id, JobOutcome::Cancelled);
-                        return;
-                    }
-                    res = inner.encode_semaphore.acquire() => {
-                        match res {
-                            Ok(permit) => permit,
-                            Err(_) => return,
-                        }
-                    }
-                };
 
                 // Re-check control signal after waiting for encode slot
                 {
