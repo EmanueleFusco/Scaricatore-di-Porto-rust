@@ -128,6 +128,8 @@ pub fn run() {
             commands::queue::queue_lanes,
             commands::queue::read_links_file,
             commands::queue::app_set_language,
+            commands::queue::queue_transcribe_item,
+            commands::queue::queue_add_local_file,
             commands::tools::tools_status,
             commands::tools::tools_test,
             commands::tools::tools_set_path,

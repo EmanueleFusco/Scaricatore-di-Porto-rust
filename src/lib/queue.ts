@@ -66,6 +66,11 @@ export interface ItemOptions {
   embedChapters: boolean;
   sponsorblockMode: "mark" | "remove" | null;
   sponsorblockCategories: string[];
+  transcribe: boolean;
+  whisperModel: string | null;
+  transcriptLanguage: string | null;
+  translateToEnglish: boolean | null;
+  transcriptsSubfolder: boolean | null;
 }
 
 /** Mirror of the backend's `EncoderInfo` (spec §9.3). */
@@ -121,6 +126,8 @@ export interface QueueItem {
   updatedAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  transcriptFiles: string[];
+  transcriptPreview: string | null;
 }
 
 /** Mirror of `services::queue::model::QueueSummary`. */
@@ -248,6 +255,11 @@ export interface AddItemRequest {
   embedChapters?: boolean | null;
   sponsorblockMode?: "mark" | "remove" | "off" | null;
   sponsorblockCategories?: string[] | null;
+  transcribe?: boolean | null;
+  whisperModel?: string | null;
+  transcriptLanguage?: string | null;
+  translateToEnglish?: boolean | null;
+  transcriptsSubfolder?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +382,11 @@ export function normaliseItem(raw: unknown): QueueItem {
       sponsorblockCategories: Array.isArray(options.sponsorblockCategories)
         ? options.sponsorblockCategories.filter((c): c is string => typeof c === "string")
         : [],
+      transcribe: options.transcribe === true,
+      whisperModel: asNullableString(options.whisperModel),
+      transcriptLanguage: asNullableString(options.transcriptLanguage),
+      translateToEnglish: typeof options.translateToEnglish === "boolean" ? options.translateToEnglish : null,
+      transcriptsSubfolder: typeof options.transcriptsSubfolder === "boolean" ? options.transcriptsSubfolder : null,
     },
     groupId: asNullableString(value.groupId),
     progress: {
@@ -403,6 +420,10 @@ export function normaliseItem(raw: unknown): QueueItem {
     updatedAt: asNumber(value.updatedAt) ?? 0,
     startedAt: asNumber(value.startedAt),
     finishedAt: asNumber(value.finishedAt),
+    transcriptFiles: Array.isArray(value.transcriptFiles)
+      ? value.transcriptFiles.filter((f): f is string => typeof f === "string")
+      : [],
+    transcriptPreview: asNullableString(value.transcriptPreview),
   };
 }
 
@@ -639,7 +660,8 @@ export type ItemAction =
   | "remove"
   | "moveToTop"
   | "copyLink"
-  | "openPage";
+  | "openPage"
+  | "transcribe";
 
 /**
  * The actions available for one state (spec §11.5 "Primary actions by
@@ -662,7 +684,9 @@ export function actionsFor(state: ItemState, hasFile: boolean): ItemAction[] {
   } else if (state === "done") {
     actions.push("remove", "moveToTop");
   }
-  if (hasFile) {
+  if (hasFile && !isActive(state)) {
+    actions.push("open", "reveal", "transcribe");
+  } else if (hasFile) {
     actions.push("open", "reveal");
   }
   actions.push("copyLink", "openPage");
@@ -790,6 +814,10 @@ export function progressLabelKey(label: string): string {
       return "job.label.encoding";
     case "waitingEncode":
       return "job.label.waitingEncode";
+    case "transcribing":
+      return "job.label.transcribing";
+    case "waitingTranscribe":
+      return "job.label.waitingTranscribe";
     case "postProcessing":
       return "job.label.postProcessing";
     default:

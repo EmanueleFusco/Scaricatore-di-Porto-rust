@@ -69,6 +69,8 @@ fn main() {
         "ffmpeg"
     } else if stem == "ffprobe" || stem.starts_with("ffprobe-") {
         "ffprobe"
+    } else if stem == "sdp-whisper" || stem.starts_with("sdp-whisper-") {
+        "sdp-whisper"
     } else {
         stem.as_str()
     };
@@ -77,6 +79,7 @@ fn main() {
         "qjs" => run_qjs(&args),
         "ffmpeg" => run_ffmpeg(&args),
         "ffprobe" => run_ffprobe(&args),
+        "sdp-whisper" => run_whisper(&args),
         _ => run(&args),
     };
     std::process::exit(code);
@@ -260,6 +263,21 @@ fn run_ffmpeg(args: &[String]) -> i32 {
         return 1;
     }
 
+    if args
+        .windows(2)
+        .any(|w| w[0] == "-af" && w[1].contains("silencedetect"))
+    {
+        if let Some(silence_log) =
+            read_flag("fake_silence.txt").or_else(|| std::env::var("FAKE_FFMPEG_SILENCE").ok())
+        {
+            eprintln!("{silence_log}");
+        } else {
+            eprintln!("[silencedetect @ 0x5555] silence_start: 1780.5");
+            eprintln!("[silencedetect @ 0x5555] silence_end: 1785.2 | silence_duration: 4.7");
+        }
+        return 0;
+    }
+
     if args.iter().any(|a| a == "-progress") {
         println!("out_time_us=5000000");
         println!("speed=2.0x");
@@ -314,6 +332,106 @@ fn run_ffprobe(args: &[String]) -> i32 {
 
     // Default duration for probe
     println!("120.000000");
+    0
+}
+
+fn run_whisper(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--version") {
+        println!("whisper.cpp version: 1.9.5-dev");
+        return 0;
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let read_flag = |name: &str| -> Option<String> {
+        exe_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(name)).ok())
+    };
+
+    if let Some(sleep_ms) =
+        read_flag("fake_whisper_sleep.txt").or_else(|| std::env::var("FAKE_WHISPER_SLEEP_MS").ok())
+    {
+        if let Ok(ms) = sleep_ms.trim().parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    if read_flag("fail_whisper_all.txt").is_some() || std::env::var("FAKE_WHISPER_FAIL_ALL").is_ok()
+    {
+        eprintln!("fake whisper: simulated total whisper failure");
+        return 1;
+    }
+
+    let has_ng = args.iter().any(|a| a == "-ng" || a == "--no-gpu");
+    let fail_gpu = read_flag("fail_whisper_gpu.txt").is_some()
+        || std::env::var("FAKE_WHISPER_FAIL_GPU").is_ok();
+    if fail_gpu && !has_ng {
+        eprintln!("fake whisper: simulated GPU failure (CUDA out of memory)");
+        return 1;
+    }
+
+    // Progress to stderr (-pp)
+    if args.iter().any(|a| a == "-pp") {
+        eprintln!("whisper_print_progress_callback: progress =  25%");
+        eprintln!("whisper_print_progress_callback: progress =  50%");
+        eprintln!("whisper_print_progress_callback: progress =  75%");
+        eprintln!("whisper_print_progress_callback: progress = 100%");
+    }
+
+    let is_hallucinating =
+        read_flag("hallucinate.txt").is_some() || std::env::var("FAKE_WHISPER_HALLUCINATE").is_ok();
+
+    // Find output base: -of <outbase>
+    let out_base = args
+        .windows(2)
+        .find(|w| w[0] == "-of")
+        .map(|w| w[1].clone());
+
+    if is_hallucinating {
+        for _ in 0..6 {
+            println!("[00:00:00.000 --> 00:00:05.000] [Subtitles by the Amara.org community]");
+        }
+        if let Some(base) = out_base {
+            let _ = std::fs::write(
+                format!("{base}.txt"),
+                "[Subtitles by the Amara.org community]\n[Subtitles by the Amara.org community]\n[Subtitles by the Amara.org community]\n[Subtitles by the Amara.org community]\n[Subtitles by the Amara.org community]\n[Subtitles by the Amara.org community]\n",
+            );
+            let srt = (1..=6)
+                .map(|i| {
+                    format!(
+                        "{i}\n00:00:00,000 --> 00:00:05,000\n[Subtitles by the Amara.org community]\n\n"
+                    )
+                })
+                .collect::<String>();
+            let _ = std::fs::write(format!("{base}.srt"), srt);
+            let vtt = format!(
+                "WEBVTT\n\n{}",
+                (0..6)
+                    .map(|_| "00:00:00.000 --> 00:00:05.000\n[Subtitles by the Amara.org community]\n\n")
+                    .collect::<String>()
+            );
+            let _ = std::fs::write(format!("{base}.vtt"), vtt);
+        }
+        return 0;
+    }
+
+    // Normal output
+    println!("[00:00:00.000 --> 00:00:02.500] Hello world");
+    println!("[00:00:02.500 --> 00:00:05.000] This is a fake transcription.");
+
+    if let Some(base) = out_base {
+        let _ = std::fs::write(
+            format!("{base}.txt"),
+            "Hello world\nThis is a fake transcription.\n",
+        );
+        let srt = "1\n00:00:00,000 --> 00:00:02,500\nHello world\n\n2\n00:00:02,500 --> 00:00:05,000\nThis is a fake transcription.\n\n";
+        let _ = std::fs::write(format!("{base}.srt"), srt);
+        let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.500\nHello world\n\n00:00:02.500 --> 00:00:05.000\nThis is a fake transcription.\n\n";
+        let _ = std::fs::write(format!("{base}.vtt"), vtt);
+    }
+
     0
 }
 

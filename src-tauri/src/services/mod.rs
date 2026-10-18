@@ -16,4 +16,5 @@ pub mod paths;
 pub mod process;
 pub mod queue;
 pub mod tools;
+pub mod transcribe;
 pub mod ytdlp;

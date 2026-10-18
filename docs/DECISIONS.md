@@ -3290,3 +3290,31 @@ Spec §5.4, §10.2, §11.6, `whisper.models.json`.
    `SETTINGS_SCHEMA_VERSION` bumped to 7 with transcription preferences (`active_whisper_model`, `whisper_models_mirror_url`, `skip_silence_vad`, `whisper_threads`, `whisper_translate_to_english`, `default_transcript_language`, `transcription_engine_order`, `transcripts_subfolder`).
    IPC commands `models_list`, `models_download`, `models_cancel_download`, `models_delete`, `models_import`, `models_set_active`, `models_open_folder` wired to Svelte 5 frontend.
 
+### D120 — Whisper offline transcription pipeline, chunking, and local media action (M5-B)
+
+Spec §10.2, §3, §11.5, §14 row M5, §15 item 9.
+
+1. **Audio preparation**:
+   - 16 kHz mono WAV conversion via ffmpeg: `-vn -ac 1 -ar 16000 -c:a pcm_s16le`.
+   - Pre-flight free disk space check requires minimum estimated WAV size (`32,000 bytes/sec * duration + 200 MiB safety margin`).
+2. **Chunking for audio > 2 hours (7200 s)**:
+   - Evaluates silence points within ±20 s of 30-minute boundaries (1800 s) using ffmpeg `silencedetect=noise=-30dB:d=0.5`.
+   - If no silence interval is detected, falls back to a hard cut with 2.0 s overlap.
+   - Individual chunk transcripts (.txt, .srt, .vtt) are generated in temporary storage and stitched together. SRT and VTT cues are offset by the chunk starting millisecond and cue sequence indices are renumbered continuously.
+3. **Whisper CLI flags pinned**:
+   - Spawns `sdp-whisper` with flags: `-m <model>`, `-f <wav>`, `-l <lang>`, `-tr` (if translate requested), `-pp` (progress callback), `-otxt`, `-osrt`, `-ovtt`, `-of <out_base>`, `--vad` and `-vm <silero_vad>` (if VAD enabled), `-t <threads>`, and `-ng` (if GPU off / fallback).
+4. **Stderr progress parsing & stdout live preview**:
+   - Parses stderr progress callbacks: `whisper_print_progress_callback: progress = X%` and maps them cleanly into item stage progress `transcribing (X%)`.
+   - Streams live segment text from whisper stdout to item state and UI preview.
+5. **Automatic GPU failure retry with `-ng`**:
+   - If `sdp-whisper` terminates with an error and was launched without `-ng` (GPU enabled), the pipeline automatically retries once on CPU by appending `-ng`.
+   - Emits a warning notification informing the user that GPU transcription failed and CPU fallback was engaged.
+6. **Hallucination detection loop guard**:
+   - Detects repetitive segment loops (>= 5 identical consecutive segments) emitted by Whisper.
+   - Trims repeating tails and emits a warning toast to notify the user.
+7. **Cancellation & process tree cleanup**:
+   - Graceful cancellation via `CancellationToken` terminates the process tree (whisper or ffmpeg) and removes temporary WAV and partial transcript files.
+8. **Queue engine integration**:
+   - Added dedicated transcription concurrency semaphore (`max_parallel_transcriptions`).
+   - Supports transcription after media download, standalone "Transcribe a local file…" action in the Add bar, and contextual "Transcribe…" action on completed queue items.
+

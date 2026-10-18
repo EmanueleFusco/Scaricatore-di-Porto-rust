@@ -43,6 +43,7 @@
   import { queueStore } from "$lib/stores/queue.svelte";
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
+  import { modelsStore } from "$lib/stores/models.svelte";
   import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
 
   /** Which of the two actions a click asked for. */
@@ -114,6 +115,26 @@
     const picked = await open({ multiple: false, directory: true, title: tt("queue.folder.browse") });
     if (typeof picked === "string") {
       addBarStore.folder = picked;
+    }
+  }
+
+  async function pickLocalFileToTranscribe(): Promise<void> {
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      title: tt("transcribe.pickLocalFile"),
+      filters: [
+        {
+          name: "Media",
+          extensions: [
+            "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv",
+            "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus",
+          ],
+        },
+      ],
+    });
+    if (typeof picked === "string") {
+      await queueStore.addLocalFile(picked);
     }
   }
 
@@ -313,6 +334,9 @@
         <button type="button" class="btn" onclick={() => void browse()}>
           <FolderOpenIcon size={16} aria-hidden="true" focusable="false" />
           {tt("queue.folder.browse")}
+        </button>
+        <button type="button" class="btn" onclick={() => void pickLocalFileToTranscribe()}>
+          {tt("transcribe.pickLocalFile")}
         </button>
       </div>
     </div>
@@ -711,6 +735,90 @@
                     {/if}
                   </div>
                 {/if}
+
+                <!-- Spec §10.2: Whisper Transcription -->
+                <div class="field">
+                  <span class="field__label">{tt("transcribe.title")}</span>
+                  <label class="add__check">
+                    <input
+                      type="checkbox"
+                      checked={row.transcribe}
+                      onchange={(event) =>
+                        addBarStore.setMediaOptions(row.key, { transcribe: event.currentTarget.checked })}
+                    />
+                    {tt("transcribe.toggle")}
+                  </label>
+
+                  {#if row.transcribe}
+                    <div class="add__controls">
+                      <div class="field">
+                        <label class="field__label" for={`whisper-model-${row.key}`}>
+                          {tt("transcribe.model")}
+                        </label>
+                        <select
+                          class="select"
+                          id={`whisper-model-${row.key}`}
+                          value={row.whisperModel ?? settingsStore.settings.activeWhisperModel ?? "large-v3-turbo-q5_0"}
+                          onchange={(event) =>
+                            addBarStore.setMediaOptions(row.key, { whisperModel: event.currentTarget.value })}
+                        >
+                          {#if modelsStore.view.models.length > 0}
+                            {#each modelsStore.view.models as model (model.id)}
+                              <option value={model.id}>
+                                {model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
+                              </option>
+                            {/each}
+                          {:else}
+                            <option value="large-v3-turbo-q5_0">Turbo (large-v3-turbo-q5_0)</option>
+                            <option value="small-q5_1">Small (small-q5_1)</option>
+                            <option value="base-q5_1">Base (base-q5_1)</option>
+                            <option value="tiny-q5_1">Tiny (tiny-q5_1)</option>
+                          {/if}
+                        </select>
+                      </div>
+
+                      <div class="field">
+                        <label class="field__label" for={`whisper-lang-${row.key}`}>
+                          {tt("transcribe.language")}
+                        </label>
+                        <select
+                          class="select"
+                          id={`whisper-lang-${row.key}`}
+                          value={row.transcriptLanguage ?? settingsStore.settings.defaultTranscriptLanguage ?? "auto"}
+                          onchange={(event) =>
+                            addBarStore.setMediaOptions(row.key, { transcriptLanguage: event.currentTarget.value })}
+                        >
+                          <option value="auto">{tt("transcription.language.auto")}</option>
+                          <option value="it">{tt("transcription.language.it")} (it)</option>
+                          <option value="en">{tt("transcription.language.en")} (en)</option>
+                          <option value="es">{tt("transcription.language.es")} (es)</option>
+                          <option value="fr">{tt("transcription.language.fr")} (fr)</option>
+                          <option value="de">{tt("transcription.language.de")} (de)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.translateToEnglish}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { translateToEnglish: event.currentTarget.checked })}
+                      />
+                      {tt("transcribe.translateToEnglish")}
+                    </label>
+
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.transcriptsSubfolder}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { transcriptsSubfolder: event.currentTarget.checked })}
+                      />
+                      {tt("transcribe.subfolder")}
+                    </label>
+                  {/if}
+                </div>
 
                 <div class="field">
                   <label class="field__label" for={`more-ref-${row.key}`}>{tt("queue.add.more.referer")}</label>

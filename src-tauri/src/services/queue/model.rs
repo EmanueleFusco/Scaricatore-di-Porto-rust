@@ -383,6 +383,16 @@ pub struct ItemOptions {
     pub sponsorblock_mode: Option<ytdlp::SponsorBlockMode>,
     /// User-selectable SponsorBlock categories (spec §8.4).
     pub sponsorblock_categories: Vec<String>,
+    /// Transcribe with Whisper after download/encode (spec §10.2).
+    pub transcribe: bool,
+    /// Model identifier from whisper catalogue (e.g. "large-v3-turbo-q5_0").
+    pub whisper_model: Option<String>,
+    /// Language code (e.g. "it", "en", "auto").
+    pub transcript_language: Option<String>,
+    /// Translate to English during transcription (-tr flag).
+    pub translate_to_english: Option<bool>,
+    /// Place transcripts in a `transcripts/` subfolder.
+    pub transcripts_subfolder: Option<bool>,
 }
 
 impl Default for ItemOptions {
@@ -417,6 +427,11 @@ impl Default for ItemOptions {
             embed_chapters: false,
             sponsorblock_mode: None,
             sponsorblock_categories: Vec::new(),
+            transcribe: false,
+            whisper_model: None,
+            transcript_language: None,
+            translate_to_english: None,
+            transcripts_subfolder: None,
         }
     }
 }
@@ -479,7 +494,7 @@ impl ItemOptions {
         let mut sb_categories = self.sponsorblock_categories.clone();
         sb_categories.sort();
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind.as_str(),
             self.quality.signature(),
             self.output_dir.display(),
@@ -495,6 +510,11 @@ impl ItemOptions {
             self.embed_chapters,
             sb_mode,
             sb_categories.join(","),
+            self.transcribe,
+            self.whisper_model.as_deref().unwrap_or(""),
+            self.transcript_language.as_deref().unwrap_or(""),
+            self.translate_to_english.unwrap_or(false),
+            self.transcripts_subfolder.unwrap_or(false),
         )
     }
 }
@@ -637,6 +657,10 @@ pub struct QueueItem {
     pub updated_at: u64,
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
+    /// Transcript output files (.txt, .srt, .vtt) (spec §10.2).
+    pub transcript_files: Vec<PathBuf>,
+    /// Live segment preview or last preview text (spec §11.5).
+    pub transcript_preview: Option<String>,
 }
 
 impl Default for QueueItem {
@@ -666,6 +690,8 @@ impl Default for QueueItem {
             updated_at: 0,
             started_at: None,
             finished_at: None,
+            transcript_files: Vec::new(),
+            transcript_preview: None,
         }
     }
 }

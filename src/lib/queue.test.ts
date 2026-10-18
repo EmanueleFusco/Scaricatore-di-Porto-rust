@@ -99,6 +99,11 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
       embedChapters: false,
       sponsorblockMode: null,
       sponsorblockCategories: [],
+      transcribe: false,
+      whisperModel: null,
+      transcriptLanguage: null,
+      translateToEnglish: null,
+      transcriptsSubfolder: null,
     },
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
@@ -116,6 +121,8 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
     updatedAt: 0,
     startedAt: null,
     finishedAt: null,
+    transcriptFiles: [],
+    transcriptPreview: null,
     ...overrides,
   };
 }

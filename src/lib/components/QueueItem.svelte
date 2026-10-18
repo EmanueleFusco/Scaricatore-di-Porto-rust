@@ -13,6 +13,7 @@
     actionKey,
     barPercentFor,
     detailsText,
+    fileName,
     formatBytes,
     heightWarning,
     isActive,
@@ -250,6 +251,13 @@
     {statusText}
   </p>
 
+  {#if item.transcriptPreview}
+    <p class="item__preview" title={item.transcriptPreview}>
+      <span class="item__preview-badge">{tt("transcribe.livePreview")}:</span>
+      {item.transcriptPreview}
+    </p>
+  {/if}
+
   {#if denoOffer}
     <div class="item__offer" role="status">
       <p class="item__offer-title">{tt("job.deno.title")}</p>
@@ -311,6 +319,21 @@
         {#if size !== null}
           <dt>{tt("queue.item.size")}</dt>
           <dd>{size}</dd>
+        {/if}
+        {#if item.transcriptFiles.length > 0}
+          <dt>{tt("transcribe.outputFiles")}</dt>
+          <dd class="item__transcripts">
+            {#each item.transcriptFiles as path}
+              <button
+                type="button"
+                class="btn btn--small"
+                onclick={() => void openPath(path)}
+                title={path}
+              >
+                {fileName(path)}
+              </button>
+            {/each}
+          </dd>
         {/if}
       </dl>
 
@@ -611,5 +634,29 @@
     height: 28px;
     padding: 0 var(--space-2);
     font-size: 12px;
+  }
+
+  .item__preview {
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .item__preview-badge {
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .item__transcripts {
+    display: flex;
+    gap: var(--space-1);
+    flex-wrap: wrap;
   }
 </style>

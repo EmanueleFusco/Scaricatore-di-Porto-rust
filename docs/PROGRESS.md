@@ -3596,4 +3596,45 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: proceed to Phase M5-B.
 
+## 2026-10-18 — M5-B / Whisper offline transcription pipeline, chunking, and local media action (spec §10.2, §11.5, §15 item 9)
+- Done:
+  - Implemented offline Whisper transcription pipeline in `src-tauri/src/services/transcribe/whisper.rs`:
+    - 16 kHz mono WAV conversion via ffmpeg (`-vn -ac 1 -ar 16000 -c:a pcm_s16le`) with pre-flight disk space validation.
+    - Silence detection chunking for audio > 2 hours (7200 s) using `silencedetect=noise=-30dB:d=0.5` within ±20 s of 30-min windows (1800 s), with hard cut and 2.0 s overlap fallback.
+    - Automatic cue offsetting and index renumbering for merged SRT and VTT outputs.
+    - Pinned CLI flags for `sdp-whisper`: `-m`, `-f`, `-l`, `-tr`, `-pp`, `-otxt`, `-osrt`, `-ovtt`, `-of`, `--vad`, `-vm`, `-t`, `-ng`.
+    - Real-time progress parsing (`-pp`) mapped to `transcribing (X%)` and live segment preview on stdout.
+    - Automatic GPU failure fallback: detects GPU errors on non-`-ng` runs, retries once on CPU with `-ng`, and emits warning toast.
+    - Hallucination guard: detects repetitive segment loops (>=5 identical consecutive segments), trims repetitions, and emits a warning toast.
+    - Graceful process tree cancellation and cleanup of temporary WAV and partial transcript files.
+    - Directory resolution supporting direct alongside media or dedicated `transcripts/` subfolder.
+  - Queue engine and IPC integration:
+    - Added dedicated transcription concurrency semaphore bounded by `max_parallel_transcriptions`.
+    - Added IPC commands `queue_transcribe_item` and `queue_add_local_file` in `src-tauri/src/commands/queue.rs`.
+    - Extended `ItemOptions` and `QueueItem` with transcription options and transcript output paths.
+    - Supported post-download transcription and direct local media queue items.
+  - Frontend UI integration:
+    - Added "Transcribe a local file…" button and per-row transcription options in `AddBar.svelte`.
+    - Added contextual "Transcribe…" action for completed queue items in `QueueItem.svelte`.
+    - Displayed live segment preview during transcription and links to generated `.txt`, `.srt`, `.vtt` files upon completion.
+    - Added full i18n support in `it.json` and `en.json`.
+  - Comprehensive testing:
+    - 17 unit tests in `src-tauri/src/services/transcribe/whisper.rs`.
+    - 6 integration tests in `src-tauri/tests/whisper_pipeline.rs` covering progress tracking, GPU retry with `-ng`, hallucination detection, cancellation cleanup, chunking with silencedetect merge, and end-to-end queue transcription of local media files.
+    - Unit tests in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 362 unit + 146 integration = 508 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed.
+  - `npm run build` → production bundle built in ~470ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools && npm run check:models` → all passed.
+- Not verified / stubbed: Subtitle extraction and Gemini summarisation (reserved for phases M5-C and M5-D).
+- Spec items marked "verify" that I checked:
+  - `sdp-whisper` CLI flags (`-m`, `-f`, `-l`, `-tr`, `-pp`, `-otxt`, `-osrt`, `-ovtt`, `-of`, `--vad`, `-vm`, `-t`, `-ng`) verified against whisper.cpp v1.9.5 source and `--help`.
+  - ffmpeg `silencedetect` output formatting (`silence_start: X` and `silence_end: Y | silence_duration: Z`).
+- Decisions/deviations (also in DECISIONS.md): D120.
+- Next step: commit changes.
 

@@ -119,6 +119,12 @@ impl Fixture {
             ytdlp: self.ytdlp.clone(),
             ffmpeg: Some(self.ytdlp.clone()), // presence is all the runner checks
             ffprobe: None,
+            whisper: None,
+            models_dir: None,
+            whisper_threads: 0,
+            skip_silence_vad: true,
+            default_whisper_model: None,
+            default_transcript_language: None,
             runtimes: self.runtimes(mode, with_deno),
             memory: Arc::clone(memory),
             private_temp: None,

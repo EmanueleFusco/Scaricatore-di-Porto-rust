@@ -26,6 +26,7 @@ import {
 import { QUALITY_PRESETS, newLinks, parseHeaderLines, splitLinks } from "$lib/addbar";
 import { mergeEntries, nextPageRange } from "$lib/playlist";
 import { isTauriRuntime, settingsStore } from "$lib/stores/settings.svelte";
+import { queueStore } from "$lib/stores/queue.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
 import type { BackendErrorInfo } from "$lib/settings";
 
@@ -68,6 +69,12 @@ export interface AddRow {
   embedChapters: boolean;
   sponsorblockMode: "mark" | "remove" | null;
   sponsorblockCategories: string[];
+  /** Whisper transcription (spec §10.2). */
+  transcribe: boolean;
+  whisperModel: string | null;
+  transcriptLanguage: string | null;
+  translateToEnglish: boolean;
+  transcriptsSubfolder: boolean;
 }
 
 const MAX_ROWS = 500;
@@ -185,6 +192,11 @@ class AddBarStore {
         embedChapters: settingsStore.settings.embedChapters,
         sponsorblockMode: settingsStore.settings.sponsorblockMode,
         sponsorblockCategories: [...settingsStore.settings.sponsorblockCategories],
+        transcribe: false,
+        whisperModel: settingsStore.settings.activeWhisperModel,
+        transcriptLanguage: settingsStore.settings.defaultTranscriptLanguage ?? "auto",
+        translateToEnglish: settingsStore.settings.whisperTranslateToEnglish,
+        transcriptsSubfolder: settingsStore.settings.transcriptsSubfolder,
       };
     });
     if (rows.length === 0) return;
@@ -228,11 +240,20 @@ class AddBarStore {
     if (links.length > 0) await this.addLinks(links);
   }
 
-  /** Drag-and-drop of a `.txt` file: the backend owns the filesystem. */
+  /** Drag-and-drop of a `.txt` file or media file (spec §2.2, §11.5). */
   async dropFile(path: string): Promise<void> {
     this.errorKey = null;
     this.errorDetail = null;
     if (!isTauriRuntime()) return;
+    const lower = path.toLowerCase();
+    const mediaExts = [
+      ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv",
+      ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus",
+    ];
+    if (mediaExts.some((ext) => lower.endsWith(ext))) {
+      await queueStore.addLocalFile(path);
+      return;
+    }
     try {
       const raw = await invoke<string>("read_links_file", { path });
       await this.dropText(raw);
@@ -339,6 +360,11 @@ class AddBarStore {
         | "embedChapters"
         | "sponsorblockMode"
         | "sponsorblockCategories"
+        | "transcribe"
+        | "whisperModel"
+        | "transcriptLanguage"
+        | "translateToEnglish"
+        | "transcriptsSubfolder"
       >
     >,
   ): void {
@@ -436,6 +462,11 @@ class AddBarStore {
         embedChapters: row.embedChapters,
         sponsorblockMode: row.sponsorblockMode ?? "off",
         sponsorblockCategories: row.sponsorblockCategories,
+        transcribe: row.transcribe,
+        whisperModel: row.whisperModel,
+        transcriptLanguage: row.transcriptLanguage,
+        translateToEnglish: row.translateToEnglish,
+        transcriptsSubfolder: row.transcriptsSubfolder,
       };
     });
   }
