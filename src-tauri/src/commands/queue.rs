@@ -704,15 +704,19 @@ pub async fn queue_add_local_file(
         .or_else(|| settings.default_output_dir.clone())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let tools = resolve_job_tools(&state, &settings).await?;
-    let duration_sec = if let Some(ffmpeg) = tools.ffmpeg.as_ref() {
-        if let Some(ffprobe) =
-            crate::services::ffmpeg::find_ffprobe(ffmpeg, tools.ffprobe.as_deref())
-        {
+    let ffmpeg =
+        crate::commands::env::resolve_cached(&state, &settings, crate::services::tools::FFMPEG)
+            .await;
+    let ffprobe = crate::commands::env::resolve_cached(&state, &settings, "ffprobe").await;
+    let duration_sec = if let Some(ffmpeg) = ffmpeg.as_ref() {
+        if let Some(ffprobe_path) = crate::services::ffmpeg::find_ffprobe(
+            &ffmpeg.path,
+            ffprobe.as_ref().map(|t| t.path.as_path()),
+        ) {
             crate::services::ffmpeg::probe_file_duration(
-                &ffprobe,
+                &ffprobe_path,
                 &file_path,
-                tools.private_temp.as_deref(),
+                state.tools().temp_dir(),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await

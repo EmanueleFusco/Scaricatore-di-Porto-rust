@@ -1780,7 +1780,28 @@ async fn run_transcribe_stage(
         .or_else(|| environment.default_transcript_language.clone());
     let translate_to_english = options.translate_to_english.unwrap_or(false);
     let transcripts_subfolder = options.transcripts_subfolder.unwrap_or(false);
-    let duration_sec_f64 = duration_sec.map(|s| s as f64);
+    let mut duration_sec_f64 = duration_sec.map(|s| s as f64);
+    if duration_sec_f64.is_none() {
+        if let Some(ffprobe) =
+            crate::services::ffmpeg::find_ffprobe(ffmpeg_path, environment.ffprobe.as_deref())
+        {
+            if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
+                &ffprobe,
+                &media_file,
+                environment.private_temp.as_deref(),
+                token.clone(),
+            )
+            .await
+            {
+                duration_sec_f64 = Some(dur);
+                let dur_u64 = dur.round() as u64;
+                let mut state = lock(&inner.state);
+                if let Some(item) = state.item_mut(id) {
+                    item.duration_sec = Some(dur_u64);
+                }
+            }
+        }
+    }
 
     let req = crate::services::transcribe::whisper::TranscribeRequest {
         ffmpeg_path: ffmpeg_path.clone(),

@@ -415,7 +415,7 @@ impl ToolProvider for QueueFakeTools {
         let env = JobEnvironment {
             ytdlp: self.ffmpeg.clone(),
             ffmpeg: Some(self.ffmpeg.clone()),
-            ffprobe: Some(self.ffmpeg.clone()),
+            ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
             whisper: self.whisper.clone(),
             models_dir: Some(self.models_dir.clone()),
             whisper_threads: 2,
@@ -1081,4 +1081,187 @@ async fn queue_engine_fails_with_whisper_missing_when_sidecar_not_found() {
         failed,
         "queue item should fail when Whisper sidecar is not installed"
     );
+}
+
+#[tokio::test]
+async fn local_media_with_none_duration_probes_ffprobe_and_chunks() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("three_hour_lecture.mp4");
+
+    // Provide 3-hour duration from fake ffprobe (10,800 seconds)
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "10800.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let queue_path = fix.dir.path().join("queue_local_probe.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path.clone(),
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Three Hour Lecture".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: None, // No duration provided!
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out_probe"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    // Wait for queue item to process
+    let mut finished = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                assert_eq!(
+                    item.duration_sec,
+                    Some(10800),
+                    "local media queue item duration_sec must be probed from ffprobe"
+                );
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("item failed: {:?}", item.error);
+            }
+        }
+    }
+    assert!(finished, "queue item should finish processing");
+
+    // Because duration is 10800s (> 7200s), chunking must have been triggered:
+    // fake_whisper should have been called multiple times (for each chunk, >= 6 times).
+    let calls_file = fix.exe_dir().join("fake-whisper.calls");
+    let calls = if calls_file.exists() {
+        fs::read_to_string(&calls_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    assert!(
+        calls > 1,
+        "local media longer than 2 hours must be chunked into multiple whisper calls, got {calls} calls"
+    );
+}
+
+#[tokio::test]
+async fn transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("long_podcast_no_duration.mp4");
+
+    // Provide 7400 seconds (> 2 hours) from fake ffprobe
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "7400.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("it".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: None, // Missing duration! Must be probed via ffprobe.
+        temp_dir: Some(fix.dir.path().join("tmp_probe_direct")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .expect("transcription should succeed");
+
+    assert!(outcome.paths.srt.is_file());
+
+    // Because duration probed from ffprobe was 7400s (> 7200s), chunking was triggered:
+    let calls_file = fix.exe_dir().join("fake-whisper.calls");
+    let calls: u32 = fs::read_to_string(&calls_file)
+        .expect("fake-whisper.calls must exist")
+        .trim()
+        .parse()
+        .expect("parse calls");
+    assert!(
+        calls > 1,
+        "transcribe with None duration must probe ffprobe and chunk audio above 2 hours, got {calls} calls"
+    );
+}
+
+#[tokio::test]
+async fn prepare_16khz_wav_probes_duration_from_ffprobe_when_none() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("media_for_prep.mp4");
+    let out_wav = fix.dir.path().join("prepared.wav");
+
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "10800.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let res = scaricatore_di_porto_lib::services::transcribe::whisper::prepare_16khz_wav(
+        &fix.fake_ffmpeg,
+        &media,
+        &out_wav,
+        None,
+        None, // duration_sec is None!
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(res.is_ok(), "prepare_16khz_wav should succeed: {res:?}");
+    assert!(out_wav.is_file(), "output wav should be created");
 }

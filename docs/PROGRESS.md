@@ -3913,3 +3913,25 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Probe duration with ffprobe for local media and whisper transcription stage (M7, Checklist #8, #9, #15, spec §10.2)
+- Done:
+  - Fixed M7:
+    - In `src-tauri/src/commands/queue.rs:queue_add_local_file`, resolved `ffmpeg` and `ffprobe` directly via `resolve_cached` to probe file duration at add time without requiring `yt-dlp`.
+    - In `src-tauri/src/services/queue/engine.rs:run_transcribe_stage`, probed media duration with `ffprobe` (`probe_file_duration`) when `duration_sec` is `None`, and updated `item.duration_sec` in `inner.state`.
+    - In `src-tauri/src/services/transcribe/whisper.rs:prepare_16khz_wav`, probed duration with `ffprobe` when `duration_sec` is `None` so the pre-flight WAV disk-space check accurately tests available space.
+    - In `src-tauri/src/services/transcribe/whisper.rs:run_transcribe`, probed duration with `ffprobe` when `req.duration_sec` is `None`, passed the probed duration to `prepare_16khz_wav`, and calculated effective duration (with fallback to WAV byte size minus 44-byte header) to trigger >2-hour audio chunking.
+    - Updated `QueueFakeTools` in `src-tauri/tests/whisper_pipeline.rs` to locate `ffprobe` via `find_ffprobe(&self.ffmpeg, None)` instead of cloning `self.ffmpeg`.
+    - Added reproduction integration tests `local_media_with_none_duration_probes_ffprobe_and_chunks`, `transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none`, and `prepare_16khz_wav_probes_duration_from_ffprobe_when_none`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline local_media_with_none_duration_probes_ffprobe_and_chunks` → FAILS before fix (`assertion left == right failed: left: None, right: Some(10800)`), PASSES after fix.
+  - `cargo test --test whisper_pipeline transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none` → FAILS before fix (`transcribe with None duration must probe ffprobe and chunk audio above 2 hours, got 1 calls`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 163 integration = 539 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 282 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+

@@ -982,6 +982,19 @@ pub async fn prepare_16khz_wav(
     duration_sec: Option<f64>,
     token: &CancellationToken,
 ) -> Result<(), AppError> {
+    let mut duration_sec = duration_sec;
+    if duration_sec.is_none() {
+        if let Some(ffprobe) = crate::services::ffmpeg::find_ffprobe(ffmpeg_path, None) {
+            duration_sec = crate::services::ffmpeg::probe_file_duration(
+                &ffprobe,
+                input_media,
+                temp_dir,
+                token.clone(),
+            )
+            .await;
+        }
+    }
+
     let check_dir = output_wav.parent().unwrap_or(output_wav);
     let free_space = models::free_disk_space(check_dir).unwrap_or(0);
 
@@ -1315,21 +1328,34 @@ pub async fn run_transcribe(
         file: full_wav.clone(),
     };
 
+    let mut duration_sec = req.duration_sec;
+    if duration_sec.is_none() {
+        if let Some(ffprobe) = crate::services::ffmpeg::find_ffprobe(&req.ffmpeg_path, None) {
+            duration_sec = crate::services::ffmpeg::probe_file_duration(
+                &ffprobe,
+                &req.input_media,
+                req.temp_dir.as_deref(),
+                token.clone(),
+            )
+            .await;
+        }
+    }
+
     // Step 1: Prepare 16 kHz WAV
     prepare_16khz_wav(
         &req.ffmpeg_path,
         &req.input_media,
         &full_wav,
         req.temp_dir.as_deref(),
-        req.duration_sec,
+        duration_sec,
         &token,
     )
     .await?;
 
-    let effective_duration = req.duration_sec.unwrap_or_else(|| {
+    let effective_duration = duration_sec.unwrap_or_else(|| {
         // Fallback: estimate from WAV file size (32,000 bytes/sec for 16kHz mono 16-bit)
         let size = fs::metadata(&full_wav).map(|m| m.len()).unwrap_or(0);
-        size as f64 / 32_000.0
+        (size.saturating_sub(44)) as f64 / 32_000.0
     });
 
     let mut silence_intervals = Vec::new();
