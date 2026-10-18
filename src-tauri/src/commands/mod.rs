@@ -3,6 +3,7 @@
 pub mod download;
 pub mod env;
 pub mod inspect;
+pub mod models;
 pub mod queue;
 pub mod settings;
 pub mod system;

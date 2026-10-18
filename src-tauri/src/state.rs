@@ -19,7 +19,7 @@ use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 6;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 7;
 
 /// Default filename for `--download-archive` under `<app-data>/` (spec §6.2.4,
 /// §8.2, §11.8).
@@ -258,6 +258,22 @@ pub struct Settings {
     pub default_video_codec: Option<String>,
     /// Spec §9.4, §11.8: Default audio codec (e.g. `aac`, `mp3`, `opus`).
     pub default_audio_codec: Option<String>,
+    /// Spec §10.2, §11.6: Active Whisper model id (e.g. `large-v3-turbo-q5_0`).
+    pub active_whisper_model: Option<String>,
+    /// Spec §10.2, §11.6: Custom mirror base URL for Whisper models.
+    pub whisper_models_mirror_url: Option<String>,
+    /// Spec §10.2, §11.6: Silero VAD silence skipping (default `true`).
+    pub skip_silence_vad: bool,
+    /// Spec §10.2, §11.6: CPU threads to allocate for Whisper (`0` means auto).
+    pub whisper_threads: u32,
+    /// Spec §10.2, §11.6: Translate to English option (`-tr`).
+    pub whisper_translate_to_english: bool,
+    /// Spec §10.2, §11.6: Default transcription language (`"auto"` by default).
+    pub default_transcript_language: String,
+    /// Spec §10.1, §11.6: Transcription engine ordering.
+    pub transcription_engine_order: String,
+    /// Spec §10, §11.6: Put transcript outputs in a `transcripts/` subfolder (default `false`).
+    pub transcripts_subfolder: bool,
 }
 
 impl Default for Settings {
@@ -302,6 +318,14 @@ impl Default for Settings {
             ],
             default_video_codec: None,
             default_audio_codec: Some("aac".to_owned()),
+            active_whisper_model: Some("large-v3-turbo-q5_0".to_owned()),
+            whisper_models_mirror_url: None,
+            skip_silence_vad: true,
+            whisper_threads: 0,
+            whisper_translate_to_english: false,
+            default_transcript_language: "auto".to_owned(),
+            transcription_engine_order: "subtitles_whisper_gemini".to_owned(),
+            transcripts_subfolder: false,
         }
     }
 }
@@ -373,6 +397,20 @@ impl Settings {
         self.default_video_codec = clean_optional_text(self.default_video_codec.take());
         self.default_audio_codec =
             clean_optional_text(self.default_audio_codec.take()).or_else(|| Some("aac".to_owned()));
+
+        self.active_whisper_model = clean_optional_text(self.active_whisper_model.take());
+        self.whisper_models_mirror_url = clean_optional_text(self.whisper_models_mirror_url.take());
+        if self.default_transcript_language.trim().is_empty() {
+            self.default_transcript_language = "auto".to_owned();
+        } else {
+            self.default_transcript_language =
+                self.default_transcript_language.trim().to_ascii_lowercase();
+        }
+        match self.transcription_engine_order.as_str() {
+            "subtitles_whisper_gemini" | "whisper_only" | "gemini_only" | "subtitles_only" => {}
+            _ => self.transcription_engine_order = "subtitles_whisper_gemini".to_owned(),
+        }
+        self.whisper_threads = self.whisper_threads.min(128);
     }
 
     /// The user's override for `tool`, if any.
@@ -495,6 +533,8 @@ pub struct AppState {
     ui_lang: LanguageHolder,
     /// Cached probed hardware and CPU video encoders (spec §9.3).
     encoders: Arc<crate::services::encoders::EncodersState>,
+    /// Whisper and VAD model downloader and manager (spec §10.2).
+    models_manager: Arc<crate::services::models::ModelDownloadManager>,
 }
 
 /// A running download, as the temporary UI knows it.
@@ -552,12 +592,23 @@ impl AppState {
             queue: Mutex::new(None),
             ui_lang: LanguageHolder::new(notify::Lang::from_environment()),
             encoders: Arc::new(crate::services::encoders::EncodersState::new()),
+            models_manager: Arc::new(crate::services::models::ModelDownloadManager::new()),
         })
     }
 
     /// Cached hardware and CPU video encoders state (spec §9.3).
     pub fn encoders(&self) -> &Arc<crate::services::encoders::EncodersState> {
         &self.encoders
+    }
+
+    /// Whisper model download manager (spec §10.2).
+    pub fn models_manager(&self) -> &Arc<crate::services::models::ModelDownloadManager> {
+        &self.models_manager
+    }
+
+    /// Models directory where Whisper and VAD models live (spec §10.2).
+    pub fn models_dir(&self) -> PathBuf {
+        self.tools.models_dir()
     }
 
     /// Where the tool layer reads its directories from.
@@ -932,6 +983,11 @@ impl ToolContext {
     /// §8.2, §11.8).
     pub fn archive_path(&self) -> PathBuf {
         self.data_dir.join(ARCHIVE_FILE)
+    }
+
+    /// Where downloaded Whisper and VAD models live (spec §10.2).
+    pub fn models_dir(&self) -> PathBuf {
+        self.data_dir.join("models")
     }
 
     pub fn bundled_dir(&self) -> &Path {

@@ -3268,3 +3268,25 @@ choice, and it is written here so the v0.1.0 release does not go looking for it.
 **Verified** by `npm run check:ci` (13 `run: |` blocks), `npm run
 check:runners` (4 workflows, no floating or deprecated image, every action on
 Node 24), a YAML parse of all four files, and the `diff` above (empty).
+
+### D119 — Whisper sidecar (sdp-whisper) build workflow and model download manager (M5-A)
+
+Spec §5.4, §10.2, §11.6, `whisper.models.json`.
+
+1. **Pinned whisper.cpp sidecar (`sdp-whisper`) version is `v1.9.5`** (ggml-org/whisper.cpp).
+   The workflow `.github/workflows/whisper-sidecar.yml` builds static binaries:
+   - Linux (x86_64, aarch64): static linkage with `-static-libgcc -static-libstdc++`.
+   - Windows (x64, arm64): static C++ runtime (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`).
+   - macOS (arm64, x86_64): Metal enabled (`GGML_METAL=ON`).
+   Asset release naming adheres to `sdp-whisper-{target}`.
+2. **Model catalogue (`whisper.models.json`) pinned via Hugging Face Git LFS query**:
+   Contains 11 Whisper ggml models (Tiny, Base, Small, Medium, Large-v3, Large-v3-Turbo with quantized variants) and Silero VAD (`silero-v5.1.2`, 5,463,552 bytes, sha256 `6e033f947704df34baabfb3a1f879fa1e2b6186b5936aa7d6206d2146e5bf13b`).
+   Every entry has exact byte size and sha256 checksum. `scripts/fetch_models_manifest.mjs` provides offline/online validation (`npm run check:models`).
+3. **Automatic VAD co-download**:
+   As specified in §10.2 ("Silero VAD model fetched together with the first model"), `download_model` checks if `ggml-silero.bin` exists; if not, it transparently downloads and verifies the VAD model first before initiating the target Whisper model download.
+4. **Resumable HTTP Range download and disk space check**:
+   Downloader writes to `<model>.part` using HTTP `Range: bytes=N-`, calculates in-progress received bytes, guards against low disk space prior to start, and deletes corrupted `.part` files on sha256 mismatch.
+5. **State and IPC**:
+   `SETTINGS_SCHEMA_VERSION` bumped to 7 with transcription preferences (`active_whisper_model`, `whisper_models_mirror_url`, `skip_silence_vad`, `whisper_threads`, `whisper_translate_to_english`, `default_transcript_language`, `transcription_engine_order`, `transcripts_subfolder`).
+   IPC commands `models_list`, `models_download`, `models_cancel_download`, `models_delete`, `models_import`, `models_set_active`, `models_open_folder` wired to Svelte 5 frontend.
+

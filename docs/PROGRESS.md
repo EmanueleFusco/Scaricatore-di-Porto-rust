@@ -3550,3 +3550,28 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: Spec §6.4 specifies `--download-archive <app data>/archive.txt` under "YouTube playlists and channels" ("skip already downloaded (download archive, default on for playlists)").
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: commit changes.
+
+## 2026-10-18 — M5-A / Whisper sidecar CI, model catalogue, download manager, and transcription settings (spec §5.4, §10.2, §11.6)
+- Done:
+  - Created `.github/workflows/whisper-sidecar.yml` to compile `sdp-whisper` static binaries from pinned `v1.9.5` whisper.cpp (Linux x86_64/aarch64 with static libgcc/libstdc++, Windows x64/arm64 with MultiThreaded CRT, macOS arm64/x86_64 with Metal).
+  - Pinned `whisper.models.json` containing 11 GGML Whisper models + Silero VAD (`silero-v5.1.2`) with exact byte sizes and sha256 hashes queried from Hugging Face Git LFS. Added `scripts/fetch_models_manifest.mjs` and `npm run check:models`.
+  - Added `sdp-whisper` entry to `tools.manifest.json` and updated tool banner parsing in `src-tauri/src/services/tools.rs` for `whisper.cpp version: 1.9.5-dev`.
+  - Bumped settings schema version to 7 and added transcription preferences in `src-tauri/src/state.rs` and `src/lib/settings.ts`.
+  - Implemented `ModelDownloadManager` in `src-tauri/src/services/models.rs` with Range-resume into `.part`, sha256 checksum validation, Silero VAD co-download, disk-space pre-flight check, local model file import, model deletion, and models view inspection.
+  - Added IPC commands `models_list`, `models_download`, `models_cancel_download`, `models_delete`, `models_import`, `models_set_active`, `models_open_folder` in `src-tauri/src/commands/models.rs`.
+  - Built frontend models store `src/lib/stores/models.svelte.ts` and `TranscriptionSettings.svelte` with live progress bars, large download warning (> 1 GiB), active model selection, CPU threads and mirror URL configuration, and full i18n support in `it.json` and `en.json`.
+  - Added unit tests in `src/lib/models.test.ts`, `src/lib/settings.test.ts`, and full integration test suite in `src-tauri/tests/models.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 345 unit + 140 integration = 485 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed.
+  - `npm run check:ci && npm run check:runners && npm run check:tools && npm run check:models` → all passed.
+- Not verified / stubbed: Transcription audio extraction and whisper CLI execution pipeline (reserved for phase M5-B).
+- Spec items marked "verify" that I checked:
+  - whisper.cpp release asset and version tags verified on ggml-org/whisper.cpp (`v1.9.5`).
+  - Hugging Face Git LFS metadata verified for ggerganov/whisper.cpp and snakers4/silero-vad models.
+- Decisions/deviations (also in DECISIONS.md): D119.
+- Next step: proceed to Phase M5-B (transcription pipeline, chunking, and subtitle generation).
+

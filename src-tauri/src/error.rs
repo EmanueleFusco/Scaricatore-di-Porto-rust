@@ -18,6 +18,16 @@ pub enum ErrorCode {
     /// Spawning an external tool, or controlling its process tree, failed
     /// (spec §4).
     Process,
+    /// Whisper model catalogue id was not found (spec §10.2).
+    ModelNotFound,
+    /// Downloaded or imported model checksum does not match expected sha256.
+    ChecksumMismatch,
+    /// Target disk partition has insufficient free space (spec §10.2).
+    DiskFull,
+    /// Source file path for model import does not exist.
+    FileNotFound,
+    /// Local file imported does not match any known model in catalogue.
+    UnknownModel,
 }
 
 impl ErrorCode {
@@ -29,6 +39,11 @@ impl ErrorCode {
             Self::SettingsCorrupt => "SETTINGS_CORRUPT",
             Self::Unsupported => "UNSUPPORTED",
             Self::Process => "PROCESS",
+            Self::ModelNotFound => "MODEL_NOT_FOUND",
+            Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
+            Self::DiskFull => "DISK_FULL",
+            Self::FileNotFound => "FILE_NOT_FOUND",
+            Self::UnknownModel => "UNKNOWN_MODEL",
         }
     }
 
@@ -41,6 +56,11 @@ impl ErrorCode {
             Self::SettingsCorrupt => "error.settingsCorrupt",
             Self::Unsupported => "error.unsupported",
             Self::Process => "error.process",
+            Self::ModelNotFound => "error.modelNotFound",
+            Self::ChecksumMismatch => "error.checksumMismatch",
+            Self::DiskFull => "error.diskFull",
+            Self::FileNotFound => "error.fileNotFound",
+            Self::UnknownModel => "error.unknownModel",
         }
     }
 }
@@ -96,6 +116,21 @@ pub enum AppError {
     /// names the tool and the OS error, never a secret.
     #[error("{0}")]
     Process(String),
+
+    #[error("model not found: {0}")]
+    ModelNotFound(String),
+
+    #[error("checksum mismatch: expected {expected}, actual {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+
+    #[error("insufficient disk space: needed {needed} bytes, available {available} bytes")]
+    DiskFull { needed: u64, available: u64 },
+
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error("unknown model: {0}")]
+    UnknownModel(String),
 }
 
 impl AppError {
@@ -107,6 +142,11 @@ impl AppError {
             Self::SettingsCorrupt { .. } => ErrorCode::SettingsCorrupt,
             Self::Unsupported(_) => ErrorCode::Unsupported,
             Self::Process(_) => ErrorCode::Process,
+            Self::ModelNotFound(_) => ErrorCode::ModelNotFound,
+            Self::ChecksumMismatch { .. } => ErrorCode::ChecksumMismatch,
+            Self::DiskFull { .. } => ErrorCode::DiskFull,
+            Self::FileNotFound(_) => ErrorCode::FileNotFound,
+            Self::UnknownModel(_) => ErrorCode::UnknownModel,
         }
     }
 
@@ -144,13 +184,18 @@ mod tests {
     use super::*;
 
     /// Every code, so a new one has to be added here and looked at.
-    const CODES: [ErrorCode; 6] = [
+    const CODES: [ErrorCode; 11] = [
         ErrorCode::Io,
         ErrorCode::Json,
         ErrorCode::Tauri,
         ErrorCode::SettingsCorrupt,
         ErrorCode::Unsupported,
         ErrorCode::Process,
+        ErrorCode::ModelNotFound,
+        ErrorCode::ChecksumMismatch,
+        ErrorCode::DiskFull,
+        ErrorCode::FileNotFound,
+        ErrorCode::UnknownModel,
     ];
 
     #[test]

@@ -10,6 +10,7 @@ pub mod inspect;
 pub mod job;
 pub mod jsruntime;
 pub mod manifest;
+pub mod models;
 pub mod notify;
 pub mod paths;
 pub mod process;

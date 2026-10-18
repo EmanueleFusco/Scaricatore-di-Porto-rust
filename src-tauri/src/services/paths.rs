@@ -40,6 +40,11 @@ pub fn tools_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
     Ok(app_data_dir(app)?.join("tools"))
 }
 
+/// Directory for downloaded Whisper and VAD models (spec §10.2).
+pub fn models_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> io::Result<PathBuf> {
+    Ok(app_data_dir(app)?.join("models"))
+}
+
 /// The user's home directory, when the OS exposes one.
 ///
 /// Used only to build the well-known tool locations of spec §5.2

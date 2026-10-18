@@ -40,6 +40,8 @@ pub const YTDLP: &str = "yt-dlp";
 pub const QJS: &str = "qjs";
 /// Deno, the lazy fallback runtime (spec §5.3).
 pub const DENO: &str = "deno";
+/// Whisper sidecar CLI (spec §5.4).
+pub const SDP_WHISPER: &str = "sdp-whisper";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -668,12 +670,21 @@ mod tests {
 
     #[test]
     fn the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback() {
-        // M0-C left Deno out on purpose ("M1 is where its version gets
-        // pinned"); M1 is here. The distinction the spec cares about is
-        // `bundled`: only yt-dlp and qjs ship in the installer (spec §0.7).
+        // Spec §0.7, §5.4: bundled: only yt-dlp and qjs ship in the installer;
+        // Deno and sdp-whisper are downloaded on demand.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec![YTDLP, DENO, QJS]);
+        assert_eq!(names, vec![YTDLP, DENO, QJS, SDP_WHISPER]);
+
+        let whisper = manifest
+            .tool(SDP_WHISPER)
+            .expect("sdp-whisper is in the manifest");
+        assert!(
+            !whisper.bundled,
+            "sdp-whisper is downloaded on demand, never bundled"
+        );
+        assert_eq!(whisper.versioning, Versioning::Pinned);
+        assert_eq!(whisper.version.as_deref(), Some("1.9.5"));
 
         let deno = manifest.tool(DENO).expect("deno is in the manifest");
         assert!(!deno.bundled, "Deno is downloaded on demand, never bundled");

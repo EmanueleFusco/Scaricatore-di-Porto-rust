@@ -205,6 +205,73 @@
           ]
         }
       }
+    },
+    {
+      "name": "sdp-whisper",
+      "role": "Transcription engine (Whisper sidecar)",
+      "bundled": false,
+      "license": "MIT",
+      "licenseUrl": "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE",
+      "homepage": "https://github.com/ggml-org/whisper.cpp",
+      "versioning": "pinned",
+      "version": "1.9.5",
+      "minVersion": "1.7.0",
+      "note": [
+        "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
+        "Built from pinned whisper.cpp tag v1.9.5 by .github/workflows/whisper-sidecar.yml.",
+        "Attached to releases as sdp-whisper-<target-triple>[.exe]."
+      ],
+      "platforms": {
+        "x86_64-unknown-linux-gnu": {
+          "asset": "sdp-whisper-x86_64-unknown-linux-gnu",
+          "executableName": "sdp-whisper",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "sdp-whisper-aarch64-unknown-linux-gnu",
+          "executableName": "sdp-whisper",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "x86_64-pc-windows-msvc": {
+          "asset": "sdp-whisper-x86_64-pc-windows-msvc.exe",
+          "executableName": "sdp-whisper.exe",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "aarch64-pc-windows-msvc": {
+          "asset": "sdp-whisper-aarch64-pc-windows-msvc.exe",
+          "executableName": "sdp-whisper.exe",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "x86_64-apple-darwin": {
+          "asset": "sdp-whisper-x86_64-apple-darwin",
+          "executableName": "sdp-whisper",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "aarch64-apple-darwin": {
+          "asset": "sdp-whisper-aarch64-apple-darwin",
+          "executableName": "sdp-whisper",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        },
+        "universal-apple-darwin": {
+          "asset": "sdp-whisper-universal-apple-darwin",
+          "executableName": "sdp-whisper",
+          "archiveKind": "none",
+          "url": null,
+          "sha256": null
+        }
+      }
     }
   ]
 }

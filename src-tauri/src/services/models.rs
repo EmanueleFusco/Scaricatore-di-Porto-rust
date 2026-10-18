@@ -1,0 +1,748 @@
+//! Whisper model catalogue and model download manager (spec §10.2, §11.6).
+//!
+//! Provides the pinned model catalogue from `whisper.models.json`, disk-space checks,
+//! Range-resumed downloads into `.part` files, sha256 checksum verification,
+//! VAD model co-downloading, model importing from local files, and deletion.
+
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
+
+use crate::error::AppError;
+use crate::services::download::{self, DownloadProgress, DownloadRequest, Transport};
+
+/// Pinned Whisper model catalogue JSON embedded into the binary.
+pub const MODELS_CATALOGUE_JSON: &str = include_str!("../../../whisper.models.json");
+
+/// Subdirectory inside app data directory where models live.
+pub const MODELS_SUBDIR: &str = "models";
+
+// ---------------------------------------------------------------------------
+// Catalogue Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogue {
+    pub schema_version: u32,
+    pub vad: VadModelEntry,
+    pub models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VadModelEntry {
+    pub id: String,
+    pub label: String,
+    pub file: String,
+    pub url: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub id: String,
+    pub label: String,
+    pub file: String,
+    pub url: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub ram_estimate: String,
+    pub tier: String,
+    pub indicative_wer: Option<f32>,
+    pub multilingual: bool,
+    pub recommended: bool,
+    pub advanced: bool,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+impl ModelCatalogue {
+    /// Parse and validate the embedded model catalogue.
+    pub fn embedded() -> Result<Self, AppError> {
+        Self::parse(MODELS_CATALOGUE_JSON)
+    }
+
+    /// Parse catalogue from JSON string.
+    pub fn parse(raw: &str) -> Result<Self, AppError> {
+        let catalogue: Self = serde_json::from_str(raw)?;
+        catalogue.validate()?;
+        Ok(catalogue)
+    }
+
+    fn validate(&self) -> Result<(), AppError> {
+        if self.schema_version != 1 {
+            return Err(AppError::Unsupported(format!(
+                "Unsupported schemaVersion: {}",
+                self.schema_version
+            )));
+        }
+        if self.vad.id.is_empty() || self.vad.file.is_empty() || self.vad.sha256.len() != 64 {
+            return Err(AppError::Unsupported(
+                "Invalid VAD model entry in catalogue".to_owned(),
+            ));
+        }
+        if self.models.is_empty() {
+            return Err(AppError::Unsupported(
+                "Model catalogue has no models".to_owned(),
+            ));
+        }
+        for model in &self.models {
+            if model.id.is_empty() || model.file.is_empty() || model.sha256.len() != 64 {
+                return Err(AppError::Unsupported(format!(
+                    "Invalid model entry in catalogue: {}",
+                    model.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn find(&self, id: &str) -> Option<&ModelEntry> {
+        self.models.iter().find(|m| m.id == id)
+    }
+
+    pub fn find_by_file(&self, file: &str) -> Option<&ModelEntry> {
+        self.models.iter().find(|m| m.file == file)
+    }
+
+    pub fn find_by_sha256(&self, sha: &str) -> Option<&ModelEntry> {
+        let sha_lower = sha.to_ascii_lowercase();
+        self.models
+            .iter()
+            .find(|m| m.sha256.eq_ignore_ascii_case(&sha_lower))
+    }
+
+    /// Resolves the download URL, applying any mirror/base URL override.
+    pub fn effective_url(&self, model: &ModelEntry, mirror_base: Option<&str>) -> String {
+        match mirror_base.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(base) => {
+                let clean_base = base.trim_end_matches('/');
+                format!("{}/{}", clean_base, model.file)
+            }
+            None => model.url.clone(),
+        }
+    }
+
+    /// Resolves the VAD model download URL, applying any mirror/base URL override.
+    pub fn effective_vad_url(&self, mirror_base: Option<&str>) -> String {
+        match mirror_base.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(base) => {
+                let clean_base = base.trim_end_matches('/');
+                format!("{}/{}", clean_base, self.vad.file)
+            }
+            None => self.vad.url.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Disk Space Helper
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn platform_available_space_bytes(path: &Path) -> io::Result<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let res = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if res != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(windows)]
+fn platform_available_space_bytes(path: &Path) -> io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free_bytes_available: u64 = 0;
+    let res = unsafe {
+        windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+            windows::core::PCWSTR(wide.as_ptr()),
+            Some(&mut free_bytes_available),
+            None,
+            None,
+        )
+    };
+    if res.is_ok() {
+        Ok(free_bytes_available)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Available free disk space in bytes for the volume holding `target`.
+/// Walks up ancestors if `target` does not exist yet.
+pub fn free_disk_space(target: &Path) -> io::Result<u64> {
+    let existing = target.ancestors().find(|p| p.exists()).unwrap_or(target);
+    platform_available_space_bytes(existing)
+}
+
+// ---------------------------------------------------------------------------
+// Model Status & View Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ModelInstallState {
+    NotInstalled,
+    Downloading {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Installed {
+        size_bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelViewItem {
+    pub id: String,
+    pub label: String,
+    pub file: String,
+    pub size_bytes: u64,
+    pub ram_estimate: String,
+    pub tier: String,
+    pub indicative_wer: Option<f32>,
+    pub multilingual: bool,
+    pub recommended: bool,
+    pub advanced: bool,
+    pub notes: Option<String>,
+    pub state: ModelInstallState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VadStatusView {
+    pub id: String,
+    pub installed: bool,
+    pub file: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelsView {
+    pub models: Vec<ModelViewItem>,
+    pub active_model: Option<String>,
+    pub recommended_model: String,
+    pub low_core_system: bool,
+    pub free_space_bytes: u64,
+    pub vad: VadStatusView,
+    pub models_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProgressEvent {
+    pub id: String,
+    pub received_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<f32>,
+    pub phase: String, // "vad" or "model"
+}
+
+// ---------------------------------------------------------------------------
+// Recommendation Logic
+// ---------------------------------------------------------------------------
+
+/// Recommends default model ID and returns whether the machine is a low-core system
+/// (spec §10.2: default Turbo q5_0, or Small q5_1 if cores <= 4).
+pub fn recommend_model() -> (&'static str, bool) {
+    let cores = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    if cores <= 4 {
+        ("small-q5_1", true)
+    } else {
+        ("large-v3-turbo-q5_0", false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model Status Inspection
+// ---------------------------------------------------------------------------
+
+pub fn is_vad_installed(models_dir: &Path, vad: &VadModelEntry) -> bool {
+    let path = models_dir.join(&vad.file);
+    path.is_file() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false)
+}
+
+pub fn inspect_models(
+    models_dir: &Path,
+    catalogue: &ModelCatalogue,
+    active_model: Option<&str>,
+    downloading_models: &HashMap<String, DownloadProgress>,
+) -> ModelsView {
+    let (rec_model, low_core) = recommend_model();
+    let free_space = free_disk_space(models_dir).unwrap_or(0);
+    let vad_installed = is_vad_installed(models_dir, &catalogue.vad);
+
+    let vad_status = VadStatusView {
+        id: catalogue.vad.id.clone(),
+        installed: vad_installed,
+        file: catalogue.vad.file.clone(),
+        size_bytes: catalogue.vad.size_bytes,
+    };
+
+    let items = catalogue
+        .models
+        .iter()
+        .map(|model| {
+            let final_path = models_dir.join(&model.file);
+            let part_path = models_dir.join(format!("{}.part", model.file));
+
+            let state = if let Some(prog) = downloading_models.get(&model.id) {
+                ModelInstallState::Downloading {
+                    received_bytes: prog.received,
+                    total_bytes: prog.total.or(Some(model.size_bytes)),
+                }
+            } else if final_path.is_file() {
+                let size = fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+                ModelInstallState::Installed { size_bytes: size }
+            } else if part_path.is_file() {
+                let part_size = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+                ModelInstallState::Downloading {
+                    received_bytes: part_size,
+                    total_bytes: Some(model.size_bytes),
+                }
+            } else {
+                ModelInstallState::NotInstalled
+            };
+
+            ModelViewItem {
+                id: model.id.clone(),
+                label: model.label.clone(),
+                file: model.file.clone(),
+                size_bytes: model.size_bytes,
+                ram_estimate: model.ram_estimate.clone(),
+                tier: model.tier.clone(),
+                indicative_wer: model.indicative_wer,
+                multilingual: model.multilingual,
+                recommended: model.id == rec_model,
+                advanced: model.advanced,
+                notes: model.notes.clone(),
+                state,
+            }
+        })
+        .collect();
+
+    ModelsView {
+        models: items,
+        active_model: active_model.map(str::to_owned),
+        recommended_model: rec_model.to_owned(),
+        low_core_system: low_core,
+        free_space_bytes: free_space,
+        vad: vad_status,
+        models_dir: models_dir.to_path_buf(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model Download Manager
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub struct ModelDownloadManager {
+    tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    in_flight_progress: Arc<Mutex<HashMap<String, DownloadProgress>>>,
+}
+
+impl ModelDownloadManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn in_flight_progress(&self) -> HashMap<String, DownloadProgress> {
+        self.in_flight_progress
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn is_downloading(&self, id: &str) -> bool {
+        self.tokens
+            .lock()
+            .map(|g| g.contains_key(id))
+            .unwrap_or(false)
+    }
+
+    pub fn cancel(&self, id: &str) -> bool {
+        let mut tokens = match self.tokens.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(token) = tokens.remove(id) {
+            token.cancel();
+            if let Ok(mut prog) = self.in_flight_progress.lock() {
+                prog.remove(id);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Download model (and VAD model if missing) with Range resume, sha256 check, and disk space guard.
+    pub async fn download_model<F>(
+        &self,
+        models_dir: &Path,
+        catalogue: &ModelCatalogue,
+        model_id: &str,
+        mirror_base: Option<&str>,
+        transport: Transport,
+        on_progress: F,
+    ) -> Result<PathBuf, AppError>
+    where
+        F: FnMut(ModelProgressEvent) + Send + Sync + 'static,
+    {
+        let model = catalogue
+            .find(model_id)
+            .ok_or_else(|| AppError::ModelNotFound(model_id.to_owned()))?;
+
+        // Ensure models directory exists
+        fs::create_dir_all(models_dir)?;
+
+        // Pre-flight: Check free disk space
+        let free_space = free_disk_space(models_dir).unwrap_or(0);
+        let vad_needed = if is_vad_installed(models_dir, &catalogue.vad) {
+            0
+        } else {
+            catalogue.vad.size_bytes
+        };
+        let total_needed = model.size_bytes + vad_needed + 10 * 1024 * 1024; // 10 MB safety margin
+
+        if free_space > 0 && free_space < total_needed {
+            return Err(AppError::DiskFull {
+                needed: total_needed,
+                available: free_space,
+            });
+        }
+
+        let token = CancellationToken::new();
+        {
+            let mut tokens = match self.tokens.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            tokens.insert(model_id.to_owned(), token.clone());
+        }
+
+        let progress_map = Arc::clone(&self.in_flight_progress);
+
+        let progress_cb = Arc::new(Mutex::new(on_progress));
+
+        // 1. Download VAD model first if not installed (spec §10.2: "fetched together with first model")
+        if !is_vad_installed(models_dir, &catalogue.vad) {
+            let vad_dest = models_dir.join(&catalogue.vad.file);
+            let vad_url = catalogue.effective_vad_url(mirror_base);
+            let mut vad_req =
+                DownloadRequest::new(vad_url, &vad_dest).with_checksum(&catalogue.vad.sha256);
+            vad_req.transport = transport;
+
+            let mut vad_sink = {
+                let id = catalogue.vad.id.clone();
+                let p_map = Arc::clone(&progress_map);
+                let m_id = model_id.to_owned();
+                let cb = Arc::clone(&progress_cb);
+                move |p: DownloadProgress| {
+                    if let Ok(mut map) = p_map.lock() {
+                        map.insert(m_id.clone(), p);
+                    }
+                    let pct = p.total.map(|t| (p.received as f32 / t as f32) * 100.0);
+                    if let Ok(mut f) = cb.lock() {
+                        f(ModelProgressEvent {
+                            id: id.clone(),
+                            received_bytes: p.received,
+                            total_bytes: p.total,
+                            percent: pct,
+                            phase: "vad".to_owned(),
+                        });
+                    }
+                }
+            };
+
+            let outcome = download::download(&vad_req, &token, &mut vad_sink).await;
+            if let Err(err) = outcome {
+                if let Ok(mut tokens) = self.tokens.lock() {
+                    tokens.remove(model_id);
+                }
+                if let Ok(mut prog) = self.in_flight_progress.lock() {
+                    prog.remove(model_id);
+                }
+                return Err(err);
+            }
+        }
+
+        // 2. Download the requested Whisper model
+        let model_dest = models_dir.join(&model.file);
+        let model_url = catalogue.effective_url(model, mirror_base);
+        let mut model_req =
+            DownloadRequest::new(model_url, &model_dest).with_checksum(&model.sha256);
+        model_req.transport = transport;
+
+        let model_id_owned = model_id.to_owned();
+        let outcome = {
+            let p_map = Arc::clone(&progress_map);
+            let m_id = model_id_owned.clone();
+            let cb = Arc::clone(&progress_cb);
+            let mut sink = move |p: DownloadProgress| {
+                if let Ok(mut map) = p_map.lock() {
+                    map.insert(m_id.clone(), p);
+                }
+                let pct = p.total.map(|t| (p.received as f32 / t as f32) * 100.0);
+                if let Ok(mut f) = cb.lock() {
+                    f(ModelProgressEvent {
+                        id: model_id_owned.clone(),
+                        received_bytes: p.received,
+                        total_bytes: p.total,
+                        percent: pct,
+                        phase: "model".to_owned(),
+                    });
+                }
+            };
+
+            download::download(&model_req, &token, &mut sink).await
+        };
+
+        // Cleanup token and progress tracking
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.remove(model_id);
+        }
+        if let Ok(mut prog) = self.in_flight_progress.lock() {
+            prog.remove(model_id);
+        }
+
+        let outcome = outcome?;
+        Ok(outcome.path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model Operations: Delete & Import
+// ---------------------------------------------------------------------------
+
+/// Delete a model from disk, freeing storage (spec §10.2).
+pub fn delete_model(
+    models_dir: &Path,
+    catalogue: &ModelCatalogue,
+    model_id: &str,
+) -> Result<(), AppError> {
+    let model = catalogue
+        .find(model_id)
+        .ok_or_else(|| AppError::ModelNotFound(model_id.to_owned()))?;
+
+    let dest = models_dir.join(&model.file);
+    let part = models_dir.join(format!("{}.part", model.file));
+
+    let _ = fs::remove_file(part);
+    if dest.is_file() {
+        fs::remove_file(dest)?;
+    }
+    Ok(())
+}
+
+/// Computes SHA-256 of any local file.
+pub fn compute_file_sha256(path: &Path) -> Result<String, AppError> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Import a local model file into the models directory (spec §10.2: "Import model file… for offline machines").
+pub fn import_model(
+    models_dir: &Path,
+    catalogue: &ModelCatalogue,
+    source_path: &Path,
+    target_model_id: Option<&str>,
+) -> Result<ModelEntry, AppError> {
+    if !source_path.is_file() {
+        return Err(AppError::FileNotFound(source_path.display().to_string()));
+    }
+
+    let actual_sha = compute_file_sha256(source_path)?;
+
+    let model = if let Some(id) = target_model_id {
+        let m = catalogue
+            .find(id)
+            .ok_or_else(|| AppError::ModelNotFound(id.to_string()))?;
+        if !m.sha256.eq_ignore_ascii_case(&actual_sha) {
+            return Err(AppError::ChecksumMismatch {
+                expected: m.sha256.clone(),
+                actual: actual_sha,
+            });
+        }
+        m
+    } else if let Some(matched) = catalogue.find_by_sha256(&actual_sha) {
+        matched
+    } else {
+        return Err(AppError::UnknownModel(actual_sha));
+    };
+
+    fs::create_dir_all(models_dir)?;
+    let dest = models_dir.join(&model.file);
+    let tmp = models_dir.join(format!("{}.import.tmp", model.file));
+
+    fs::copy(source_path, &tmp)?;
+    fs::rename(&tmp, &dest)?;
+
+    Ok(model.clone())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn embedded_catalogue_parses_and_validates() {
+        let catalogue = ModelCatalogue::embedded().expect("embedded catalogue must be valid");
+        assert_eq!(catalogue.schema_version, 1);
+        assert_eq!(catalogue.vad.id, "silero-v5.1.2");
+        assert_eq!(catalogue.models.len(), 11);
+
+        let turbo = catalogue
+            .find("large-v3-turbo-q5_0")
+            .expect("turbo must exist");
+        assert_eq!(turbo.label, "Turbo");
+        assert_eq!(turbo.file, "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(turbo.size_bytes, 574041195);
+        assert_eq!(
+            turbo.sha256,
+            "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        );
+        assert_eq!(turbo.indicative_wer, Some(2.8));
+        assert!(turbo.recommended);
+    }
+
+    #[test]
+    fn model_finder_by_file_and_sha256() {
+        let catalogue = ModelCatalogue::embedded().unwrap();
+        assert_eq!(
+            catalogue
+                .find_by_file("ggml-tiny-q5_1.bin")
+                .map(|m| m.id.as_str()),
+            Some("tiny-q5_1")
+        );
+        assert_eq!(
+            catalogue
+                .find_by_sha256("818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7")
+                .map(|m| m.id.as_str()),
+            Some("tiny-q5_1")
+        );
+        assert_eq!(catalogue.find_by_file("nonexistent.bin"), None);
+    }
+
+    #[test]
+    fn effective_urls_handle_custom_mirrors() {
+        let catalogue = ModelCatalogue::embedded().unwrap();
+        let tiny = catalogue.find("tiny-q5_1").unwrap();
+
+        // Default URL
+        assert_eq!(
+            catalogue.effective_url(tiny, None),
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"
+        );
+
+        // Mirror base URL
+        assert_eq!(
+            catalogue.effective_url(tiny, Some("https://hf-mirror.com/models")),
+            "https://hf-mirror.com/models/ggml-tiny-q5_1.bin"
+        );
+        assert_eq!(
+            catalogue.effective_url(tiny, Some("https://hf-mirror.com/models/")),
+            "https://hf-mirror.com/models/ggml-tiny-q5_1.bin"
+        );
+
+        // VAD mirror
+        assert_eq!(
+            catalogue.effective_vad_url(Some("https://hf-mirror.com/vad/")),
+            "https://hf-mirror.com/vad/ggml-silero-v5.1.2.bin"
+        );
+    }
+
+    #[test]
+    fn recommend_model_selects_turbo_or_small() {
+        let (model, _is_low) = recommend_model();
+        assert!(model == "large-v3-turbo-q5_0" || model == "small-q5_1");
+    }
+
+    #[test]
+    fn free_disk_space_returns_positive_bytes_for_tempdir() {
+        let dir = tempdir().unwrap();
+        let space = free_disk_space(dir.path()).expect("disk space check must succeed");
+        assert!(space > 0);
+    }
+
+    #[test]
+    fn delete_and_import_model_round_trip() {
+        let dir = tempdir().unwrap();
+        let models_dir = dir.path().join("models");
+        let catalogue = ModelCatalogue::embedded().unwrap();
+
+        // Create a mock model file matching tiny-q5_1 sha256
+        let tiny = catalogue.find("tiny-q5_1").unwrap();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source_file = source_dir.join("local-tiny.bin");
+
+        // Write content and compute sha256
+        fs::write(&source_file, b"test-model-content").unwrap();
+        let actual_sha = compute_file_sha256(&source_file).unwrap();
+
+        // Custom catalogue with this sha
+        let mut custom_catalogue = catalogue.clone();
+        custom_catalogue.models[0].sha256 = actual_sha.clone();
+
+        // Import matching by sha256
+        let imported = import_model(&models_dir, &custom_catalogue, &source_file, None).unwrap();
+        assert_eq!(imported.id, "tiny-q5_1");
+        assert!(models_dir.join(&tiny.file).is_file());
+
+        // Delete model
+        delete_model(&models_dir, &custom_catalogue, "tiny-q5_1").unwrap();
+        assert!(!models_dir.join(&tiny.file).exists());
+    }
+
+    #[test]
+    fn import_fails_when_checksum_mismatches() {
+        let dir = tempdir().unwrap();
+        let models_dir = dir.path().join("models");
+        let catalogue = ModelCatalogue::embedded().unwrap();
+
+        let source_file = dir.path().join("wrong.bin");
+        fs::write(&source_file, b"wrong-content").unwrap();
+
+        let err =
+            import_model(&models_dir, &catalogue, &source_file, Some("tiny-q5_1")).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("checksum mismatch"));
+    }
+}

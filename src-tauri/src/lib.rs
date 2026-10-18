@@ -140,6 +140,13 @@ pub fn run() {
             commands::system::open_path,
             commands::system::reveal_path,
             commands::system::encoders_probe,
+            commands::models::models_list,
+            commands::models::models_download,
+            commands::models::models_cancel_download,
+            commands::models::models_delete,
+            commands::models::models_import,
+            commands::models::models_set_active,
+            commands::models::models_open_folder,
         ])
         .build(tauri::generate_context!());
 
