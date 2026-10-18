@@ -1795,7 +1795,7 @@ async fn run_transcribe_stage(
         whisper_threads: environment.whisper_threads,
         transcripts_subfolder,
         duration_sec: duration_sec_f64,
-        temp_dir: environment.private_temp.clone(),
+        temp_dir: Some(process::item_temp_dir(&options.output_dir, id)),
     };
 
     let progress_inner = Arc::clone(inner);

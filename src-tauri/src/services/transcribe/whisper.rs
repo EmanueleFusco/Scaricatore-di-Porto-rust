@@ -867,6 +867,39 @@ pub struct TranscribeRequest {
     pub temp_dir: Option<PathBuf>,
 }
 
+struct CleanupFile {
+    file: PathBuf,
+}
+
+impl Drop for CleanupFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.file);
+        if let Some(parent) = self.file.parent() {
+            if parent
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.starts_with(".sdp-tmp-"))
+            {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+struct ChunkGuard {
+    chunk_wav: Option<PathBuf>,
+    out_base: PathBuf,
+}
+
+impl Drop for ChunkGuard {
+    fn drop(&mut self) {
+        clean_whisper_partials(&self.out_base);
+        if let Some(wav) = &self.chunk_wav {
+            let _ = fs::remove_file(wav);
+        }
+    }
+}
+
 /// Full offline transcription pipeline (spec §10.2).
 ///
 /// 1. Prepares 16 kHz mono WAV via ffmpeg.
@@ -891,6 +924,9 @@ pub async fn run_transcribe(
         .unwrap_or(0);
 
     let full_wav = parent_dir.join(format!("whisper_prep_{rand_suffix}.wav"));
+    let _full_wav_guard = CleanupFile {
+        file: full_wav.clone(),
+    };
 
     // Step 1: Prepare 16 kHz WAV
     prepare_16khz_wav(
@@ -939,28 +975,35 @@ pub async fn run_transcribe(
 
     for (idx, boundary) in boundaries.iter().enumerate() {
         if token.is_cancelled() {
-            let _ = fs::remove_file(&full_wav);
             return Err(AppError::Process("Transcription cancelled".to_string()));
         }
 
         let chunk_wav = if total_chunks == 1 {
             full_wav.clone()
         } else {
-            let c_wav = parent_dir.join(format!("chunk_{idx}_{rand_suffix}.wav"));
+            parent_dir.join(format!("chunk_{idx}_{rand_suffix}.wav"))
+        };
+
+        let chunk_out_base = parent_dir.join(format!("chunk_{idx}_{rand_suffix}_out"));
+
+        let _chunk_guard = ChunkGuard {
+            chunk_wav: (total_chunks > 1).then(|| chunk_wav.clone()),
+            out_base: chunk_out_base.clone(),
+        };
+
+        if total_chunks > 1 {
             extract_wav_chunk(
                 &req.ffmpeg_path,
                 &full_wav,
                 boundary.start_sec,
                 boundary.duration_sec,
-                &c_wav,
+                &chunk_wav,
                 req.temp_dir.as_deref(),
                 &token,
             )
             .await?;
-            c_wav
-        };
+        }
 
-        let chunk_out_base = parent_dir.join(format!("chunk_{idx}_{rand_suffix}_out"));
         let percent_offset = (idx as f64 * 100.0) / total_chunks as f64;
         let percent_scale = 1.0 / total_chunks as f64;
 
@@ -988,16 +1031,12 @@ pub async fn run_transcribe(
         .await?;
 
         if res.cancelled {
-            clean_whisper_partials(&chunk_out_base);
-            if total_chunks > 1 {
-                let _ = fs::remove_file(&chunk_wav);
-            }
-            let _ = fs::remove_file(&full_wav);
             return Err(AppError::Process("Transcription cancelled".to_string()));
         }
 
         // Retry once with -ng on non-zero exit (spec §10.2 item 6)
         if !res.success() && !whisper_args.no_gpu {
+            clean_whisper_partials(&chunk_out_base);
             whisper_args.no_gpu = true;
             res = execute_whisper_attempt(
                 &whisper_args,
@@ -1014,11 +1053,6 @@ pub async fn run_transcribe(
         }
 
         if !res.success() {
-            clean_whisper_partials(&chunk_out_base);
-            if total_chunks > 1 {
-                let _ = fs::remove_file(&chunk_wav);
-            }
-            let _ = fs::remove_file(&full_wav);
             return Err(AppError::Process(format!(
                 "sdp-whisper failed: {}",
                 res.stderr_tail.join("\n")
@@ -1040,13 +1074,10 @@ pub async fn run_transcribe(
             chunk_vtt_data.push((vtt, boundary.timestamp_offset_ms));
         }
 
-        clean_whisper_partials(&chunk_out_base);
-        if total_chunks > 1 {
-            let _ = fs::remove_file(&chunk_wav);
-        }
+        drop(_chunk_guard);
     }
 
-    let _ = fs::remove_file(&full_wav);
+    drop(_full_wav_guard);
 
     // Merge chunk contents
     let txt_slices: Vec<&str> = chunk_txt_data.iter().map(String::as_str).collect();

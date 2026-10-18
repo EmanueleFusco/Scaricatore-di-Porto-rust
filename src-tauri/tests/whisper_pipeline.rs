@@ -354,6 +354,7 @@ struct QueueFakeTools {
     ffmpeg: PathBuf,
     models_dir: PathBuf,
     default_model: String,
+    private_temp: Option<PathBuf>,
 }
 
 impl ToolProvider for QueueFakeTools {
@@ -378,7 +379,7 @@ impl ToolProvider for QueueFakeTools {
                 deno: None,
                 ytdlp_version: "2026.01.01".to_string(),
             },
-            private_temp: None,
+            private_temp: self.private_temp.clone(),
             memory: Arc::new(RuntimeMemoryStore::load(self.models_dir.join("mem.json"))),
             youtube_clients: None,
         };
@@ -402,6 +403,7 @@ async fn queue_engine_transcribes_local_media_end_to_end() {
         ffmpeg: fix.fake_ffmpeg.clone(),
         models_dir: fix.models_dir.clone(),
         default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
     });
 
     let config = EngineConfig {
@@ -532,4 +534,190 @@ async fn transcribe_does_not_overwrite_existing_transcript_files() {
     assert!(outcome.paths.srt.is_file());
     assert!(outcome.paths.txt.is_file());
     assert!(outcome.paths.vtt.is_file());
+}
+
+#[tokio::test]
+async fn transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("error_sample.mp4");
+    let tmp = fix.dir.path().join("tmp_error");
+    fs::create_dir_all(&tmp).expect("create error tmp");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.dir.path().join("nonexistent_whisper_binary"),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: None,
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(tmp.clone()),
+    };
+
+    let res = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        res.is_err(),
+        "should fail when whisper executable is nonexistent"
+    );
+
+    let remaining: Vec<_> = fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "temporary prep wav must not leak on whisper spawn error, found: {:?}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("error_long_podcast.mp4");
+    let tmp = fix.dir.path().join("tmp_chunk_error");
+    fs::create_dir_all(&tmp).expect("create chunk error tmp");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.dir.path().join("nonexistent_whisper_binary"),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: None,
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(7400.0),
+        temp_dir: Some(tmp.clone()),
+    };
+
+    let res = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        res.is_err(),
+        "should fail when whisper executable is nonexistent"
+    );
+
+    let remaining: Vec<_> = fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "temporary wav and chunk files must not leak on whisper spawn error in chunked mode, found: {:?}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("local_lecture_job_temp.mp4");
+    let shared_cache_tmp = fix.dir.path().join("shared_app_cache_tmp");
+    fs::create_dir_all(&shared_cache_tmp).expect("create shared cache tmp");
+
+    let queue_path = fix.dir.path().join("queue_job_temp.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: fix.fake_whisper.clone(),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: Some(shared_cache_tmp.clone()),
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let out_dir = fix.dir.path().join("out_job_temp");
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Local Lecture Job Temp".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: out_dir.clone(),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    let mut finished = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("item failed: {:?}, log: {:?}", item.error, item.log_tail);
+            }
+        }
+    }
+    assert!(
+        finished,
+        "queue item should complete transcription successfully"
+    );
+
+    // Shared app cache tmp should not have received transcription temp files
+    let remaining_shared: Vec<_> = fs::read_dir(&shared_cache_tmp)
+        .expect("read shared tmp dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining_shared.is_empty(),
+        "shared private_temp must not be used for transcription files: {:?}",
+        remaining_shared
+    );
 }

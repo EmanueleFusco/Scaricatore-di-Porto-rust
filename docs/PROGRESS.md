@@ -3656,4 +3656,23 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings (e.g. B2).
 
+## 2026-10-18 — M5 / Fix transcription temp directory isolation and resource leak on error (B2, spec §4.9, §10.2)
+- Done:
+  - Fixed B2:
+    - Updated `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` to pass `temp_dir: Some(process::item_temp_dir(&options.output_dir, id))` instead of `environment.private_temp.clone()`, ensuring temporary audio preparation files are kept in the item's isolated job temp directory on the target filesystem (spec §4.9, §10.2).
+    - Introduced RAII cleanup guards `CleanupFile` and `ChunkGuard` in `src-tauri/src/services/transcribe/whisper.rs` so that `full_wav`, `chunk_wav`, and `chunk_out_base.*` files are unconditionally cleaned up when exiting `run_transcribe` or each chunk iteration, preventing leaks across errors, cancellations, or normal completion.
+    - Added tests in `src-tauri/tests/whisper_pipeline.rs`: `transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn`, `transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode`, and `queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp`.
+- Verified by running:
+  - `cd src-tauri && cargo test --test whisper_pipeline transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn` → FAILS before fix (panic: temporary prep wav must not leak on whisper spawn error, found: [DirEntry(.../whisper_prep_601406.wav)]), PASSES after fix.
+  - `cd src-tauri && cargo test --test whisper_pipeline transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode` → FAILS before fix (panic: temporary wav and chunk files must not leak... found: chunk_0_*.wav, whisper_prep_*.wav), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 363 unit + 155 integration = 518 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+
 
