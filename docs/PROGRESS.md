@@ -3674,5 +3674,22 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
-
-
+## 2026-10-18 — M5 / Fix model filename path traversal validation (B3, Checklist #4, spec §5.2, §10.2)
+- Done:
+  - Fixed B3: validated model and VAD filenames against path traversal in `src-tauri/src/services/models.rs`:
+    - Updated `ModelCatalogue::validate` (and made it public) to reject filenames that fail `crate::services::manifest::is_safe_asset_name` or do not end with `.bin` for both `vad.file` and `model.file`.
+    - Added safety validation checks and assertions (`is_safe_asset_name`) before joining paths with `models_dir` in `is_vad_installed`, `inspect_models`, `download_model`, `delete_model`, and `import_model`, as well as in `effective_url` and `effective_vad_url`.
+    - Added unit tests in `src-tauri/src/services/models.rs`:
+      - `catalogue_validate_rejects_path_traversal_and_unsafe_filenames`: reproduces and verifies rejection of relative traversal (`../escaped.bin`), absolute paths, backslashes, hidden files, and missing `.bin` extensions for both models and VAD.
+      - `model_operations_reject_path_traversal_filenames`: reproduces and verifies that `delete_model`, `import_model`, and `download_model` reject path-traversing filenames without deleting, overwriting, or reading files outside `models_dir`, and that `inspect_models` and `is_vad_installed` handle them safely.
+- Verified by running:
+  - `cargo test catalogue_validate_rejects_path_traversal_and_unsafe_filenames` → FAILS before fix (panic: `assertion failed: catalogue.validate().is_err()`), PASSES after fix.
+  - `cargo test model_operations_reject_path_traversal_filenames` → FAILS before fix (panic: `delete_model must reject path traversal`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 365 unit + 155 integration = 520 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.

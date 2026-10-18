@@ -78,14 +78,19 @@ impl ModelCatalogue {
         Ok(catalogue)
     }
 
-    fn validate(&self) -> Result<(), AppError> {
+    pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != 1 {
             return Err(AppError::Unsupported(format!(
                 "Unsupported schemaVersion: {}",
                 self.schema_version
             )));
         }
-        if self.vad.id.is_empty() || self.vad.file.is_empty() || self.vad.sha256.len() != 64 {
+        if self.vad.id.is_empty()
+            || self.vad.file.is_empty()
+            || !crate::services::manifest::is_safe_asset_name(&self.vad.file)
+            || !self.vad.file.ends_with(".bin")
+            || self.vad.sha256.len() != 64
+        {
             return Err(AppError::Unsupported(
                 "Invalid VAD model entry in catalogue".to_owned(),
             ));
@@ -96,7 +101,12 @@ impl ModelCatalogue {
             ));
         }
         for model in &self.models {
-            if model.id.is_empty() || model.file.is_empty() || model.sha256.len() != 64 {
+            if model.id.is_empty()
+                || model.file.is_empty()
+                || !crate::services::manifest::is_safe_asset_name(&model.file)
+                || !model.file.ends_with(".bin")
+                || model.sha256.len() != 64
+            {
                 return Err(AppError::Unsupported(format!(
                     "Invalid model entry in catalogue: {}",
                     model.id
@@ -123,6 +133,11 @@ impl ModelCatalogue {
 
     /// Resolves the download URL, applying any mirror/base URL override.
     pub fn effective_url(&self, model: &ModelEntry, mirror_base: Option<&str>) -> String {
+        assert!(
+            crate::services::manifest::is_safe_asset_name(&model.file),
+            "model file name must be safe: {}",
+            model.file
+        );
         match mirror_base.map(str::trim).filter(|s| !s.is_empty()) {
             Some(base) => {
                 let clean_base = base.trim_end_matches('/');
@@ -134,6 +149,11 @@ impl ModelCatalogue {
 
     /// Resolves the VAD model download URL, applying any mirror/base URL override.
     pub fn effective_vad_url(&self, mirror_base: Option<&str>) -> String {
+        assert!(
+            crate::services::manifest::is_safe_asset_name(&self.vad.file),
+            "VAD file name must be safe: {}",
+            self.vad.file
+        );
         match mirror_base.map(str::trim).filter(|s| !s.is_empty()) {
             Some(base) => {
                 let clean_base = base.trim_end_matches('/');
@@ -279,6 +299,14 @@ pub fn recommend_model() -> (&'static str, bool) {
 // ---------------------------------------------------------------------------
 
 pub fn is_vad_installed(models_dir: &Path, vad: &VadModelEntry) -> bool {
+    if !crate::services::manifest::is_safe_asset_name(&vad.file) {
+        return false;
+    }
+    assert!(
+        crate::services::manifest::is_safe_asset_name(&vad.file),
+        "VAD file name must be safe: {}",
+        vad.file
+    );
     let path = models_dir.join(&vad.file);
     path.is_file() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false)
 }
@@ -304,6 +332,27 @@ pub fn inspect_models(
         .models
         .iter()
         .map(|model| {
+            if !crate::services::manifest::is_safe_asset_name(&model.file) {
+                return ModelViewItem {
+                    id: model.id.clone(),
+                    label: model.label.clone(),
+                    file: model.file.clone(),
+                    ram_estimate: model.ram_estimate.clone(),
+                    tier: model.tier.clone(),
+                    indicative_wer: model.indicative_wer,
+                    multilingual: model.multilingual,
+                    notes: model.notes.clone(),
+                    recommended: model.recommended,
+                    advanced: model.advanced,
+                    size_bytes: model.size_bytes,
+                    state: ModelInstallState::NotInstalled,
+                };
+            }
+            assert!(
+                crate::services::manifest::is_safe_asset_name(&model.file),
+                "model file name must be safe: {}",
+                model.file
+            );
             let final_path = models_dir.join(&model.file);
             let part_path = models_dir.join(format!("{}.part", model.file));
 
@@ -449,6 +498,17 @@ impl ModelDownloadManager {
 
         // 1. Download VAD model first if not installed (spec §10.2: "fetched together with first model")
         if !is_vad_installed(models_dir, &catalogue.vad) {
+            if !crate::services::manifest::is_safe_asset_name(&catalogue.vad.file) {
+                return Err(AppError::Unsupported(format!(
+                    "Unsafe VAD model file name: {}",
+                    catalogue.vad.file
+                )));
+            }
+            assert!(
+                crate::services::manifest::is_safe_asset_name(&catalogue.vad.file),
+                "VAD file name must be safe: {}",
+                catalogue.vad.file
+            );
             let vad_dest = models_dir.join(&catalogue.vad.file);
             let vad_url = catalogue.effective_vad_url(mirror_base);
             let mut vad_req =
@@ -490,6 +550,17 @@ impl ModelDownloadManager {
         }
 
         // 2. Download the requested Whisper model
+        if !crate::services::manifest::is_safe_asset_name(&model.file) {
+            return Err(AppError::Unsupported(format!(
+                "Unsafe model file name: {}",
+                model.file
+            )));
+        }
+        assert!(
+            crate::services::manifest::is_safe_asset_name(&model.file),
+            "model file name must be safe: {}",
+            model.file
+        );
         let model_dest = models_dir.join(&model.file);
         let model_url = catalogue.effective_url(model, mirror_base);
         let mut model_req =
@@ -547,6 +618,17 @@ pub fn delete_model(
         .find(model_id)
         .ok_or_else(|| AppError::ModelNotFound(model_id.to_owned()))?;
 
+    if !crate::services::manifest::is_safe_asset_name(&model.file) {
+        return Err(AppError::Unsupported(format!(
+            "Unsafe model file name: {}",
+            model.file
+        )));
+    }
+    assert!(
+        crate::services::manifest::is_safe_asset_name(&model.file),
+        "model file name must be safe: {}",
+        model.file
+    );
     let dest = models_dir.join(&model.file);
     let part = models_dir.join(format!("{}.part", model.file));
 
@@ -603,7 +685,19 @@ pub fn import_model(
         return Err(AppError::UnknownModel(actual_sha));
     };
 
+    if !crate::services::manifest::is_safe_asset_name(&model.file) {
+        return Err(AppError::Unsupported(format!(
+            "Unsafe model file name: {}",
+            model.file
+        )));
+    }
+
     fs::create_dir_all(models_dir)?;
+    assert!(
+        crate::services::manifest::is_safe_asset_name(&model.file),
+        "model file name must be safe: {}",
+        model.file
+    );
     let dest = models_dir.join(&model.file);
     let tmp = models_dir.join(format!("{}.import.tmp", model.file));
 
@@ -744,5 +838,106 @@ mod tests {
         let err =
             import_model(&models_dir, &catalogue, &source_file, Some("tiny-q5_1")).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn catalogue_validate_rejects_path_traversal_and_unsafe_filenames() {
+        let mut catalogue = ModelCatalogue::embedded().unwrap();
+
+        // Traversal in model.file
+        catalogue.models[0].file = "../escaped.bin".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        // Absolute path in model.file
+        catalogue.models[0].file = "/root/escaped.bin".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        // Backslash traversal
+        catalogue.models[0].file = r"..\escaped.bin".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        // Missing .bin extension
+        catalogue.models[0].file = "escaped.txt".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        // Hidden file
+        catalogue.models[0].file = ".hidden.bin".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        // Reset model file and test VAD file
+        catalogue.models[0].file = "ggml-tiny-q5_1.bin".to_owned();
+        assert!(catalogue.validate().is_ok());
+
+        catalogue.vad.file = "../escaped_vad.bin".to_owned();
+        assert!(catalogue.validate().is_err());
+
+        catalogue.vad.file = "escaped_vad.txt".to_owned();
+        assert!(catalogue.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn model_operations_reject_path_traversal_filenames() {
+        let dir = tempdir().unwrap();
+        let models_dir = dir.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+
+        // Target outside models_dir
+        let outside_file = dir.path().join("outside.bin");
+        fs::write(&outside_file, b"secret-data").unwrap();
+
+        let mut catalogue = ModelCatalogue::embedded().unwrap();
+        catalogue.models[0].file = "../outside.bin".to_owned();
+
+        // delete_model must not delete outside_file and must return error
+        let res = delete_model(&models_dir, &catalogue, &catalogue.models[0].id.clone());
+        assert!(res.is_err(), "delete_model must reject path traversal");
+        assert!(
+            outside_file.exists(),
+            "outside file must not have been deleted"
+        );
+
+        // import_model must not write to outside_file and must return error
+        let source_file = dir.path().join("source.bin");
+        fs::write(&source_file, b"new-data").unwrap();
+        let actual_sha = compute_file_sha256(&source_file).unwrap();
+        catalogue.models[0].sha256 = actual_sha;
+
+        let res = import_model(
+            &models_dir,
+            &catalogue,
+            &source_file,
+            Some(&catalogue.models[0].id.clone()),
+        );
+        assert!(res.is_err(), "import_model must reject path traversal");
+        assert_eq!(fs::read(&outside_file).unwrap(), b"secret-data");
+
+        // download_model must reject path traversal and not write to outside_file
+        let manager = ModelDownloadManager::new();
+        let res = manager
+            .download_model(
+                &models_dir,
+                &catalogue,
+                &catalogue.models[0].id.clone(),
+                None,
+                crate::services::download::Transport::loopback_http(),
+                |_| {},
+            )
+            .await;
+        assert!(res.is_err(), "download_model must reject path traversal");
+        assert_eq!(fs::read(&outside_file).unwrap(), b"secret-data");
+
+        // inspect_models safely handles unsafe model file without path traversal
+        let view = inspect_models(
+            &models_dir,
+            &catalogue,
+            None,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(view.models[0].state, ModelInstallState::NotInstalled);
+
+        // is_vad_installed safely returns false on unsafe vad file
+        let mut vad_bad = catalogue.vad.clone();
+        vad_bad.file = "../outside.bin".to_owned();
+        assert!(!is_vad_installed(&models_dir, &vad_bad));
     }
 }
