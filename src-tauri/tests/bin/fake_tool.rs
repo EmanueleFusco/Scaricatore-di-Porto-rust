@@ -209,6 +209,21 @@ fn run_ffmpeg(args: &[String]) -> i32 {
         }
     }
 
+    if args
+        .windows(2)
+        .any(|w| w[0] == "-af" && w[1].contains("silencedetect"))
+    {
+        if let Some(silence_log) =
+            read_flag("fake_silence.txt").or_else(|| std::env::var("FAKE_FFMPEG_SILENCE").ok())
+        {
+            eprintln!("{silence_log}");
+        } else {
+            eprintln!("[silencedetect @ 0x5555] silence_start: 1780.5");
+            eprintln!("[silencedetect @ 0x5555] silence_end: 1785.2 | silence_duration: 4.7");
+        }
+        return 0;
+    }
+
     // Probe mode: ffmpeg ... -c:v <encoder> ... -f null -
     let is_null_sink = args.windows(2).any(|w| w[0] == "-f" && w[1] == "null")
         || args.last().map(String::as_str) == Some("-");
@@ -261,21 +276,6 @@ fn run_ffmpeg(args: &[String]) -> i32 {
     if read_flag("fail_all.txt").is_some() || std::env::var("FAKE_FFMPEG_FAIL_ALL_ENCODE").is_ok() {
         eprintln!("fake ffmpeg: simulated total encode failure");
         return 1;
-    }
-
-    if args
-        .windows(2)
-        .any(|w| w[0] == "-af" && w[1].contains("silencedetect"))
-    {
-        if let Some(silence_log) =
-            read_flag("fake_silence.txt").or_else(|| std::env::var("FAKE_FFMPEG_SILENCE").ok())
-        {
-            eprintln!("{silence_log}");
-        } else {
-            eprintln!("[silencedetect @ 0x5555] silence_start: 1780.5");
-            eprintln!("[silencedetect @ 0x5555] silence_end: 1785.2 | silence_duration: 4.7");
-        }
-        return 0;
     }
 
     if args.iter().any(|a| a == "-progress") {

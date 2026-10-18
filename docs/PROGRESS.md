@@ -3825,3 +3825,23 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Stream ffmpeg silencedetect to preserve all silence intervals beyond stderr ring buffer (M3, Checklist #9, spec §10.2)
+- Done:
+  - Fixed M3 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Updated `detect_audio_silence` to use `process::spawn_tool_with_sinks` with an incremental stderr line sink instead of reading the 200-line capped `result.stderr_tail`.
+    - Added `parse_silencedetect_line` to parse silence intervals line-by-line as stderr is emitted, keeping `parse_silencedetect` backwards-compatible.
+    - Updated `fake_tool.rs` to process `-af silencedetect` before the probe null-sink check so fake silence logs can be supplied in integration tests.
+    - Added reproduction test `detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer` in `src-tauri/tests/whisper_pipeline.rs` emitting 250 intervals (500 lines of stderr).
+    - Added unit test `parse_silencedetect_line_parses_incremental_start_and_end` in `whisper.rs`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer` → FAILS before fix (panic: `assertion left == right failed: all 250 silence intervals must be preserved, got 99`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 373 unit + 158 integration = 531 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+

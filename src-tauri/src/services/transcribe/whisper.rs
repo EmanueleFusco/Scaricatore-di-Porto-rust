@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
@@ -774,6 +774,38 @@ pub fn merge_txt_contents(chunks: &[&str]) -> String {
 // Pure Functions: Silence Detection & Chunk Boundaries
 // ---------------------------------------------------------------------------
 
+/// Parse a single `ffmpeg -af silencedetect` stderr line, updating `current_start`
+/// and returning a `SilenceInterval` when `silence_end` is reached.
+pub fn parse_silencedetect_line(
+    line: &str,
+    current_start: &mut Option<f64>,
+) -> Option<SilenceInterval> {
+    if let Some(idx) = line.find("silence_start:") {
+        let after = line[idx + "silence_start:".len()..].trim();
+        let token = after.split_whitespace().next().unwrap_or("");
+        if let Ok(val) = token.parse::<f64>() {
+            *current_start = Some(val);
+        }
+        None
+    } else if let Some(idx) = line.find("silence_end:") {
+        let after = line[idx + "silence_end:".len()..].trim();
+        let token = after.split('|').next().unwrap_or("").trim();
+        if let Ok(end_val) = token.parse::<f64>() {
+            if let Some(start_val) = current_start.take() {
+                if end_val >= start_val {
+                    return Some(SilenceInterval {
+                        start_sec: start_val,
+                        end_sec: end_val,
+                    });
+                }
+            }
+        }
+        None
+    } else {
+        None
+    }
+}
+
 /// Parse `ffmpeg -af silencedetect` lines from stderr.
 ///
 /// Output format typically includes lines like:
@@ -784,25 +816,8 @@ pub fn parse_silencedetect(stderr: &str) -> Vec<SilenceInterval> {
     let mut current_start: Option<f64> = None;
 
     for line in stderr.lines() {
-        if let Some(idx) = line.find("silence_start:") {
-            let after = line[idx + "silence_start:".len()..].trim();
-            let token = after.split_whitespace().next().unwrap_or("");
-            if let Ok(val) = token.parse::<f64>() {
-                current_start = Some(val);
-            }
-        } else if let Some(idx) = line.find("silence_end:") {
-            let after = line[idx + "silence_end:".len()..].trim();
-            let token = after.split('|').next().unwrap_or("").trim();
-            if let Ok(end_val) = token.parse::<f64>() {
-                if let Some(start_val) = current_start.take() {
-                    if end_val >= start_val {
-                        intervals.push(SilenceInterval {
-                            start_sec: start_val,
-                            end_sec: end_val,
-                        });
-                    }
-                }
-            }
+        if let Some(interval) = parse_silencedetect_line(line, &mut current_start) {
+            intervals.push(interval);
         }
     }
 
@@ -1035,10 +1050,29 @@ pub async fn detect_audio_silence(
         cmd = cmd.temp_dir(td);
     }
 
-    match process::spawn_tool(cmd, token.clone(), process::discard_lines()).await {
+    let collector = Arc::new(Mutex::new((Vec::new(), None::<f64>)));
+    let collector_clone = Arc::clone(&collector);
+
+    let stderr_sink: process::LineSink = Arc::new(move |line: &str| {
+        if let Ok(mut guard) = collector_clone.lock() {
+            let (intervals, current_start) = &mut *guard;
+            if let Some(interval) = parse_silencedetect_line(line, current_start) {
+                intervals.push(interval);
+            }
+        }
+    });
+
+    let sinks = LineSinks::new(process::discard_lines(), stderr_sink);
+
+    match process::spawn_tool_with_sinks(cmd, token.clone(), sinks).await {
         Ok(result) => {
-            let stderr_text = result.stderr_tail.join("\n");
-            parse_silencedetect(&stderr_text)
+            if !result.success() {
+                return Vec::new();
+            }
+            collector
+                .lock()
+                .map(|guard| guard.0.clone())
+                .unwrap_or_default()
         }
         Err(_) => Vec::new(),
     }
@@ -1601,6 +1635,28 @@ mod tests {
         assert_eq!(intervals[0].end_sec, 1798.1);
         assert_eq!(intervals[1].start_sec, 3590.0);
         assert_eq!(intervals[1].end_sec, 3594.2);
+    }
+
+    #[test]
+    fn parse_silencedetect_line_parses_incremental_start_and_end() {
+        let mut start = None;
+        assert_eq!(
+            parse_silencedetect_line("[silencedetect @ 0x123] silence_start: 120.5", &mut start),
+            None
+        );
+        assert_eq!(start, Some(120.5));
+
+        assert_eq!(
+            parse_silencedetect_line(
+                "[silencedetect @ 0x123] silence_end: 125.0 | silence_duration: 4.5",
+                &mut start
+            ),
+            Some(SilenceInterval {
+                start_sec: 120.5,
+                end_sec: 125.0,
+            })
+        );
+        assert_eq!(start, None);
     }
 
     #[test]

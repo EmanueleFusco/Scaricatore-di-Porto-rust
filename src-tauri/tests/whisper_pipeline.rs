@@ -21,7 +21,8 @@ use scaricatore_di_porto_lib::services::queue::model::{
     CookieChoice, ItemOptions, ItemState, Kind, QualityChoice, QueueSummary,
 };
 use scaricatore_di_porto_lib::services::transcribe::whisper::{
-    HallucinationWarning, TranscribeProgressSink, TranscribeRequest, run_transcribe,
+    HallucinationWarning, TranscribeProgressSink, TranscribeRequest, detect_audio_silence,
+    run_transcribe,
 };
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -780,4 +781,51 @@ fn docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality() {
     assert!(decisions.contains("885,098 bytes"));
     assert!(decisions.contains("29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"));
     assert!(decisions.contains("ggml-org/whisper-vad"));
+}
+
+#[tokio::test]
+async fn detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer() {
+    let fix = Fixture::new();
+    let bin_dir = fix.fake_ffmpeg.parent().expect("fake_ffmpeg dir");
+
+    // Generate 250 silence intervals (500 lines on stderr)
+    // with intervals spanning from t = 10.0s to beyond t = 4900.0s.
+    let mut fake_silence = String::new();
+    for i in 0..250 {
+        let start = 10.0 + (i as f64) * 20.0;
+        let end = start + 2.5;
+        fake_silence.push_str(&format!(
+            "[silencedetect @ 0x5555] silence_start: {start:.1}\n\
+             [silencedetect @ 0x5555] silence_end: {end:.1} | silence_duration: 2.5\n"
+        ));
+    }
+    fs::write(bin_dir.join("fake_silence.txt"), fake_silence).expect("write fake_silence.txt");
+
+    let dummy_wav = fix.dir.path().join("dummy.wav");
+    fs::write(&dummy_wav, b"RIFF....WAVEfmt ").expect("write dummy wav");
+
+    let intervals = detect_audio_silence(
+        &fix.fake_ffmpeg,
+        &dummy_wav,
+        Some(fix.dir.path()),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    // With 250 intervals (500 lines of stderr), a 200-line ring buffer only retains the last ~100 intervals.
+    // Full streaming via LineSinks must retain all 250 intervals including early intervals like t = 10.0 and t = 1770.0.
+    assert_eq!(
+        intervals.len(),
+        250,
+        "all 250 silence intervals must be preserved, got {}",
+        intervals.len()
+    );
+    assert!(
+        intervals.iter().any(|i| (i.start_sec - 10.0).abs() < 0.1),
+        "early silence interval at t=10.0s was lost"
+    );
+    assert!(
+        intervals.iter().any(|i| (i.start_sec - 1770.0).abs() < 0.1),
+        "silence interval around 30m boundary at t=1770.0s was lost"
+    );
 }
