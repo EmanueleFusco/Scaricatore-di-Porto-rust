@@ -493,3 +493,43 @@ async fn queue_engine_transcribes_local_media_end_to_end() {
         "queue item should complete transcription successfully"
     );
 }
+
+#[tokio::test]
+async fn transcribe_does_not_overwrite_existing_transcript_files() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("lecture.mp4");
+    let existing_srt = fix.dir.path().join("lecture.srt");
+    fs::write(
+        &existing_srt,
+        "1\n00:00:00,000 --> 00:00:01,000\nUSER EDITED\n\n",
+    )
+    .unwrap();
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: Some("en".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 1,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&existing_srt).unwrap(),
+        "1\n00:00:00,000 --> 00:00:01,000\nUSER EDITED\n\n",
+        "existing .srt must never be silently overwritten"
+    );
+    assert_ne!(outcome.paths.srt, existing_srt);
+    assert!(outcome.paths.srt.is_file());
+    assert!(outcome.paths.txt.is_file());
+    assert!(outcome.paths.vtt.is_file());
+}

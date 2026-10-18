@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
 use crate::services::models;
+use crate::services::paths;
 use crate::services::process::{self, LineSinks, ToolCommand};
 
 // ---------------------------------------------------------------------------
@@ -210,6 +211,10 @@ pub fn parse_whisper_segment(line: &str) -> Option<TranscriptSegment> {
 }
 
 /// Derive final transcript output paths next to media file or in `transcripts/` subfolder.
+///
+/// If any of `<stem>.txt`, `<stem>.srt`, or `<stem>.vtt` already exists on disk,
+/// picks the first unused suffix ` (1)`, ` (2)`, etc. so all three outputs share
+/// a collision-free base stem (spec §10.2).
 pub fn derive_transcript_paths(media_path: &Path, transcripts_subfolder: bool) -> TranscriptPaths {
     let parent = media_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = media_path
@@ -223,10 +228,26 @@ pub fn derive_transcript_paths(media_path: &Path, transcripts_subfolder: bool) -
         parent.to_path_buf()
     };
 
-    TranscriptPaths {
-        txt: target_dir.join(format!("{stem}.txt")),
-        srt: target_dir.join(format!("{stem}.srt")),
-        vtt: target_dir.join(format!("{stem}.vtt")),
+    let candidate_paths = |name: &str| -> TranscriptPaths {
+        TranscriptPaths {
+            txt: target_dir.join(format!("{name}.txt")),
+            srt: target_dir.join(format!("{name}.srt")),
+            vtt: target_dir.join(format!("{name}.vtt")),
+        }
+    };
+
+    let mut current = candidate_paths(&stem);
+    if !current.txt.exists() && !current.srt.exists() && !current.vtt.exists() {
+        return current;
+    }
+
+    let mut counter = 1u64;
+    loop {
+        current = candidate_paths(&format!("{stem} ({counter})"));
+        if !current.txt.exists() && !current.srt.exists() && !current.vtt.exists() {
+            return current;
+        }
+        counter += 1;
     }
 }
 
@@ -898,10 +919,18 @@ pub async fn run_transcribe(
     let boundaries = calculate_chunk_boundaries(effective_duration, &silence_intervals);
     let total_chunks = boundaries.len().max(1);
 
-    let final_paths = derive_transcript_paths(&req.input_media, req.transcripts_subfolder);
-    if let Some(p) = final_paths.txt.parent() {
-        fs::create_dir_all(p)?;
-    }
+    let target_dir = if req.transcripts_subfolder {
+        req.input_media
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("transcripts")
+    } else {
+        req.input_media
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    };
+    fs::create_dir_all(&target_dir)?;
 
     let mut chunk_txt_data: Vec<String> = Vec::new();
     let mut chunk_srt_data: Vec<(String, u64)> = Vec::new();
@@ -1035,10 +1064,13 @@ pub async fn run_transcribe(
         .collect();
     let final_vtt = merge_vtt_contents(&vtt_slices);
 
-    // Write final merged files
-    fs::write(&final_paths.txt, final_txt.as_bytes())?;
-    fs::write(&final_paths.srt, final_srt.as_bytes())?;
-    fs::write(&final_paths.vtt, final_vtt.as_bytes())?;
+    // Derive collision-free paths immediately before writing (spec §10.2)
+    let final_paths = derive_transcript_paths(&req.input_media, req.transcripts_subfolder);
+
+    // Write final merged files atomically
+    paths::atomic_write(&final_paths.txt, final_txt.as_bytes())?;
+    paths::atomic_write(&final_paths.srt, final_srt.as_bytes())?;
+    paths::atomic_write(&final_paths.vtt, final_vtt.as_bytes())?;
 
     // Hallucination check
     let hallucination_warning = detect_hallucination(&final_txt);
@@ -1334,6 +1366,58 @@ mod tests {
         assert_eq!(
             subfolder.txt,
             PathBuf::from("/downloads/transcripts/My Video [123].txt")
+        );
+    }
+
+    #[test]
+    fn derive_transcript_paths_avoids_overwriting_existing_files() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let media = temp.path().join("lecture.mp4");
+
+        // When no files exist, direct stem is used
+        let paths0 = derive_transcript_paths(&media, false);
+        assert_eq!(paths0.txt, temp.path().join("lecture.txt"));
+        assert_eq!(paths0.srt, temp.path().join("lecture.srt"));
+        assert_eq!(paths0.vtt, temp.path().join("lecture.vtt"));
+
+        // If .srt exists, suffix (1) is used for all three outputs
+        fs::write(&paths0.srt, "existing srt").expect("write srt");
+        let paths1 = derive_transcript_paths(&media, false);
+        assert_eq!(paths1.txt, temp.path().join("lecture (1).txt"));
+        assert_eq!(paths1.srt, temp.path().join("lecture (1).srt"));
+        assert_eq!(paths1.vtt, temp.path().join("lecture (1).vtt"));
+
+        // If .txt exists for suffix (1), suffix (2) is used
+        fs::write(&paths1.txt, "existing txt 1").expect("write txt 1");
+        let paths2 = derive_transcript_paths(&media, false);
+        assert_eq!(paths2.txt, temp.path().join("lecture (2).txt"));
+        assert_eq!(paths2.srt, temp.path().join("lecture (2).srt"));
+        assert_eq!(paths2.vtt, temp.path().join("lecture (2).vtt"));
+
+        // Subfolder mode checks existing files in transcripts/
+        let sub_paths0 = derive_transcript_paths(&media, true);
+        assert_eq!(
+            sub_paths0.txt,
+            temp.path().join("transcripts").join("lecture.txt")
+        );
+        fs::create_dir_all(temp.path().join("transcripts")).expect("create transcripts");
+        fs::write(
+            temp.path().join("transcripts").join("lecture.vtt"),
+            "existing vtt",
+        )
+        .expect("write vtt");
+        let sub_paths1 = derive_transcript_paths(&media, true);
+        assert_eq!(
+            sub_paths1.txt,
+            temp.path().join("transcripts").join("lecture (1).txt")
+        );
+        assert_eq!(
+            sub_paths1.srt,
+            temp.path().join("transcripts").join("lecture (1).srt")
+        );
+        assert_eq!(
+            sub_paths1.vtt,
+            temp.path().join("transcripts").join("lecture (1).vtt")
         );
     }
 }

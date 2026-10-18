@@ -3638,3 +3638,22 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D120.
 - Next step: commit changes.
 
+## 2026-10-18 — M5 / Fix transcript file collision overwrite (B1, spec §10.2)
+- Done:
+  - Fixed B1: prevented silent overwriting of existing `.txt`, `.srt`, and `.vtt` files in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Updated `derive_transcript_paths` to check whether `<stem>.txt`, `<stem>.srt`, or `<stem>.vtt` already exists on disk in the target directory (either adjacent to media or inside `transcripts/`). If any exist, iteratively appends suffix ` (1)`, ` (2)`, etc. so all three generated transcript files share a single collision-free stem.
+    - Updated `run_transcribe` to resolve `final_paths` immediately before writing and write final merged files atomically using `crate::services::paths::atomic_write`.
+  - Added unit test `derive_transcript_paths_avoids_overwriting_existing_files` in `src-tauri/src/services/transcribe/whisper.rs`.
+  - Added integration test `transcribe_does_not_overwrite_existing_transcript_files` in `src-tauri/tests/whisper_pipeline.rs` verifying that an existing `.srt` file is untouched and transcripts receive collision-free names.
+- Verified by running:
+  - `cargo test --test whisper_pipeline transcribe_does_not_overwrite_existing_transcript_files` → verified FAILS before the fix with assertion error, then PASSED after the fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 363 unit + 152 integration = 515 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings (e.g. B2).
+
+
