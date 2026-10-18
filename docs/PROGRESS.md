@@ -3767,7 +3767,20 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: None.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings (e.g. B7).
+
+## 2026-10-18 — M5 / Cancel in-flight download when models_delete is invoked (B7, Checklist #4, #5, spec §10.2)
+- Done:
+  - Fixed B7: added `state.models_manager().cancel(&model_id)` at the start of `models_delete` in `src-tauri/src/commands/models.rs`. This ensures any in-flight download for the model is cancelled immediately before files are deleted, aborting the background task and preventing it from recreating the deleted model file upon completion.
+  - Added reproduction test `models_delete_cancels_in_flight_download_and_prevents_recreating_file` in `src-tauri/tests/models.rs`.
+- Verified by running:
+  - `cargo test --test models models_delete_cancels_in_flight_download_and_prevents_recreating_file` → FAILS before fix (panic: `models_manager must not report model as downloading after models_delete`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 158 integration = 526 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 268 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
-
-
-

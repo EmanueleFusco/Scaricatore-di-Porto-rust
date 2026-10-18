@@ -448,3 +448,133 @@ fn model_deletion_and_local_import_flow() {
     delete_model(&models_dir, &catalogue, "imported-model").expect("delete must succeed");
     assert!(!installed_file.exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_delete_cancels_in_flight_download_and_prevents_recreating_file() {
+    let dir = TempDir::new().expect("temp dir");
+    let state =
+        scaricatore_di_porto_lib::state::AppState::from_path(dir.path().join("settings.json"))
+            .expect("state");
+    let app = tauri::test::mock_builder()
+        .invoke_handler(tauri::generate_handler![
+            scaricatore_di_porto_lib::commands::models::models_delete,
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app must build");
+    tauri::Manager::manage(&app, state);
+
+    let models_dir =
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app).models_dir();
+    let manager = Arc::clone(
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app).models_manager(),
+    );
+    let catalogue = ModelCatalogue::embedded().expect("embedded catalogue");
+
+    // Pre-create VAD model so download_model targets the Whisper model directly
+    fs::create_dir_all(&models_dir).unwrap();
+    fs::write(models_dir.join(&catalogue.vad.file), b"dummy-vad").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("port").port();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+    let server_handle = thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("read timeout");
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Err(_) | Ok(0) => break,
+                    Ok(_) => {}
+                }
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&[0x42; 100]).unwrap();
+            stream.flush().unwrap();
+
+            // Wait until test signals
+            let _ = release_rx.recv();
+            let _ = stream.write_all(&[0x42; 900]);
+            let _ = stream.flush();
+        }
+    });
+
+    let (chunk_tx, chunk_rx) = std::sync::mpsc::channel();
+    let on_progress = move |p: models::ModelProgressEvent| {
+        if p.received_bytes > 0 {
+            let _ = chunk_tx.send(());
+        }
+    };
+
+    let mirror_url = format!("http://127.0.0.1:{port}");
+    let manager_clone = Arc::clone(&manager);
+    let models_dir_clone = models_dir.clone();
+    let catalogue_clone = catalogue.clone();
+
+    let download_handle = tokio::spawn(async move {
+        manager_clone
+            .download_model(
+                &models_dir_clone,
+                &catalogue_clone,
+                "tiny-q5_1",
+                Some(&mirror_url),
+                Transport::loopback_http(),
+                on_progress,
+            )
+            .await
+    });
+
+    // Wait until download has received the first chunk
+    if let Err(e) = chunk_rx.recv_timeout(Duration::from_secs(5)) {
+        if download_handle.is_finished() {
+            let res = tokio::time::timeout(Duration::from_millis(100), download_handle).await;
+            panic!("download_handle finished early with: {:?}", res);
+        }
+        panic!("download must receive first chunk: {:?}", e);
+    }
+
+    assert!(manager.is_downloading("tiny-q5_1"));
+
+    // Invoke models_delete while download is in flight
+    let res = scaricatore_di_porto_lib::commands::models::models_delete(
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app),
+        "tiny-q5_1".to_string(),
+    );
+    assert!(res.is_ok(), "models_delete should succeed: {:?}", res.err());
+
+    // models_delete must cancel in-flight download so it is no longer downloading
+    assert!(
+        !manager.is_downloading("tiny-q5_1"),
+        "models_manager must not report model as downloading after models_delete"
+    );
+
+    // Unblock server
+    let _ = release_tx.send(());
+    let _ = server_handle.join();
+
+    // The download task must abort due to cancellation
+    let download_res = download_handle.await.expect("task join");
+    assert!(
+        download_res.is_err(),
+        "download task must abort on cancellation, but got: {:?}",
+        download_res
+    );
+    let err_str = download_res.unwrap_err().to_string();
+    assert!(
+        err_str.contains("the download was cancelled"),
+        "expected cancellation error, got: {err_str}"
+    );
+
+    let model_file = models_dir.join("ggml-tiny-q5_1.bin");
+    assert!(
+        !model_file.exists(),
+        "model file must not exist after cancellation and delete"
+    );
+}

@@ -121,6 +121,7 @@ pub fn models_cancel_download(state: State<'_, AppState>, model_id: String) -> A
 /// Delete an installed model from disk.
 #[tauri::command]
 pub fn models_delete(state: State<'_, AppState>, model_id: String) -> AppResult<ModelsView> {
+    state.models_manager().cancel(&model_id);
     let catalogue = ModelCatalogue::embedded().app_result()?;
     let models_dir = state.models_dir();
 
