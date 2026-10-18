@@ -3844,4 +3844,45 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Only retry sdp-whisper with -ng on GPU build or GPU backend failure (M4, Checklist #12, spec §10.2, §5.4)
+- Done:
+  - Fixed M4 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Added `should_retry_with_no_gpu(&res.stderr_tail)` check before retrying `sdp-whisper` with `-ng`.
+    - Implemented `is_gpu_failure` matching GPU error indicators (CUDA, Metal, Vulkan, HIP, VRAM out-of-memory).
+    - Implemented `is_explicit_non_gpu_failure` identifying non-GPU errors (magic read failure, invalid/missing model, file I/O).
+    - Restricted `-ng` fallback retry so Linux and Windows CPU-only builds do not retry non-GPU failures with `-ng`, while macOS Metal builds retry once unless stderr is an explicit non-GPU failure.
+    - Updated `fake_whisper` in `src-tauri/tests/bin/fake_tool.rs` to track invocation count in `fake-whisper.calls` and argv in `fake-whisper.log`.
+    - Added reproduction test `transcribe_non_gpu_failure_does_not_retry_with_ng` in `src-tauri/tests/whisper_pipeline.rs`.
+    - Added pure unit tests `is_gpu_failure_matches_gpu_indicators`, `is_explicit_non_gpu_failure_matches_model_and_io_errors`, and `should_retry_with_no_gpu_checks_gpu_and_platform` in `whisper.rs`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline transcribe_non_gpu_failure_does_not_retry_with_ng` → FAILS before fix (panic: `assertion left == right failed: sdp-whisper must be spawned only once on non-GPU failure, but was retried with -ng: left: 2, right: 1`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 159 integration = 535 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 273 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Default Whisper transcript language to video language from inspection (M5, Checklist #11, spec §10.2)
+- Done:
+  - Fixed M5:
+    - Added `normaliseLanguage` in `src/lib/addbar.ts` to normalize inspected language tags to their primary lowercase subtag (e.g. `"it-IT"` -> `"it"`).
+    - Added `resolveRowTranscriptLanguage` in `src/lib/addbar.ts` implementing the language logic required by spec §10.2 and Checklist #11: video language when known from inspection if `defaultTranscriptLanguage` is `"auto"`, else auto or user override.
+    - Added `rowLanguageOptions` in `src/lib/addbar.ts` to include the inspected video's detected language in the row's Whisper language dropdown if not already in the standard language list.
+    - Added `transcriptLanguageOverridden` to `AddRow` in `src/lib/stores/addbar.svelte.ts` to track explicit user choices across `setMediaOptions`.
+    - Updated `addLinks` (cache hit), `#applyAnswers` (inspection complete), and `toRequests()` in `src/lib/stores/addbar.svelte.ts` to populate and resolve `row.transcriptLanguage` using `resolveRowTranscriptLanguage`.
+    - Updated `AddBar.svelte` to render `rowLanguageOptions` for the row's language selector.
+    - Added unit test suite in `src/lib/addbar.test.ts` covering language normalization, defaulting to inspected language, preserving manual user overrides, respecting non-auto default settings, and dropdown option generation.
+- Verified by running:
+  - `npm test` → FAILS before fix with 8 failures in `addbar.test.ts`, PASSES after fix (13 test files, 281 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 159 integration = 535 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.

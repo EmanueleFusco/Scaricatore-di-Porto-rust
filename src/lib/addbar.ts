@@ -274,3 +274,95 @@ export const SPONSORBLOCK_CATEGORY_KEYS = [
   "filler",
   "music_offtopic",
 ] as const;
+
+/**
+ * Normalise a language tag from yt-dlp inspection (spec §10.2).
+ *
+ * Extracts primary subtag and converts to lowercase (e.g. "it-IT" -> "it", "en_US" -> "en").
+ * Returns null if the language tag is empty or invalid.
+ */
+export function normaliseLanguage(lang: string | null | undefined): string | null {
+  if (typeof lang !== "string") return null;
+  const trimmed = lang.trim();
+  if (trimmed === "") return null;
+  const primary = trimmed.split(/[-_]/)[0]?.trim().toLowerCase();
+  return primary && primary.length > 0 ? primary : null;
+}
+
+export interface ResolveTranscriptLanguageParams {
+  inspectedLanguage?: string | null;
+  currentLanguage?: string | null;
+  defaultTranscriptLanguage?: string | null;
+  languageOverridden?: boolean;
+}
+
+/**
+ * Determine the transcription language for a row (spec §10.2, Checklist #11).
+ *
+ * Language logic:
+ * 1. User override takes highest precedence.
+ * 2. When defaultTranscriptLanguage is "auto", default to the video's language
+ *    when known from inspection.
+ * 3. Otherwise fall back to currentLanguage, defaultTranscriptLanguage, or "auto".
+ */
+export function resolveRowTranscriptLanguage(params: ResolveTranscriptLanguageParams): string {
+  const {
+    inspectedLanguage,
+    currentLanguage,
+    defaultTranscriptLanguage = "auto",
+    languageOverridden = false,
+  } = params;
+
+  if (languageOverridden && currentLanguage && currentLanguage.trim() !== "") {
+    return currentLanguage.trim();
+  }
+
+  const defaultLang = defaultTranscriptLanguage?.trim().toLowerCase() || "auto";
+  if (defaultLang === "auto") {
+    const normalised = normaliseLanguage(inspectedLanguage);
+    if (normalised) {
+      return normalised;
+    }
+  }
+
+  if (currentLanguage && currentLanguage.trim() !== "") {
+    return currentLanguage.trim();
+  }
+
+  return defaultLang;
+}
+
+export interface RowLanguageOption {
+  value: string;
+  labelKey: string | null;
+  label: string;
+}
+
+/**
+ * Options for the Whisper language dropdown on an Add bar row (spec §10.2, §11.3).
+ *
+ * Includes standard languages (auto, it, en, es, fr, de) plus the video's
+ * detected language and any currently chosen language if not already listed.
+ */
+export function rowLanguageOptions(
+  detectedLanguage?: string | null,
+  currentLanguage?: string | null,
+): RowLanguageOption[] {
+  const options: RowLanguageOption[] = [
+    { value: "auto", labelKey: "transcription.language.auto", label: "auto" },
+    { value: "it", labelKey: "transcription.language.it", label: "it" },
+    { value: "en", labelKey: "transcription.language.en", label: "en" },
+    { value: "es", labelKey: "transcription.language.es", label: "es" },
+    { value: "fr", labelKey: "transcription.language.fr", label: "fr" },
+    { value: "de", labelKey: "transcription.language.de", label: "de" },
+  ];
+
+  const extras = [normaliseLanguage(detectedLanguage), normaliseLanguage(currentLanguage)];
+  for (const extra of extras) {
+    if (extra && !options.some((opt) => opt.value === extra)) {
+      options.push({ value: extra, labelKey: null, label: extra });
+    }
+  }
+
+  return options;
+}

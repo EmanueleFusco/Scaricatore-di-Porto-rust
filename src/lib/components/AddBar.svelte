@@ -34,6 +34,7 @@
     explicitChoiceFor,
     parseHeaderLines,
     qualityValue,
+    rowLanguageOptions,
     rowQualityOptions,
     splitLinks,
     tableFormats,
@@ -788,12 +789,11 @@
                           onchange={(event) =>
                             addBarStore.setMediaOptions(row.key, { transcriptLanguage: event.currentTarget.value })}
                         >
-                          <option value="auto">{tt("transcription.language.auto")}</option>
-                          <option value="it">{tt("transcription.language.it")} (it)</option>
-                          <option value="en">{tt("transcription.language.en")} (en)</option>
-                          <option value="es">{tt("transcription.language.es")} (es)</option>
-                          <option value="fr">{tt("transcription.language.fr")} (fr)</option>
-                          <option value="de">{tt("transcription.language.de")} (de)</option>
+                          {#each rowLanguageOptions(row.inspected?.kind === "video" ? row.inspected.language : null, row.transcriptLanguage) as opt (opt.value)}
+                            <option value={opt.value}>
+                              {opt.labelKey ? (opt.value === "auto" ? tt(opt.labelKey) : `${tt(opt.labelKey)} (${opt.value})`) : opt.label}
+                            </option>
+                          {/each}
                         </select>
                       </div>
                     </div>

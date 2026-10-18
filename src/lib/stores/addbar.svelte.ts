@@ -23,7 +23,7 @@ import {
   type Inspected,
   type InspectRequestOptions,
 } from "$lib/inspect";
-import { QUALITY_PRESETS, newLinks, parseHeaderLines, splitLinks } from "$lib/addbar";
+import { QUALITY_PRESETS, newLinks, parseHeaderLines, resolveRowTranscriptLanguage, splitLinks } from "$lib/addbar";
 import { mergeEntries, nextPageRange } from "$lib/playlist";
 import { isTauriRuntime, settingsStore } from "$lib/stores/settings.svelte";
 import { queueStore } from "$lib/stores/queue.svelte";
@@ -73,6 +73,7 @@ export interface AddRow {
   transcribe: boolean;
   whisperModel: string | null;
   transcriptLanguage: string | null;
+  transcriptLanguageOverridden: boolean;
   translateToEnglish: boolean;
   transcriptsSubfolder: boolean;
 }
@@ -195,6 +196,7 @@ class AddBarStore {
         transcribe: false,
         whisperModel: settingsStore.settings.activeWhisperModel,
         transcriptLanguage: settingsStore.settings.defaultTranscriptLanguage ?? "auto",
+        transcriptLanguageOverridden: false,
         translateToEnglish: settingsStore.settings.whisperTranslateToEnglish,
         transcriptsSubfolder: settingsStore.settings.transcriptsSubfolder,
       };
@@ -224,9 +226,16 @@ class AddBarStore {
         misses.push(row);
         continue;
       }
+      const transcriptLanguage = resolveRowTranscriptLanguage({
+        inspectedLanguage: hit.kind === "video" ? hit.language : null,
+        currentLanguage: row.transcriptLanguage,
+        defaultTranscriptLanguage: settingsStore.settings.defaultTranscriptLanguage,
+        languageOverridden: row.transcriptLanguageOverridden,
+      });
       this.#patch(row.key, {
         state: "ready",
         inspected: hit,
+        transcriptLanguage,
         errorKey: null,
         errorDetail: null,
       });
@@ -363,6 +372,7 @@ class AddBarStore {
         | "transcribe"
         | "whisperModel"
         | "transcriptLanguage"
+        | "transcriptLanguageOverridden"
         | "translateToEnglish"
         | "transcriptsSubfolder"
       >
@@ -375,7 +385,13 @@ class AddBarStore {
     const hasTrim = trimStart.trim() !== "" || trimEnd.trim() !== "";
     // Spec §9.2: "Trim implies Encode (coupling kept from the original)"
     const encode = hasTrim ? true : (options.encode !== undefined ? options.encode : row.encode);
-    this.#patch(key, { ...options, encode });
+    const transcriptLanguageOverridden =
+      options.transcriptLanguageOverridden !== undefined
+        ? options.transcriptLanguageOverridden
+        : options.transcriptLanguage !== undefined
+          ? true
+          : row.transcriptLanguageOverridden;
+    this.#patch(key, { ...options, encode, transcriptLanguageOverridden });
   }
 
   removeRow(key: string): void {
@@ -464,7 +480,12 @@ class AddBarStore {
         sponsorblockCategories: row.sponsorblockCategories,
         transcribe: row.transcribe,
         whisperModel: row.whisperModel,
-        transcriptLanguage: row.transcriptLanguage,
+        transcriptLanguage: resolveRowTranscriptLanguage({
+          inspectedLanguage: video?.language,
+          currentLanguage: row.transcriptLanguage,
+          defaultTranscriptLanguage: settingsStore.settings.defaultTranscriptLanguage,
+          languageOverridden: row.transcriptLanguageOverridden,
+        }),
         translateToEnglish: row.translateToEnglish,
         transcriptsSubfolder: row.transcriptsSubfolder,
       };
@@ -589,7 +610,13 @@ class AddBarStore {
         });
         continue;
       }
-      this.#patch(row.key, { state: "ready", inspected, errorKey: null, errorDetail: null });
+      const transcriptLanguage = resolveRowTranscriptLanguage({
+        inspectedLanguage: inspected.kind === "video" ? inspected.language : null,
+        currentLanguage: row.transcriptLanguage,
+        defaultTranscriptLanguage: settingsStore.settings.defaultTranscriptLanguage,
+        languageOverridden: row.transcriptLanguageOverridden,
+      });
+      this.#patch(row.key, { state: "ready", inspected, transcriptLanguage, errorKey: null, errorDetail: null });
     }
   }
 
