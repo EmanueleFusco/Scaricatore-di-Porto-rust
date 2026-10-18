@@ -124,9 +124,6 @@ jobs:
           - os: ubuntu-24.04-arm
             target: linux-arm64
             triple: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: macos-x64
-            triple: x86_64-apple-darwin
           - os: windows-11-arm
             target: windows-arm64
             triple: aarch64-pc-windows-msvc
@@ -175,24 +172,6 @@ jobs:
           mkdir -p ../dist
           cp build/bin/Release/whisper-cli.exe ../dist/sdp-whisper-aarch64-pc-windows-msvc.exe
 
-      - name: Build whisper-cli (macOS Intel)
-        if: runner.os == 'macOS'
-        working-directory: whisper.cpp
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DGGML_NATIVE=OFF \
-            -DWHISPER_BUILD_TESTS=OFF \
-            -DWHISPER_BUILD_EXAMPLES=ON \
-            -DWHISPER_BUILD_SERVER=OFF \
-            -DCMAKE_OSX_ARCHITECTURES="x86_64"
-          cmake --build build --config Release --target whisper-cli -j2
-          ./build/bin/whisper-cli -h
-          mkdir -p ../dist
-          cp build/bin/whisper-cli ../dist/sdp-whisper-x86_64-apple-darwin
-          chmod +x ../dist/sdp-whisper-x86_64-apple-darwin
-
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
@@ -213,7 +192,14 @@ jobs:
       - name: Collect and compute SHA256SUMS
         run: |
           mkdir -p release-assets
-          find incoming -type f -name "sdp-whisper*" -exec cp {} release-assets/ \;
+          for f in $(find incoming -type f -name "sdp-whisper*"); do
+            dest="release-assets/$(basename "$f")"
+            if [ -f "$dest" ]; then
+              echo "::error::Duplicate artifact file found: $(basename "$f") already exists in release-assets!" >&2
+              exit 1
+            fi
+            cp "$f" "$dest"
+          done
           cd release-assets
           sha256sum sdp-whisper* > SHA256SUMS
           cat SHA256SUMS

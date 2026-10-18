@@ -3784,3 +3784,25 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix whisper-sidecar macOS Intel artifact collision and packaging guard (M1, Checklist #1, spec §5.4, §1.1)
+- Done:
+  - Investigated M1: identified that `needs: [build-tier1, build-tier2]`, `permissions: contents: write`, and `gh release upload` were already implemented in `whisper-sidecar.yml`, and `ubuntu-24.04` is the repo standard runner per D55 and GitHub Actions deprecation of `ubuntu-22.04`.
+  - Fixed M1 collision: removed redundant `macos-15-intel` matrix job from `build-tier2` in `.github/workflows/whisper-sidecar.yml`. `sdp-whisper-x86_64-apple-darwin` is built exclusively by `build-tier1` as the x86_64 slice of the universal binary with Metal support embedded (per spec §1.1).
+  - Added duplicate filename detection guard in the `Collect and compute SHA256SUMS` packaging step to prevent silent overwriting of assets.
+  - Added reproduction test in `scripts/ci-steps.test.mjs` checking that `whisper-sidecar.yml` does not produce colliding binary artifact names across build jobs and that the collection step fails upon duplicate filenames.
+  - Documented decision D122 in `docs/DECISIONS.md` and updated `docs/reviews/M5-review-2026-10-18.md`.
+- Verified by running:
+  - `npx vitest run scripts/ci-steps.test.mjs` → FAILS before fix (`AssertionError: Colliding binary artifacts found in whisper-sidecar.yml: sdp-whisper-x86_64-apple-darwin (2 occurrences)` and `AssertionError: expected +0 not to be +0` on duplicate artifact packaging), PASSES after fix (15/15 tests passed).
+  - `node scripts/check-ci-syntax.mjs` → 22 run blocks valid, exit 0.
+  - `node scripts/check-ci-runners.mjs` → 5 workflows valid, exit 0.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 158 integration = 526 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 273 passed, 0 failed.
+- Not verified / stubbed: Live GitHub Actions execution of whisper-sidecar.yml (requires GitHub infrastructure).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D122.
+- Next step: address remaining review findings.
+

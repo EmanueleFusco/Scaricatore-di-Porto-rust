@@ -3329,4 +3329,21 @@ Review finding B5 identified discrepancies between code/manifest reality and des
 3. **Hallucination guard behavior (D120 item 6)**:
    Per spec §10.2 item 7 ("after a run, detect obvious loops (the same segment repeated >= 5 times) or suspicious silence-only output and warn the user"), `detect_hallucination` inspects the transcript and returns a `HallucinationWarning` to display a toast notification. It does not alter, trim, or mutate the written transcript text.
 
+### D122 — Whisper sidecar CI: macOS Intel deduplication and Ubuntu 24.04 runner standard (M1)
+
+Spec §5.4, §1.1. Review M1.
+
+1. **macOS Intel binary deduplication**:
+   In `.github/workflows/whisper-sidecar.yml`, `build-tier1` on `macos-26` compiles the macOS universal binary (`arm64;x86_64`) with Metal enabled and embedded library (`-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON`), producing `sdp-whisper-universal-apple-darwin`, `sdp-whisper-aarch64-apple-darwin` (`lipo -thin arm64`), and `sdp-whisper-x86_64-apple-darwin` (`lipo -thin x86_64`).
+   This matches spec §1.1 ("macOS Intel (the x64 slice of the universal binary)").
+   `build-tier2` previously also built `sdp-whisper-x86_64-apple-darwin` on `macos-15-intel` without Metal. This resulted in an artifact name collision when downloading all job artifacts into `incoming/` during the packaging step, where `find ... -exec cp` arbitrarily overwrote one with the other.
+   `macos-15-intel` has been removed from `build-tier2`. `sdp-whisper-x86_64-apple-darwin` is built exclusively by `build-tier1` with Metal support embedded.
+
+2. **Artifact packaging collision guard**:
+   The `Collect and compute SHA256SUMS` step in `whisper-sidecar.yml` now inspects every incoming artifact filename and aborts with `exit 1` if a duplicate filename is encountered across job artifact folders, preventing silent overwriting of assets.
+
+3. **Ubuntu 24.04 as CI runner standard**:
+   Spec §5.4 originally suggested building the Linux sidecar binary on Ubuntu 22.04 ("oldest supported distro"). However, GitHub Actions has announced the deprecation and phased brownouts of `ubuntu-22.04` (actions/runner-images#14254). Per D55 and `scripts/check-ci-runners.mjs`, all repository workflows use `ubuntu-24.04` as the fixed Linux runner. The sidecar build in `whisper-sidecar.yml` uses `runs-on: ubuntu-24.04` with static linking (`-static-libgcc -static-libstdc++`) as standard.
+
+
 

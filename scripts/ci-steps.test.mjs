@@ -25,11 +25,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STEP_NAME = "Every bundled file is the architecture its name promises";
 
-/** The shell of one named step, taken from ci.yml exactly as the runner gets it. */
-function stepScript(name) {
-  const yaml = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+/** The shell of one named step, taken from workflow file exactly as the runner gets it. */
+function stepScript(name, file = "ci.yml") {
+  const yaml = readFileSync(join(REPO_ROOT, ".github", "workflows", file), "utf8");
   const at = yaml.indexOf(`- name: ${name}`);
-  if (at === -1) throw new Error(`ci.yml has no step called "${name}"`);
+  if (at === -1) throw new Error(`${file} has no step called "${name}"`);
   const runAt = yaml.indexOf("run: |", at);
   if (runAt === -1 || runAt > yaml.indexOf("- name:", at + 1)) {
     throw new Error(`step "${name}" does not use a run: | block`);
@@ -259,3 +259,101 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+describe("the Whisper sidecar CI workflow (.github/workflows/whisper-sidecar.yml)", () => {
+  const WORKFLOW_PATH = join(REPO_ROOT, ".github", "workflows", "whisper-sidecar.yml");
+
+  it("does not produce colliding binary artifact names across build jobs", () => {
+    const yaml = readFileSync(WORKFLOW_PATH, "utf8");
+    // Find all target binary names created into ../dist/ across build steps
+    const matches = [
+      ...yaml.matchAll(/(?:cp\s+\S+\s+\.\.\/dist\/|-output\s+\.\.\/dist\/)(sdp-whisper[^\s]+)/g),
+    ].map((m) => m[1]);
+
+    const counts = new Map();
+    for (const name of matches) {
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    const duplicates = [...counts.entries()]
+      .filter(([_, c]) => c > 1)
+      .map(([name, c]) => `${name} (${c} occurrences)`);
+
+    expect(
+      duplicates,
+      `Colliding binary artifacts found in whisper-sidecar.yml: ${duplicates.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("specifies needs including build-tier1 and build-tier2 for packaging", () => {
+    const yaml = readFileSync(WORKFLOW_PATH, "utf8");
+    expect(yaml).toMatch(/needs:\s*\[\s*build-tier1\s*,\s*build-tier2\s*\]/);
+  });
+
+  it("has contents: write permission and publishes releases via gh release", () => {
+    const yaml = readFileSync(WORKFLOW_PATH, "utf8");
+    expect(yaml).toMatch(/permissions:\s*\n\s*contents:\s*write/);
+    expect(yaml).toContain("gh release upload");
+    expect(yaml).toContain("gh release create");
+  });
+
+  describe.skipIf(process.platform === "win32")(
+    'the CI step "Collect and compute SHA256SUMS"',
+    () => {
+      let root;
+      let incoming;
+      let scriptPath;
+
+      beforeAll(() => {
+        root = mkdtempSync(join(tmpdir(), "sdp-whisper-collect-"));
+        incoming = join(root, "incoming");
+        scriptPath = join(root, "step.sh");
+        writeFileSync(
+          scriptPath,
+          stepScript("Collect and compute SHA256SUMS", "whisper-sidecar.yml"),
+        );
+      });
+
+      afterAll(() => {
+        if (root) rmSync(root, { recursive: true, force: true });
+      });
+
+      function runCollect() {
+        const result = spawnSync("bash", [scriptPath], {
+          cwd: root,
+          encoding: "utf8",
+        });
+        return { code: result.status, output: `${result.stdout}${result.stderr}` };
+      }
+
+      it("fails if duplicate artifact names are found across downloaded job artifacts", () => {
+        rmSync(join(root, "release-assets"), { recursive: true, force: true });
+        rmSync(incoming, { recursive: true, force: true });
+        mkdirSync(join(incoming, "job1"), { recursive: true });
+        mkdirSync(join(incoming, "job2"), { recursive: true });
+        writeFileSync(join(incoming, "job1", "sdp-whisper-x86_64-apple-darwin"), "metal-binary");
+        writeFileSync(join(incoming, "job2", "sdp-whisper-x86_64-apple-darwin"), "cpu-binary");
+
+        const { code, output } = runCollect();
+        expect(code).not.toBe(0);
+        expect(output).toContain("Duplicate artifact file found");
+      });
+
+      it("succeeds and produces SHA256SUMS when artifact names are unique", () => {
+        rmSync(join(root, "release-assets"), { recursive: true, force: true });
+        rmSync(incoming, { recursive: true, force: true });
+        mkdirSync(join(incoming, "job1"), { recursive: true });
+        mkdirSync(join(incoming, "job2"), { recursive: true });
+        writeFileSync(join(incoming, "job1", "sdp-whisper-universal-apple-darwin"), "universal");
+        writeFileSync(join(incoming, "job2", "sdp-whisper-x86_64-apple-darwin"), "x64");
+
+        const { code, output } = runCollect();
+        expect(code).toBe(0);
+        const sums = readFileSync(join(root, "release-assets", "SHA256SUMS"), "utf8");
+        expect(sums).toContain("sdp-whisper-universal-apple-darwin");
+        expect(sums).toContain("sdp-whisper-x86_64-apple-darwin");
+      });
+    },
+  );
+});
+
+
