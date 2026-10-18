@@ -182,7 +182,24 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         return Err(err);
     }
 
-    if let Err(err) = fs::rename(&tmp, path) {
+    #[cfg(windows)]
+    let rename_result = {
+        let mut res = fs::rename(&tmp, path);
+        if res.is_err() {
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                res = fs::rename(&tmp, path);
+                if res.is_ok() {
+                    break;
+                }
+            }
+        }
+        res
+    };
+    #[cfg(not(windows))]
+    let rename_result = fs::rename(&tmp, path);
+
+    if let Err(err) = rename_result {
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }

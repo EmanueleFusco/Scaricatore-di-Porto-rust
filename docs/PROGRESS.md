@@ -3575,3 +3575,25 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D119.
 - Next step: proceed to Phase M5-B (transcription pipeline, chunking, and subtitle generation).
 
+## 2026-10-18 — Windows / Cross-compilation and test execution with cargo-xwin & wine (spec §1.1, §2.8)
+- Done:
+  - Validated cross-compilation for Windows MSVC target (`x86_64-pc-windows-msvc`) with `cargo-xwin`:
+    - `cargo xwin check --target x86_64-pc-windows-msvc --all-targets` passed cleanly in ~7s.
+    - `cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings` passed with 0 warnings.
+    - `cargo xwin test --no-run --target x86_64-pc-windows-msvc` successfully compiled all Windows executables (unit tests and integration test suites: `models.rs`, `download.rs`, `queue_engine.rs`, `ffmpeg_encode.rs`, `tools.rs`, etc.).
+  - In `src-tauri/src/services/paths.rs` `atomic_write`: added Windows-specific retry loop on `fs::rename` (up to 10 retries with 10ms backoff) to handle transient file-sharing contention during concurrent atomic overwrites.
+  - Executed Windows binaries under Wine:
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/scaricatore_di_porto_lib-*.exe` → 344 passed, 0 failed.
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/models-*.exe` → 4 passed, 0 failed.
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/download-*.exe` → 9 passed, 0 failed.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 345 unit + 140 integration = 485 passed, 0 failed, 3 ignored.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: Windows `MoveFileExW` / `fs::rename` sharing violation resolution via backoff retry loop.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: proceed to Phase M5-B.
+
+
