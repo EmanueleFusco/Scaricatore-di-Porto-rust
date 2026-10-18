@@ -422,57 +422,347 @@ pub fn offset_vtt_content(content: &str, offset_ms: u64) -> String {
     out.trim_end().to_string()
 }
 
-/// Merge multiple SRT contents with corresponding millisecond offsets.
-pub fn merge_srt_contents(chunks: &[(&str, u64)]) -> String {
-    let mut merged = String::new();
-    let mut next_index = 1;
+#[derive(Debug, Clone)]
+struct SubtitleCue {
+    start_ms: u64,
+    end_ms: u64,
+    settings: String,
+    text: String,
+}
 
-    for (content, offset_ms) in chunks {
-        if content.trim().is_empty() {
+fn normalize_cue_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_word(w: &str) -> String {
+    w.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn find_word_overlap(words_a: &[&str], words_b: &[&str]) -> usize {
+    let norm_a: Vec<String> = words_a
+        .iter()
+        .map(|w| normalize_word(w))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let norm_b: Vec<String> = words_b
+        .iter()
+        .map(|w| normalize_word(w))
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    let max_k = norm_a.len().min(norm_b.len()).min(50);
+    for k in (1..=max_k).rev() {
+        if norm_a[norm_a.len() - k..] == norm_b[..k] {
+            if k == 1 && norm_b.len() > 1 && norm_a.len() > 1 && norm_b[0].len() < 6 {
+                continue;
+            }
+            return k;
+        }
+    }
+    0
+}
+
+fn parse_srt_cues(content: &str, offset_ms: u64) -> Vec<SubtitleCue> {
+    let normalized = content.replace("\r\n", "\n");
+    let mut cues = Vec::new();
+
+    for block in normalized.split("\n\n") {
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        let (offsetted, new_index) = offset_srt_content(content, *offset_ms, next_index);
-        if !offsetted.is_empty() {
-            if !merged.is_empty() {
-                merged.push_str("\n\n");
+        let lines: Vec<&str> = trimmed.lines().collect();
+        if lines.len() < 2 {
+            continue;
+        }
+
+        let ts_idx = if lines[0].contains("-->") {
+            0
+        } else if lines[1].contains("-->") {
+            1
+        } else {
+            continue;
+        };
+
+        let ts_line = lines[ts_idx];
+        if let Some((start_str, end_str)) = ts_line.split_once("-->") {
+            if let (Some(s_ms), Some(e_ms)) = (
+                parse_srt_timestamp(start_str.trim()),
+                parse_srt_timestamp(end_str.trim()),
+            ) {
+                let text = lines[ts_idx + 1..].join("\n").trim().to_string();
+                if !text.is_empty() {
+                    cues.push(SubtitleCue {
+                        start_ms: s_ms + offset_ms,
+                        end_ms: e_ms + offset_ms,
+                        settings: String::new(),
+                        text,
+                    });
+                }
             }
-            merged.push_str(&offsetted);
-            next_index = new_index;
         }
     }
 
-    if !merged.is_empty() {
-        merged.push('\n');
+    cues
+}
+
+fn parse_vtt_cues(content: &str, offset_ms: u64) -> Vec<SubtitleCue> {
+    let normalized = content.replace("\r\n", "\n");
+    let mut cues = Vec::new();
+
+    for block in normalized.split("\n\n") {
+        let trimmed = block.trim();
+        if trimmed.is_empty() || trimmed == "WEBVTT" || trimmed.starts_with("WEBVTT\n") {
+            continue;
+        }
+        let lines: Vec<&str> = trimmed.lines().collect();
+        let ts_idx = if lines[0].contains("-->") {
+            0
+        } else if lines.len() > 1 && lines[1].contains("-->") {
+            1
+        } else {
+            continue;
+        };
+
+        let ts_line = lines[ts_idx];
+        if let Some((start_part, rest)) = ts_line.split_once("-->") {
+            let start_ts_str = start_part.trim();
+            let mut rest_tokens = rest.split_whitespace();
+            if let Some(end_ts_str) = rest_tokens.next() {
+                if let (Some(s_ms), Some(e_ms)) = (
+                    parse_vtt_timestamp(start_ts_str),
+                    parse_vtt_timestamp(end_ts_str),
+                ) {
+                    let settings = rest_tokens.collect::<Vec<_>>().join(" ");
+                    let text = lines[ts_idx + 1..].join("\n").trim().to_string();
+                    if !text.is_empty() {
+                        cues.push(SubtitleCue {
+                            start_ms: s_ms + offset_ms,
+                            end_ms: e_ms + offset_ms,
+                            settings,
+                            text,
+                        });
+                    }
+                }
+            }
+        }
     }
-    merged
+
+    cues
+}
+
+fn reconcile_and_merge_cues(mut chunk_items: Vec<(u64, Vec<SubtitleCue>)>) -> Vec<SubtitleCue> {
+    let num_chunks = chunk_items.len();
+    if num_chunks == 0 {
+        return Vec::new();
+    }
+
+    for i in 0..num_chunks {
+        if i + 1 < num_chunks {
+            let next_offset = chunk_items[i + 1].0;
+            let (left, right) = chunk_items.split_at_mut(i + 1);
+            let cues_a = &mut left[i].1;
+            let cues_b = &mut right[0].1;
+
+            // 1. Drop cues in chunk i that start at or after next_offset
+            cues_a.retain(|c| c.start_ms < next_offset);
+
+            // 2. Reconcile boundary cues between chunk i and chunk i + 1
+            if let Some(ca) = cues_a.last_mut() {
+                if let Some(cb) = cues_b.first_mut() {
+                    let norm_a = normalize_cue_text(&ca.text);
+                    let norm_b = normalize_cue_text(&cb.text);
+
+                    if !norm_a.is_empty() && norm_a == norm_b {
+                        // Complete duplicate cue across boundary: merge into cb and pop ca
+                        cb.start_ms = ca.start_ms.min(cb.start_ms);
+                        cb.end_ms = ca.end_ms.max(cb.end_ms);
+                        cues_a.pop();
+                    } else {
+                        // Check for partial word overlap
+                        let words_a: Vec<&str> = ca.text.split_whitespace().collect();
+                        let words_b: Vec<&str> = cb.text.split_whitespace().collect();
+                        let overlap_words = find_word_overlap(&words_a, &words_b);
+
+                        if overlap_words > 0 && overlap_words < words_a.len() {
+                            let keep_count = words_a.len() - overlap_words;
+                            ca.text = words_a[..keep_count].join(" ");
+                            ca.end_ms = ca.end_ms.min(cb.start_ms);
+                        } else if overlap_words > 0 && overlap_words == words_a.len() {
+                            cb.start_ms = ca.start_ms.min(cb.start_ms);
+                            cb.end_ms = ca.end_ms.max(cb.end_ms);
+                            cues_a.pop();
+                        } else if overlap_words > 0 && overlap_words == words_b.len() {
+                            ca.end_ms = ca.end_ms.max(cb.end_ms);
+                            cues_b.remove(0);
+                        } else if ca.end_ms > cb.start_ms {
+                            ca.end_ms = cb.start_ms;
+                        }
+                    }
+                } else if ca.end_ms > next_offset {
+                    ca.end_ms = next_offset;
+                }
+            }
+
+            // Remove ca if invalid duration
+            if let Some(ca) = cues_a.last() {
+                if ca.end_ms <= ca.start_ms || ca.text.trim().is_empty() {
+                    cues_a.pop();
+                }
+            }
+        }
+    }
+
+    let mut all_cues: Vec<SubtitleCue> = Vec::new();
+    for (_offset, cues) in chunk_items {
+        all_cues.extend(cues);
+    }
+
+    // Monotonicity pass
+    for j in 1..all_cues.len() {
+        if all_cues[j - 1].end_ms > all_cues[j].start_ms {
+            all_cues[j - 1].end_ms = all_cues[j].start_ms;
+        }
+    }
+
+    all_cues.retain(|c| c.end_ms > c.start_ms && !c.text.trim().is_empty());
+    all_cues
+}
+
+/// Merge multiple SRT contents with corresponding millisecond offsets.
+pub fn merge_srt_contents(chunks: &[(&str, u64)]) -> String {
+    let chunk_items: Vec<(u64, Vec<SubtitleCue>)> = chunks
+        .iter()
+        .map(|(content, offset_ms)| (*offset_ms, parse_srt_cues(content, *offset_ms)))
+        .collect();
+
+    let cues = reconcile_and_merge_cues(chunk_items);
+    if cues.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for (idx, cue) in cues.iter().enumerate() {
+        let s_str = format_srt_timestamp(cue.start_ms);
+        let e_str = format_srt_timestamp(cue.end_ms);
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("{}\n{s_str} --> {e_str}\n{}", idx + 1, cue.text));
+    }
+    out.push('\n');
+    out
 }
 
 /// Merge multiple WebVTT contents with corresponding millisecond offsets.
 pub fn merge_vtt_contents(chunks: &[(&str, u64)]) -> String {
-    let mut cues = Vec::new();
+    let chunk_items: Vec<(u64, Vec<SubtitleCue>)> = chunks
+        .iter()
+        .map(|(content, offset_ms)| (*offset_ms, parse_vtt_cues(content, *offset_ms)))
+        .collect();
 
-    for (content, offset_ms) in chunks {
-        let offsetted = offset_vtt_content(content, *offset_ms);
-        let trimmed = offsetted.trim();
-        if !trimmed.is_empty() {
-            cues.push(trimmed.to_string());
+    let cues = reconcile_and_merge_cues(chunk_items);
+    if cues.is_empty() {
+        return "WEBVTT\n".to_string();
+    }
+
+    let mut out = String::from("WEBVTT");
+    for cue in cues {
+        let s_str = format_vtt_timestamp(cue.start_ms);
+        let e_str = format_vtt_timestamp(cue.end_ms);
+        out.push_str("\n\n");
+        if cue.settings.is_empty() {
+            out.push_str(&format!("{s_str} --> {e_str}\n{}", cue.text));
+        } else {
+            out.push_str(&format!(
+                "{s_str} --> {e_str} {}\n{}",
+                cue.settings, cue.text
+            ));
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn deduplicate_txt_overlap(prev: &str, next: &str) -> String {
+    let prev_words: Vec<&str> = prev.split_whitespace().collect();
+    let next_words: Vec<&str> = next.split_whitespace().collect();
+    if prev_words.is_empty() || next_words.is_empty() {
+        return next.to_string();
+    }
+
+    let norm_prev: Vec<String> = prev_words
+        .iter()
+        .map(|w| normalize_word(w))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let norm_next: Vec<String> = next_words
+        .iter()
+        .map(|w| normalize_word(w))
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    let max_k = norm_prev.len().min(norm_next.len()).min(50);
+    for k in (1..=max_k).rev() {
+        if norm_prev[norm_prev.len() - k..] == norm_next[..k] {
+            if k == 1 && norm_next.len() > 1 && norm_prev.len() > 1 && norm_next[0].len() < 6 {
+                continue;
+            }
+            let mut word_count = 0;
+            let mut skip_idx = next.len();
+            let mut in_word = false;
+            for (idx, c) in next.char_indices() {
+                if !c.is_whitespace() {
+                    if !in_word {
+                        in_word = true;
+                        if word_count == k {
+                            skip_idx = idx;
+                            break;
+                        }
+                        word_count += 1;
+                    }
+                } else {
+                    in_word = false;
+                }
+            }
+            return next[skip_idx..].trim().to_string();
         }
     }
 
-    if cues.is_empty() {
-        "WEBVTT\n".to_string()
-    } else {
-        format!("WEBVTT\n\n{}\n", cues.join("\n\n"))
-    }
+    next.to_string()
 }
 
 /// Merge multiple plain text transcripts with double newlines between chunks.
 pub fn merge_txt_contents(chunks: &[&str]) -> String {
-    let parts: Vec<&str> = chunks
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let mut parts: Vec<String> = Vec::new();
+
+    for chunk in chunks {
+        let trimmed = chunk.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if parts.is_empty() {
+            parts.push(trimmed.to_string());
+            continue;
+        }
+
+        let prev = parts.last().unwrap();
+        let deduplicated = deduplicate_txt_overlap(prev, trimmed);
+        if !deduplicated.is_empty() {
+            parts.push(deduplicated);
+        }
+    }
+
     if parts.is_empty() {
         String::new()
     } else {
@@ -1355,6 +1645,93 @@ mod tests {
         assert_eq!(b[0].duration_sec, 1802.0);
         assert_eq!(b[1].start_sec, 1800.0);
         assert_eq!(b[1].timestamp_offset_ms, 1_800_000);
+    }
+
+    #[test]
+    fn hard_cut_chunk_boundary_overlap_does_not_duplicate_text_or_overlap_timestamps() {
+        let boundaries = calculate_chunk_boundaries(7500.0, &[]);
+        assert_eq!(boundaries[0].timestamp_offset_ms, 0);
+        assert_eq!(boundaries[1].timestamp_offset_ms, 1_800_000);
+
+        let srt_chunk1 = "1\n00:29:59,000 --> 00:30:01,800\nDuplicated speech.";
+        let srt_chunk2 = "1\n00:00:00,200 --> 00:00:03,000\nDuplicated speech.";
+
+        let merged_srt = merge_srt_contents(&[
+            (srt_chunk1, boundaries[0].timestamp_offset_ms),
+            (srt_chunk2, boundaries[1].timestamp_offset_ms),
+        ]);
+
+        assert_eq!(
+            merged_srt.matches("Duplicated speech.").count(),
+            1,
+            "duplicated speech must not be emitted twice in merged SRT: {merged_srt}"
+        );
+        assert!(
+            !merged_srt.contains("00:30:01,800\nDuplicated speech.\n\n2\n00:30:00,200"),
+            "timestamps must not jump backwards in merged SRT: {merged_srt}"
+        );
+
+        let vtt_chunk1 = "WEBVTT\n\n00:29:59.000 --> 00:30:01.800\nDuplicated speech.";
+        let vtt_chunk2 = "WEBVTT\n\n00:00:00.200 --> 00:00:03.000\nDuplicated speech.";
+        let merged_vtt = merge_vtt_contents(&[
+            (vtt_chunk1, boundaries[0].timestamp_offset_ms),
+            (vtt_chunk2, boundaries[1].timestamp_offset_ms),
+        ]);
+        assert_eq!(
+            merged_vtt.matches("Duplicated speech.").count(),
+            1,
+            "duplicated speech must not be emitted twice in merged VTT: {merged_vtt}"
+        );
+
+        let txt_chunk1 = "First part.\nDuplicated speech.";
+        let txt_chunk2 = "Duplicated speech.\nSecond part.";
+        let merged_txt = merge_txt_contents(&[txt_chunk1, txt_chunk2]);
+        assert_eq!(
+            merged_txt.matches("Duplicated speech.").count(),
+            1,
+            "duplicated text must not be emitted twice in merged TXT: {merged_txt}"
+        );
+    }
+
+    #[test]
+    fn hard_cut_chunk_boundary_drops_cues_starting_in_overlap() {
+        let chunk1 = "1\n00:29:50,000 --> 00:29:55,000\nSentence 1.\n\n2\n00:30:00,500 --> 00:30:01,800\nOverlap cue.";
+        let chunk2 = "1\n00:00:00,500 --> 00:00:01,800\nOverlap cue.\n\n2\n00:00:03,000 --> 00:00:05,000\nSentence 3.";
+
+        let merged = merge_srt_contents(&[(chunk1, 0), (chunk2, 1_800_000)]);
+        assert_eq!(
+            merged.matches("Overlap cue.").count(),
+            1,
+            "cue in overlap window starting at or after offset must not be duplicated: {merged}"
+        );
+        assert!(merged.contains("Sentence 1."));
+        assert!(merged.contains("Sentence 3."));
+        assert_eq!(merged.matches("-->").count(), 3);
+    }
+
+    #[test]
+    fn hard_cut_chunk_boundary_clamps_differing_text_without_timestamp_overlap() {
+        let chunk1 = "1\n00:29:58,000 --> 00:30:01,500\nSentence A.";
+        let chunk2 = "1\n00:00:00,500 --> 00:00:03,000\nSentence B.";
+
+        let merged = merge_srt_contents(&[(chunk1, 0), (chunk2, 1_800_000)]);
+        assert!(merged.contains("00:29:58,000 --> 00:30:00,500\nSentence A."));
+        assert!(merged.contains("00:30:00,500 --> 00:30:03,000\nSentence B."));
+    }
+
+    #[test]
+    fn hard_cut_chunk_boundary_partial_word_overlap_deduplicated() {
+        let chunk1 = "1\n00:29:58,000 --> 00:30:01,500\nWe went to the market";
+        let chunk2 = "1\n00:00:00,500 --> 00:00:04,000\nthe market was very crowded";
+
+        let merged = merge_srt_contents(&[(chunk1, 0), (chunk2, 1_800_000)]);
+        assert_eq!(
+            merged.matches("the market").count(),
+            1,
+            "overlapping words across chunk boundary must not be duplicated: {merged}"
+        );
+        assert!(merged.contains("We went to"));
+        assert!(merged.contains("the market was very crowded"));
     }
 
     #[test]

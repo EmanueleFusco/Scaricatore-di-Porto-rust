@@ -3806,3 +3806,22 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D122.
 - Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Fix hard-cut chunking overlap cue duplication and timestamp backward jumps (M2, Checklist #9, spec §10.2)
+- Done:
+  - Fixed M2 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Reconciled chunk boundaries in `merge_srt_contents` and `merge_vtt_contents` so cues in chunk $i$ starting at or after the next chunk's offset are dropped.
+    - Merged duplicate cues across boundaries by detecting matching normalized text and joining their time bounds without duplication.
+    - Clamped cues spanning across boundaries to prevent overlapping or backward-jumping timestamps when text differs, and deduplicated multi-word text overlap across chunk boundaries.
+    - Deduplicated text in `merge_txt_contents` across chunk boundaries by trimming repeated words/lines.
+    - Added reproduction test `hard_cut_chunk_boundary_overlap_does_not_duplicate_text_or_overlap_timestamps` and boundary tests for overlap dropping, timestamp clamping, and partial word deduplication.
+- Verified by running:
+  - `cargo test hard_cut_chunk_boundary_overlap_does_not_duplicate_text_or_overlap_timestamps` → FAILS before fix (panic: `assertion left == right failed: duplicated speech must not be emitted twice in merged SRT: left: 2, right: 1`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 372 unit + 158 integration = 530 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
