@@ -366,6 +366,47 @@ fn queue_add_reports_duplicates_and_the_second_call_forces_them() {
 }
 
 #[test]
+fn queue_add_does_not_treat_different_m4_options_as_duplicates() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let result = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({
+                "force": false,
+                "items": [
+                    {
+                        "url": "https://a.example/clip",
+                        "kind": "video",
+                        "quality": { "kind": "best" },
+                        "outputDir": out.display().to_string(),
+                        "trimStart": "00:00",
+                        "trimEnd": "00:10"
+                    },
+                    {
+                        "url": "https://a.example/clip",
+                        "kind": "video",
+                        "quality": { "kind": "best" },
+                        "outputDir": out.display().to_string(),
+                        "trimStart": "00:20",
+                        "trimEnd": "00:30"
+                    }
+                ]
+            }),
+        )
+    })
+    .expect("must succeed");
+
+    assert_eq!(result["added"].as_array().map(Vec::len), Some(2));
+    assert!(result["duplicates"].as_array().expect("array").is_empty());
+}
+
+#[test]
 fn an_audio_only_quality_wins_over_the_kind_the_frontend_sent() {
     let dir = TempDir::new().expect("temp dir");
     let out = dir.path().join("out");
@@ -400,6 +441,7 @@ fn an_audio_only_quality_wins_over_the_kind_the_frontend_sent() {
         snapshot["items"][0]["options"]["quality"]["kind"],
         "audioOnly"
     );
+    assert_eq!(snapshot["items"][0]["options"]["audioCodec"], "aac");
 }
 
 #[test]
@@ -579,7 +621,11 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
     assert_eq!(answer["settings"]["perHostCap"], 4);
     assert_eq!(answer["settings"]["notifyOnIdle"], true);
     assert_eq!(answer["settings"]["pasteLinksAnywhere"], true);
-    assert_eq!(answer["settings"]["schemaVersion"], 5, "M3's schema");
+    assert_eq!(
+        answer["settings"]["schemaVersion"],
+        scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION,
+        "current schema"
+    );
 
     // And the engine was told, without a restart.
     let lanes = call(&window, "queue_lanes", json!({})).expect("must succeed");
@@ -604,7 +650,10 @@ fn the_queue_settings_travel_through_the_settings_ipc_and_are_clamped() {
             .expect("settings.json is JSON");
     assert_eq!(on_disk["parallelDownloads"], 4);
     assert_eq!(on_disk["perHostCap"], 1);
-    assert_eq!(on_disk["schemaVersion"], 5);
+    assert_eq!(
+        on_disk["schemaVersion"],
+        scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -648,4 +697,160 @@ fn archive_and_group_commands_work_over_the_ipc() {
     assert_eq!(removed, json!([]));
     let list = call(&window, "queue_list", json!({})).expect("queue_list");
     assert_eq!(list["groups"].as_array().expect("groups").len(), 0);
+}
+
+#[test]
+fn queue_add_treats_empty_sponsorblock_categories_or_off_as_disabled() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    let _ = call(
+        &window,
+        "queue_add",
+        json!({
+            "force": false,
+            "items": [
+                {
+                    "url": "https://a.example/empty-cats",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "remove",
+                    "sponsorblockCategories": []
+                },
+                {
+                    "url": "https://a.example/mode-off",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "off",
+                    "sponsorblockCategories": ["sponsor"]
+                },
+                {
+                    "url": "https://a.example/mode-mark",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "sponsorblockMode": "mark",
+                    "sponsorblockCategories": ["sponsor", "intro"]
+                }
+            ]
+        }),
+    )
+    .expect("queue_add must succeed");
+
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    let items = list["items"].as_array().expect("items array");
+
+    let item0 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/empty-cats")
+        .unwrap();
+    assert_eq!(
+        item0["options"]["sponsorblockMode"],
+        serde_json::Value::Null
+    );
+
+    let item1 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/mode-off")
+        .unwrap();
+    assert_eq!(
+        item1["options"]["sponsorblockMode"],
+        serde_json::Value::Null
+    );
+
+    let item2 = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/mode-mark")
+        .unwrap();
+    assert_eq!(item2["options"]["sponsorblockMode"], "mark");
+    assert_eq!(
+        item2["options"]["sponsorblockCategories"],
+        json!(["sponsor", "intro"])
+    );
+}
+
+#[test]
+fn queue_add_scopes_download_archive_fallback_to_playlist_items() {
+    let dir = TempDir::new().expect("temp dir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+
+    // By default `use_download_archive` is `true` in Settings.
+    // A single video (`groupId: null`, `useArchive` omitted) must NOT receive
+    // `archiveFile`, so the user can always re-download a standalone video even
+    // after deleting the file from disk. A playlist entry (`groupId` set) falls
+    // back to `use_download_archive` unless explicitly overridden.
+    let _ = call(
+        &window,
+        "queue_add",
+        json!({
+            "force": false,
+            "items": [
+                {
+                    "url": "https://a.example/single-default",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": null
+                },
+                {
+                    "url": "https://a.example/playlist-default",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": "g-playlist-1"
+                },
+                {
+                    "url": "https://a.example/playlist-ignore-archive",
+                    "kind": "video",
+                    "quality": { "kind": "best" },
+                    "outputDir": out.display().to_string(),
+                    "groupId": "g-playlist-1",
+                    "useArchive": false
+                }
+            ]
+        }),
+    )
+    .expect("queue_add must succeed");
+
+    let list = call(&window, "queue_list", json!({})).expect("queue_list");
+    let items = list["items"].as_array().expect("items array");
+
+    let single = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/single-default")
+        .unwrap();
+    assert_eq!(
+        single["options"]["archiveFile"],
+        serde_json::Value::Null,
+        "single-video download must not use archive.txt unless explicitly requested"
+    );
+
+    let playlist_item = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/playlist-default")
+        .unwrap();
+    assert!(
+        playlist_item["options"]["archiveFile"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("archive.txt")),
+        "playlist item must inherit archive.txt when use_download_archive is true"
+    );
+
+    let playlist_ignored = items
+        .iter()
+        .find(|i| i["url"] == "https://a.example/playlist-ignore-archive")
+        .unwrap();
+    assert_eq!(
+        playlist_ignored["options"]["archiveFile"],
+        serde_json::Value::Null,
+        "playlist item with useArchive: false must not use archive.txt"
+    );
 }

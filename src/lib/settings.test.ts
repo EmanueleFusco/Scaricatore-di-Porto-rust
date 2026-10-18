@@ -72,14 +72,24 @@ describe("normaliseSettings()", () => {
 });
 
 describe("M3 settings", () => {
-  it("defaults the playlist behaviour to ask and the archive off", () => {
+  it("defaults the playlist behaviour to ask and the archive on for playlists", () => {
     const out = normaliseSettings({ playlistUrlBehavior: "bogus" as never, customHeaders: [" X: 1 ", "", 3 as never] });
     expect(out.playlistUrlBehavior).toBe("ask");
-    expect(out.useDownloadArchive).toBe(false);
+    expect(out.useDownloadArchive).toBe(true);
+    expect(normaliseSettings({ useDownloadArchive: false }).useDownloadArchive).toBe(false);
     expect(out.includeIdInFilename).toBe(true);
     expect(out.impersonateRetry).toBe(true);
     expect(out.customHeaders).toEqual(["X: 1"]);
     expect(normaliseSettings({ proxyUrl: "  " }).proxyUrl).toBeNull();
+  });
+});
+
+describe("M4 settings", () => {
+  it("defaults defaultAudioCodec to aac and preserves it in normalisation", () => {
+    expect(DEFAULT_SETTINGS.defaultAudioCodec).toBe("aac");
+    expect(normaliseSettings({}).defaultAudioCodec).toBe("aac");
+    expect(normaliseSettings({ defaultAudioCodec: "mp3" }).defaultAudioCodec).toBe("mp3");
+    expect(normaliseSettings({ defaultAudioCodec: "  " }).defaultAudioCodec).toBe("aac");
   });
 });
 

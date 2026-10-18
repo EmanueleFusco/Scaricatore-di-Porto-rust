@@ -4,6 +4,8 @@
 //! `download.rs` is the only module allowed to reach the network.
 
 pub mod download;
+pub mod encoders;
+pub mod ffmpeg;
 pub mod inspect;
 pub mod job;
 pub mod jsruntime;

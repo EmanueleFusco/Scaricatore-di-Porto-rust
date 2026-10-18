@@ -118,6 +118,7 @@ impl Fixture {
         JobEnvironment {
             ytdlp: self.ytdlp.clone(),
             ffmpeg: Some(self.ytdlp.clone()), // presence is all the runner checks
+            ffprobe: None,
             runtimes: self.runtimes(mode, with_deno),
             memory: Arc::clone(memory),
             private_temp: None,
@@ -1046,4 +1047,42 @@ async fn an_archive_skip_reports_skipped_archive_without_failing() {
         "expected SkippedArchive, got {outcome:?}"
     );
     assert_eq!(fixture.log_lines().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_embedding_failure_is_treated_as_a_warning_when_output_file_exists() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let mut req = fixture.request("https://youtu.be/embed-fail");
+    req.spec.embed_thumbnail = true;
+
+    let outcome = job::run_job(&env, &req, CancellationToken::new(), sink).await;
+    match outcome {
+        JobOutcome::Done { file, .. } => {
+            assert!(
+                file.is_file(),
+                "expected output file to exist: {}",
+                file.display()
+            );
+        }
+        other => panic!("expected JobOutcome::Done despite embedding failure, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_fails_when_tool_fails_and_no_embed_option_was_requested() {
+    let fixture = fixture();
+    let memory = fixture.memory();
+    let env = fixture.env(JsRuntimeMode::Auto, false, &memory);
+    let (sink, _labels) = collecting_sink();
+
+    let req = fixture.request("https://youtu.be/embed-fail");
+    let outcome = job::run_job(&env, &req, CancellationToken::new(), sink).await;
+    assert!(
+        matches!(outcome, JobOutcome::Failed(_)),
+        "expected JobOutcome::Failed when no embed option was requested, got {outcome:?}"
+    );
 }

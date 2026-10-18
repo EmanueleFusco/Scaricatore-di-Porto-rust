@@ -93,9 +93,14 @@ fn environment(
         private_temp: Some(dir.path().join("tmp")),
         youtube_clients: None,
     };
+    let ffmpeg = which_ffmpeg();
+    let ffprobe = ffmpeg
+        .as_ref()
+        .and_then(|p| scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(p, None));
     let job_env = JobEnvironment {
         ytdlp,
-        ffmpeg: which_ffmpeg(),
+        ffmpeg,
+        ffprobe,
         runtimes,
         memory,
         private_temp: Some(dir.path().join("tmp")),

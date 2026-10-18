@@ -47,6 +47,7 @@ pub struct JobEnvironment {
     /// conversion both need ffmpeg, and "two split files and exit 0" is not a
     /// result (spec §5.2.1, §9).
     pub ffmpeg: Option<PathBuf>,
+    pub ffprobe: Option<PathBuf>,
     pub runtimes: Runtimes,
     pub memory: Arc<jsruntime::RuntimeMemoryStore>,
     /// Spec §4.9: private TMP dir for the child processes.
@@ -441,13 +442,25 @@ async fn run_attempt(
     if process_result.cancelled {
         return AttemptOutcome::Cancelled;
     }
+    let file = attempt.last_file();
     if let Some(error) =
         ytdlp::classify_result(&process_result, jsruntime::is_youtube_url(&request.url))
     {
-        return AttemptOutcome::Failed(error);
-    }
+        // Spec §8.4: "Treat embedding failures as warnings, not job failures
+        // (support differs per container; verify)." If an embedding option was
+        // requested, the media file was already successfully downloaded/merged
+        // onto disk, and yt-dlp failed only during post-processing (Unknown
+        // code), tolerate the embedding failure as a non-fatal warning.
+        let is_embed_warning = (request.spec.embed_metadata
+            || request.spec.embed_thumbnail
+            || request.spec.embed_chapters)
+            && file.as_ref().is_some_and(|f| f.is_file())
+            && matches!(error.code, YtdlpErrorCode::Unknown);
 
-    let file = attempt.last_file();
+        if !is_embed_warning {
+            return AttemptOutcome::Failed(error);
+        }
+    }
     match file {
         Some(file) if file.is_file() => {
             let actual_height = attempt.actual_height();
@@ -557,6 +570,11 @@ impl AttemptShared {
     }
 
     fn on_stderr_line(&self, line: &str) {
+        if ytdlp::is_archive_skip_line(line) {
+            self.challenge_pending.store(false, Ordering::Relaxed);
+            self.skipped_archive.store(true, Ordering::Relaxed);
+            return;
+        }
         if let Some((status, name)) = ytdlp::parse_postprocess_line(line) {
             self.challenge_pending.store(false, Ordering::Relaxed);
             let progress = match self.tracker.lock() {

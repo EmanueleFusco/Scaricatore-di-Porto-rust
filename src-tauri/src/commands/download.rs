@@ -150,6 +150,7 @@ pub async fn download_start<R: tauri::Runtime>(
     let environment = JobEnvironment {
         ytdlp: tools.ytdlp.path,
         ffmpeg: tools.ffmpeg,
+        ffprobe: tools.ffprobe,
         runtimes: tools.runtimes,
         memory: state.runtime_memory().clone(),
         private_temp: tools.private_temp,

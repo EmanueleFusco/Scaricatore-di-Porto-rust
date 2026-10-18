@@ -6,8 +6,10 @@
    */
   import { languageName, type LangPreference } from "$lib/i18n";
   import { onMount } from "svelte";
+  import { AUDIO_CODEC_OPTIONS, SPONSORBLOCK_CATEGORY_KEYS } from "$lib/addbar";
   import { clampCap, isPlaylistUrlBehavior, type PlaylistUrlBehavior } from "$lib/settings";
   import { settingsStore, activeLang, tt } from "$lib/stores/settings.svelte";
+  import { toolsStore } from "$lib/stores/tools.svelte";
   import type { ThemePreference } from "$lib/theme";
 
   const languageOptions: LangPreference[] = ["system", "it", "en"];
@@ -39,6 +41,7 @@
   let archiveCleared = $state(false);
 
   onMount(() => {
+    void toolsStore.probeEncoders();
     void settingsStore.archiveStatus().then((view) => (archiveEntries = view.entries));
   });
 
@@ -230,6 +233,164 @@
       {tt("settings.archive.clear")}
     </button>
   </div>
+</section>
+
+<section class="card settings__group" aria-labelledby="heading-media">
+  <h2 class="settings__group-title" id="heading-media">
+    {tt("settings.section.media")}
+  </h2>
+
+  <!-- Spec §9.3: Default video codec & encoder detection -->
+  <div class="field">
+    <label class="field__label" for="setting-vcodec">{tt("settings.media.defaultVideoCodec")}</label>
+    <select
+      class="select"
+      id="setting-vcodec"
+      value={settingsStore.settings.defaultVideoCodec ?? "libx264"}
+      onchange={(event) =>
+        void settingsStore.update({ defaultVideoCodec: event.currentTarget.value })}
+    >
+      {#if toolsStore.probingEncoders}
+        <option disabled value="">{tt("settings.media.detecting")}</option>
+      {/if}
+      {#if toolsStore.probedEncoders.length > 0}
+        {#each toolsStore.probedEncoders as encoder (encoder.id)}
+          <option value={encoder.id}>{encoder.label}</option>
+        {/each}
+      {:else}
+        <option value="libx264">x264 (CPU)</option>
+        <option value="libx265">x265 (CPU)</option>
+      {/if}
+    </select>
+  </div>
+
+  <div class="settings__row">
+    <button
+      type="button"
+      class="btn"
+      disabled={toolsStore.probingEncoders}
+      onclick={() => void toolsStore.probeEncoders(true)}
+    >
+      {toolsStore.probingEncoders ? tt("settings.media.detecting") : tt("settings.media.detectEncoders")}
+    </button>
+    {#if toolsStore.probedEncoders.length > 0}
+      <span class="field__hint" role="status">
+        {tt("settings.media.detectedCount", { count: toolsStore.probedEncoders.length })}
+      </span>
+    {/if}
+  </div>
+
+  <!-- Spec §9.4: Default audio codec -->
+  <div class="field">
+    <label class="field__label" for="setting-acodec">{tt("settings.media.defaultAudioCodec")}</label>
+    <select
+      class="select"
+      id="setting-acodec"
+      value={settingsStore.settings.defaultAudioCodec ?? "aac"}
+      onchange={(event) =>
+        void settingsStore.update({ defaultAudioCodec: event.currentTarget.value })}
+    >
+      {#each AUDIO_CODEC_OPTIONS as opt (opt.value)}
+        <option value={opt.value}>{opt.label}</option>
+      {/each}
+    </select>
+  </div>
+
+  <!-- Spec §9.2: Keep original after encode -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.keepOriginalAfterEncode}
+      onchange={(event) =>
+        void settingsStore.update({ keepOriginalAfterEncode: event.currentTarget.checked })}
+    />
+    {tt("settings.media.keepOriginal")}
+  </label>
+  <p class="field__hint">{tt("settings.media.keepOriginal.hint")}</p>
+
+  <!-- Spec §9.5: Auto-play -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.autoPlay}
+      onchange={(event) =>
+        void settingsStore.update({ autoPlay: event.currentTarget.checked })}
+    />
+    {tt("settings.media.autoPlay")}
+  </label>
+  <p class="field__hint">{tt("settings.media.autoPlay.hint")}</p>
+
+  <!-- Spec §8.4: Embed metadata, thumbnail, chapters -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.embedMetadata}
+      onchange={(event) =>
+        void settingsStore.update({ embedMetadata: event.currentTarget.checked })}
+    />
+    {tt("settings.media.embedMetadata")}
+  </label>
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.embedThumbnail}
+      onchange={(event) =>
+        void settingsStore.update({ embedThumbnail: event.currentTarget.checked })}
+    />
+    {tt("settings.media.embedThumbnail")}
+  </label>
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.embedChapters}
+      onchange={(event) =>
+        void settingsStore.update({ embedChapters: event.currentTarget.checked })}
+    />
+    {tt("settings.media.embedChapters")}
+  </label>
+
+  <!-- Spec §8.4: SponsorBlock -->
+  <div class="field">
+    <label class="field__label" for="setting-sb-mode">{tt("settings.media.sponsorblockMode")}</label>
+    <select
+      class="select"
+      id="setting-sb-mode"
+      value={settingsStore.settings.sponsorblockMode ?? "off"}
+      onchange={(event) => {
+        const val = event.currentTarget.value;
+        void settingsStore.update({
+          sponsorblockMode: val === "mark" || val === "remove" ? val : null,
+        });
+      }}
+    >
+      <option value="off">{tt("queue.add.sponsorblock.mode.off")}</option>
+      <option value="mark">{tt("queue.add.sponsorblock.mode.mark")}</option>
+      <option value="remove">{tt("queue.add.sponsorblock.mode.remove")}</option>
+    </select>
+  </div>
+
+  {#if settingsStore.settings.sponsorblockMode !== null}
+    <div class="field">
+      <span class="field__label">{tt("settings.media.sponsorblockCategories")}</span>
+      {#each SPONSORBLOCK_CATEGORY_KEYS as cat (cat)}
+        <label class="settings__check">
+          <input
+            type="checkbox"
+            checked={settingsStore.settings.sponsorblockCategories.includes(cat)}
+            disabled={settingsStore.settings.sponsorblockCategories.length === 1 && settingsStore.settings.sponsorblockCategories.includes(cat)}
+            onchange={(event) => {
+              const checked = event.currentTarget.checked;
+              const cur = settingsStore.settings.sponsorblockCategories;
+              if (!checked && cur.length <= 1) return;
+              const next = checked ? [...cur, cat] : cur.filter((c) => c !== cat);
+              void settingsStore.update({ sponsorblockCategories: next });
+            }}
+          />
+          {tt(`sponsorblock.category.${cat}`)}
+        </label>
+      {/each}
+    </div>
+  {/if}
 </section>
 
 <section class="card settings__group" aria-labelledby="heading-behaviour">

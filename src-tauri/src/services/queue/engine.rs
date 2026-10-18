@@ -53,8 +53,8 @@ use crate::services::queue::events::{
     Coalescer, EventSink, QueueSnapshot, QueueToast, QueueUpdate,
 };
 use crate::services::queue::model::{
-    ControlSignal, ItemOptions, ItemProgress, ItemState, Lane, LaneConfig, QueueGroup, QueueItem,
-    QueueSummary, aggregate, job_dirs, roll_off_history, should_auto_retry,
+    ControlSignal, ItemOptions, ItemProgress, ItemState, Kind, Lane, LaneConfig, QueueGroup,
+    QueueItem, QueueSummary, aggregate, job_dirs, roll_off_history, should_auto_retry,
 };
 use crate::services::queue::scheduler::{self, Candidate, Capacity};
 use crate::services::queue::store::{self, LoadedQueue, QueueFile};
@@ -177,6 +177,12 @@ struct Inner {
     pending_removed: Mutex<Vec<String>>,
     /// Toasts waiting to travel with the next event.
     pending_toasts: Mutex<Vec<QueueToast>>,
+    /// Limits concurrent encode jobs (spec §7.2: "The encode lane is 1 by default").
+    /// Counted against the live lane config, so a change in Settings also
+    /// reaches items already waiting.
+    encodes_running: Mutex<usize>,
+    /// Woken when an encode slot frees up or the lane capacity changes.
+    encode_slot: Notify,
 }
 
 /// The handle. Cloneable, cheap, and the only thing the commands see.
@@ -220,6 +226,8 @@ impl QueueEngine {
                 stopped: AtomicBool::new(false),
                 pending_removed: Mutex::new(Vec::new()),
                 pending_toasts: Mutex::new(Vec::new()),
+                encodes_running: Mutex::new(0),
+                encode_slot: Notify::new(),
             }),
         };
         if let Some(recovery) = recovery {
@@ -308,7 +316,10 @@ impl QueueEngine {
     /// Adopt new lane capacities and the notification setting. Takes effect on
     /// the next planning pass, which happens as soon as this returns.
     pub fn configure(&self, lanes: LaneConfig, notify_on_idle: bool) {
-        *lock(&self.inner.lanes) = lanes.clamped();
+        let lanes = lanes.clamped();
+        *lock(&self.inner.lanes) = lanes;
+        // Items waiting for an encode slot re-check against the new capacity.
+        self.inner.encode_slot.notify_waiters();
         *lock(&self.inner.notify_on_idle) = notify_on_idle;
         self.inner.wake.notify_waiters();
     }
@@ -1005,7 +1016,8 @@ fn start_item(inner: &Arc<Inner>, id: String) {
     tokio::spawn(run_item(Arc::clone(inner), id, token));
 }
 
-/// One item's whole pipeline: resolve the tools, then the M1 job runner.
+/// One item's whole pipeline: resolve the tools, download via yt-dlp, and
+/// if requested, encode/trim via ffmpeg and auto-play via opener.
 async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
     let Some((environment, request)) = prepare(&inner, &id).await else {
         return;
@@ -1017,8 +1029,380 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
         on_progress(&progress_inner, &sink_id, progress);
     });
 
-    let outcome = job::run_job(&environment, &request, token, sink).await;
-    finish_item(&inner, &id, outcome);
+    // Spec §7.3/§9.1: a download already finished by an earlier attempt that
+    // stopped in Encoding (pause, crash, ffmpeg failure) goes straight to the
+    // encode stage. Re-running yt-dlp would re-download it, or with the
+    // archive on, report it as skipped and never encode it.
+    let downloaded = {
+        let state = lock(&inner.state);
+        state.item(&id).and_then(|item| {
+            let file = item.file.as_ref()?;
+            (item.options.needs_encode() && item.size_bytes.is_none() && file.is_file()).then(
+                || JobOutcome::Done {
+                    file: file.clone(),
+                    runtime: if item.runtime.as_deref() == Some("deno") {
+                        crate::services::jsruntime::RuntimeKind::Deno
+                    } else {
+                        crate::services::jsruntime::RuntimeKind::QuickJs
+                    },
+                    elapsed_ms: 0,
+                    requested_height: item.requested_height,
+                    actual_height: item.actual_height,
+                },
+            )
+        })
+    };
+    let outcome = match downloaded {
+        Some(outcome) => outcome,
+        None => job::run_job(&environment, &request, token.clone(), sink).await,
+    };
+
+    match outcome {
+        JobOutcome::Done {
+            file,
+            runtime,
+            elapsed_ms,
+            requested_height,
+            actual_height,
+        } => {
+            let (options, mut duration_sec) = {
+                let state = lock(&inner.state);
+                let Some(item) = state.item(&id) else {
+                    return;
+                };
+                (item.options.clone(), item.duration_sec)
+            };
+
+            if options.needs_encode() {
+                let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
+                    finish_item(
+                        &inner,
+                        &id,
+                        JobOutcome::Failed(YtdlpError::new(
+                            YtdlpErrorCode::FfmpegMissing,
+                            "ffmpeg is required for encoding/trimming but was not found".to_owned(),
+                        )),
+                    );
+                    return;
+                };
+
+                // Move from Downloading to Encoding right away: that frees the
+                // download lane (spec §7.1). Until an encode slot is free the
+                // item says "waiting", not "Encoding 0%" (spec §7.2). The file
+                // is remembered so a pause/crash resumes from it (spec §7.3).
+                let cancelled = {
+                    let mut state = lock(&inner.state);
+                    let Some(item) = state.item_mut(&id) else {
+                        return;
+                    };
+                    item.file = Some(file.clone());
+                    item.size_bytes = None;
+                    item.runtime = Some(runtime.as_str().to_owned());
+                    item.requested_height = requested_height;
+                    item.actual_height = actual_height;
+                    if item.control == ControlSignal::None {
+                        item.state = ItemState::Encoding;
+                        item.progress.label = "waitingEncode".to_owned();
+                        item.progress.percent = None;
+                        item.progress.speed_bps = None;
+                        item.progress.eta_sec = None;
+                        item.updated_at = now_unix();
+                        false
+                    } else {
+                        true
+                    }
+                };
+                if cancelled {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
+                }
+                self_persist(&inner);
+                mark_dirty(&inner, &id, true);
+                // Wake scheduler: the download lane has been freed!
+                inner.wake.notify_waiters();
+
+                let Some(_slot) = acquire_encode_slot(&inner, &token).await else {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
+                };
+
+                {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(&id) {
+                        item.progress.label = "encoding".to_owned();
+                        item.progress.percent = Some(0.0);
+                        item.updated_at = now_unix();
+                    }
+                }
+                mark_dirty(&inner, &id, true);
+
+                // Re-check control signal after waiting for encode slot
+                let stopped = lock(&inner.state)
+                    .item(&id)
+                    .is_some_and(|item| item.control != ControlSignal::None);
+                if stopped {
+                    finish_item(&inner, &id, JobOutcome::Cancelled);
+                    return;
+                }
+
+                let mut total_duration = duration_sec.map(|s| s as f64);
+                if total_duration.is_none() {
+                    if let Some(ffprobe) = crate::services::ffmpeg::find_ffprobe(
+                        ffmpeg_path,
+                        environment.ffprobe.as_deref(),
+                    ) {
+                        if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
+                            &ffprobe,
+                            &file,
+                            environment.private_temp.as_deref(),
+                            token.clone(),
+                        )
+                        .await
+                        {
+                            total_duration = Some(dur);
+                            duration_sec = Some(dur.round() as u64);
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                item.duration_sec = duration_sec;
+                            }
+                        }
+                    }
+                }
+
+                let (trim_start_sec, trim_end_sec) =
+                    match crate::services::ffmpeg::parse_and_validate_trim(
+                        options.trim_start.as_deref(),
+                        options.trim_end.as_deref(),
+                        total_duration,
+                    ) {
+                        Ok(range) => range,
+                        Err(err) => {
+                            // Spec §9.2/§12.11: never encode a bogus range; keep the original.
+                            finish_item(
+                                &inner,
+                                &id,
+                                JobOutcome::Failed(YtdlpError::new(
+                                    YtdlpErrorCode::Unknown,
+                                    format!("Encode failed: invalid trim: {err}"),
+                                )),
+                            );
+                            return;
+                        }
+                    };
+                let trim = if trim_start_sec.is_some() || trim_end_sec.is_some() {
+                    Some(crate::services::ffmpeg::TrimSpec::new(
+                        trim_start_sec,
+                        trim_end_sec,
+                    ))
+                } else {
+                    None
+                };
+
+                let kind = if options.kind == Kind::Audio {
+                    let audio_codec = options
+                        .audio_codec
+                        .as_deref()
+                        .and_then(crate::services::encoders::AudioCodec::parse)
+                        .unwrap_or(crate::services::encoders::AudioCodec::Aac);
+                    let output = crate::services::ffmpeg::derive_encoded_output_path(
+                        &file,
+                        audio_codec.extension(),
+                    );
+                    crate::services::ffmpeg::EncodeJobKind::Audio(
+                        crate::services::ffmpeg::AudioEncodeOptions {
+                            input: file.clone(),
+                            output,
+                            audio_codec,
+                            trim,
+                            embed_thumbnail: options.embed_thumbnail,
+                        },
+                    )
+                } else {
+                    let video_encoder = options
+                        .video_codec
+                        .clone()
+                        .unwrap_or_else(|| "libx264".to_string());
+                    let audio_codec = options
+                        .audio_codec
+                        .as_deref()
+                        .and_then(crate::services::encoders::AudioCodec::parse);
+                    let output = crate::services::ffmpeg::derive_encoded_output_path(&file, "mp4");
+                    crate::services::ffmpeg::EncodeJobKind::Video(
+                        crate::services::ffmpeg::VideoEncodeOptions {
+                            input: file.clone(),
+                            output,
+                            video_encoder,
+                            audio_codec,
+                            trim,
+                            embed_thumbnail: options.embed_thumbnail,
+                        },
+                    )
+                };
+
+                let encode_req = crate::services::ffmpeg::EncodeRequest {
+                    ffmpeg_path: ffmpeg_path.clone(),
+                    kind,
+                    keep_original: options.keep_original,
+                    total_duration,
+                    temp_dir: environment.private_temp.clone(),
+                };
+
+                let encode_sink_id = id.clone();
+                let encode_inner = Arc::clone(&inner);
+                let encode_sink: crate::services::ffmpeg::EncodeProgressSink =
+                    Arc::new(move |prog: &crate::services::ffmpeg::FfmpegProgress| {
+                        on_encode_progress(&encode_inner, &encode_sink_id, prog);
+                    });
+
+                let encode_outcome =
+                    crate::services::ffmpeg::run_encode(encode_req, token.clone(), encode_sink)
+                        .await;
+                drop(_slot);
+                inner.wake.notify_waiters();
+
+                match encode_outcome {
+                    crate::services::ffmpeg::EncodeOutcome::Success {
+                        output_file,
+                        used_cpu_fallback,
+                    } => {
+                        if used_cpu_fallback {
+                            // Spec §9.3: tell the user when hardware encoder failed and retried with CPU encoder
+                            {
+                                let mut state = lock(&inner.state);
+                                if let Some(item) = state.item_mut(&id) {
+                                    item.push_log(
+                                        "Hardware encoder failed; fell back to CPU encoder.",
+                                    );
+                                }
+                            }
+                            push_toast(&inner, QueueToast::new("toast.hardwareEncoderFallback"));
+                        }
+                        if options.auto_play {
+                            let _ = tauri_plugin_opener::open_path(
+                                output_file.to_string_lossy().as_ref(),
+                                None::<&str>,
+                            );
+                        }
+                        finish_item(
+                            &inner,
+                            &id,
+                            JobOutcome::Done {
+                                file: output_file,
+                                runtime,
+                                elapsed_ms,
+                                requested_height,
+                                actual_height,
+                            },
+                        );
+                    }
+                    crate::services::ffmpeg::EncodeOutcome::Cancelled => {
+                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                    }
+                    crate::services::ffmpeg::EncodeOutcome::Failed { error, stderr_tail } => {
+                        // Spec §9.2 and §12: keep the original file on failure!
+                        {
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                for line in &stderr_tail {
+                                    item.push_log(line);
+                                }
+                            }
+                        }
+                        finish_item(
+                            &inner,
+                            &id,
+                            JobOutcome::Failed(YtdlpError::new(
+                                YtdlpErrorCode::Unknown,
+                                format!("Encode failed: {error}\n{}", stderr_tail.join("\n")),
+                            )),
+                        );
+                    }
+                }
+            } else {
+                if options.auto_play {
+                    let _ = tauri_plugin_opener::open_path(
+                        file.to_string_lossy().as_ref(),
+                        None::<&str>,
+                    );
+                }
+                finish_item(
+                    &inner,
+                    &id,
+                    JobOutcome::Done {
+                        file,
+                        runtime,
+                        elapsed_ms,
+                        requested_height,
+                        actual_height,
+                    },
+                );
+            }
+        }
+        other => {
+            finish_item(&inner, &id, other);
+        }
+    }
+}
+
+/// A held encode slot; dropping it frees the slot and wakes the waiters.
+struct EncodeSlot(Arc<Inner>);
+
+impl Drop for EncodeSlot {
+    fn drop(&mut self) {
+        {
+            let mut running = lock(&self.0.encodes_running);
+            *running = running.saturating_sub(1);
+        }
+        self.0.encode_slot.notify_waiters();
+    }
+}
+
+/// Wait for a free encode slot (spec §7.1, §7.2), checked against the lane
+/// capacity in force *now*. `None` when cancelled first.
+async fn acquire_encode_slot(inner: &Arc<Inner>, token: &CancellationToken) -> Option<EncodeSlot> {
+    loop {
+        // Register for the wake-up before checking, so none is missed.
+        let notified = inner.encode_slot.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        {
+            let capacity = lock(&inner.lanes).capacity(Lane::Encode);
+            let mut running = lock(&inner.encodes_running);
+            if *running < capacity {
+                *running += 1;
+                return Some(EncodeSlot(Arc::clone(inner)));
+            }
+        }
+        tokio::select! {
+            _ = token.cancelled() => return None,
+            _ = &mut notified => {}
+        }
+    }
+}
+
+/// Fold one ffmpeg encode progress payload into the item (spec §3, §7.6).
+fn on_encode_progress(
+    inner: &Arc<Inner>,
+    id: &str,
+    progress: &crate::services::ffmpeg::FfmpegProgress,
+) {
+    let milestone = {
+        let mut state = lock(&inner.state);
+        let Some(item) = state.item_mut(id) else {
+            return;
+        };
+        if item.control != ControlSignal::None {
+            return;
+        }
+        item.state = ItemState::Encoding;
+        item.progress.label = "encoding".to_owned();
+        item.progress.percent = progress.percent;
+        item.progress.speed_bps = None;
+        item.progress.eta_sec = progress.eta_sec;
+        item.updated_at = now_unix();
+        progress.is_end
+    };
+    mark_dirty(inner, id, milestone);
 }
 
 /// Read the item out of the state, resolve its tools and build the job request.
@@ -1403,6 +1787,7 @@ mod tests {
                 result: Mutex::new(Ok(JobEnvironment {
                     ytdlp: PathBuf::from("/nonexistent/yt-dlp"),
                     ffmpeg: None,
+                    ffprobe: None,
                     runtimes: crate::services::inspect::Runtimes {
                         mode: crate::services::jsruntime::JsRuntimeMode::QuickJsOnly,
                         qjs: None,

@@ -137,6 +137,9 @@ pub fn run() {
             commands::tools::tools_cancel_install,
             commands::tools::tools_self_test,
             commands::tools::tools_complete_setup,
+            commands::system::open_path,
+            commands::system::reveal_path,
+            commands::system::encoders_probe,
         ])
         .build(tauri::generate_context!());
 

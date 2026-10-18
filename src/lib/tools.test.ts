@@ -3,6 +3,7 @@ import {
   canUpdate,
   canUseOwnPath,
   hasToolProblem,
+  InFlightDeduplicator,
   isToolSource,
   isWizardStep,
   normaliseToolStatus,
@@ -287,5 +288,53 @@ describe("the dictionaries", () => {
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
       expect(hasKey("en", key), `en is missing ${key}`).toBe(true);
     }
+  });
+});
+
+describe("InFlightDeduplicator", () => {
+  it("deduplicates concurrent runs without force", async () => {
+    const dedup = new InFlightDeduplicator<string>();
+    let resolveFirst: (val: string) => void;
+    const firstPromise = new Promise<string>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    let runCount = 0;
+    const fn = () => {
+      runCount++;
+      return firstPromise;
+    };
+
+    const p1 = dedup.run(fn);
+    const p2 = dedup.run(fn);
+
+    expect(p1).toBe(p2);
+    expect(runCount).toBe(1);
+
+    resolveFirst!("result-1");
+    const res1 = await p1;
+    const res2 = await p2;
+    expect(res1).toBe("result-1");
+    expect(res2).toBe("result-1");
+
+    // After resolution, inFlight is cleared and next run creates a new promise
+    expect(dedup.inFlight).toBeNull();
+    const p3 = dedup.run(async () => {
+      runCount++;
+      return "result-2";
+    });
+    expect(p3).not.toBe(p1);
+    expect(await p3).toBe("result-2");
+    expect(runCount).toBe(2);
+  });
+
+  it("forces a new run when force is true", async () => {
+    const dedup = new InFlightDeduplicator<number>();
+    const p1 = dedup.run(() => new Promise((resolve) => setTimeout(() => resolve(1), 50)));
+    const p2 = dedup.run(async () => 2, true);
+
+    expect(p2).not.toBe(p1);
+    expect(await p2).toBe(2);
+    expect(await p1).toBe(1);
   });
 });

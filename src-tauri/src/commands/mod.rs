@@ -5,4 +5,5 @@ pub mod env;
 pub mod inspect;
 pub mod queue;
 pub mod settings;
+pub mod system;
 pub mod tools;

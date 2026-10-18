@@ -25,7 +25,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ErrorInfo;
 use crate::services::jsruntime::{self, RuntimeKind};
@@ -218,7 +218,17 @@ pub struct JobDirs {
     pub temp: PathBuf,
 }
 
-/// Everything the URL is downloaded with (spec §6.3, §6.4, §8.2).
+/// SponsorBlock action mode (spec §8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SponsorBlockMode {
+    /// Create chapter markers for sponsored segments (`--sponsorblock-mark`).
+    Mark,
+    /// Cut out sponsored segments (`--sponsorblock-remove`).
+    Remove,
+}
+
+/// Everything the URL is downloaded with (spec §6.3, §6.4, §8.2, §8.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadSpec {
     pub kind: JobKind,
@@ -250,6 +260,16 @@ pub struct DownloadSpec {
     pub impersonate_chrome: bool,
     /// Whether the runner may retry once with `--impersonate chrome` on `ANTIBOT` (spec §6.3.5, §11.8).
     pub impersonate_retry: bool,
+    /// `--embed-metadata` (spec §8.4).
+    pub embed_metadata: bool,
+    /// `--embed-thumbnail` with `--convert-thumbnails jpg` (spec §8.4).
+    pub embed_thumbnail: bool,
+    /// `--embed-chapters` (spec §8.4).
+    pub embed_chapters: bool,
+    /// Optional SponsorBlock mode (`mark` or `remove`, spec §8.4).
+    pub sponsorblock_mode: Option<SponsorBlockMode>,
+    /// User-selectable SponsorBlock categories (default `sponsor,selfpromo,interaction`, spec §8.4).
+    pub sponsorblock_categories: Vec<String>,
 }
 
 impl Default for DownloadSpec {
@@ -271,6 +291,11 @@ impl Default for DownloadSpec {
             custom_headers: Vec::new(),
             impersonate_chrome: false,
             impersonate_retry: true,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
         }
     }
 }
@@ -423,6 +448,7 @@ pub fn download_args(
         "--ignore-config",
         "--no-playlist",
         "--newline",
+        "--no-quiet",
         "--progress",
         "--no-warnings",
         "--color",
@@ -565,6 +591,42 @@ pub fn download_args(
         args.push("chrome".into());
     }
 
+    if spec.embed_metadata {
+        args.push("--embed-metadata".into());
+        args.push("--no-embed-info-json".into());
+        if !spec.embed_chapters {
+            args.push("--no-embed-chapters".into());
+        }
+    }
+    if spec.embed_thumbnail {
+        args.push("--embed-thumbnail".into());
+        args.push("--convert-thumbnails".into());
+        args.push("jpg".into());
+    }
+    if spec.embed_chapters {
+        args.push("--embed-chapters".into());
+    }
+
+    if jsruntime::is_youtube_url(url)
+        && let Some(mode) = spec.sponsorblock_mode
+    {
+        let cats = if spec.sponsorblock_categories.is_empty() {
+            "sponsor,selfpromo,interaction".to_owned()
+        } else {
+            spec.sponsorblock_categories.join(",")
+        };
+        match mode {
+            SponsorBlockMode::Mark => {
+                args.push("--sponsorblock-mark".into());
+                args.push(cats.into());
+            }
+            SponsorBlockMode::Remove => {
+                args.push("--sponsorblock-remove".into());
+                args.push(cats.into());
+            }
+        }
+    }
+
     args.push("--progress-template".into());
     args.push(DOWNLOAD_PROGRESS_ARG.into());
     args.push("--progress-template".into());
@@ -573,6 +635,10 @@ pub fn download_args(
     args.push(PRINT_FORMAT_ARG.into());
     args.push("--print".into());
     args.push(PRINT_FILE_ARG.into());
+    // Passing `--print` implies `--quiet` in yt-dlp, which would suppress
+    // the archive skip line (`[download] <id>: has already been recorded in the archive`).
+    // Explicitly counteract it with `--no-quiet`.
+    args.push("--no-quiet".into());
 
     if spec.quality.extracts_audio() {
         // `-x --audio-format opus` selects `ba/b` and converts to Ogg Opus
@@ -868,6 +934,7 @@ pub enum JobStage {
     Preparing,
     Downloading,
     PostProcessing,
+    Encoding,
     Done,
     Failed,
     Cancelled,
@@ -1375,6 +1442,7 @@ mod tests {
             "--ignore-config",
             "--no-playlist",
             "--newline",
+            "--no-quiet",
             "--progress",
             "--no-warnings",
             "--color",
@@ -2205,5 +2273,89 @@ mod tests {
         let tail = tail_text(&lines, 20);
         assert!(!tail.contains("line-9\n"));
         assert!(tail.contains("line-29"));
+    }
+
+    #[test]
+    fn download_args_include_embeds_and_sponsorblock() {
+        let env = plain_env();
+        let dirs = JobDirs {
+            home: PathBuf::from("/home/user/downloads"),
+            temp: PathBuf::from("/home/user/downloads/.tmp-123"),
+        };
+        let mut spec = DownloadSpec::video(FormatChoice::Best);
+        spec.embed_metadata = true;
+        spec.embed_thumbnail = true;
+        spec.embed_chapters = true;
+        spec.sponsorblock_mode = Some(SponsorBlockMode::Mark);
+        spec.sponsorblock_categories = vec!["sponsor".to_string(), "interaction".to_string()];
+
+        let args = download_args("https://youtube.com/watch?v=abc", &spec, &dirs, &env, false);
+        let strings = args_as_strings(&args);
+
+        assert!(strings.contains(&"--embed-metadata".to_string()));
+        assert!(strings.contains(&"--no-embed-info-json".to_string()));
+        assert!(strings.contains(&"--embed-thumbnail".to_string()));
+        assert!(strings.contains(&"--convert-thumbnails".to_string()));
+        assert!(strings.contains(&"jpg".to_string()));
+        assert!(strings.contains(&"--embed-chapters".to_string()));
+        assert!(!strings.contains(&"--no-embed-chapters".to_string()));
+        assert!(strings.contains(&"--sponsorblock-mark".to_string()));
+        assert!(strings.contains(&"sponsor,interaction".to_string()));
+
+        // Test SponsorBlock remove mode with default categories
+        let mut spec_remove = DownloadSpec::video(FormatChoice::Best);
+        spec_remove.sponsorblock_mode = Some(SponsorBlockMode::Remove);
+        let args_remove = download_args(
+            "https://youtube.com/watch?v=abc",
+            &spec_remove,
+            &dirs,
+            &env,
+            false,
+        );
+        let strings_remove = args_as_strings(&args_remove);
+
+        assert!(strings_remove.contains(&"--sponsorblock-remove".to_string()));
+        assert!(strings_remove.contains(&"sponsor,selfpromo,interaction".to_string()));
+
+        // Spec §8.4: SponsorBlock is YouTube-only; non-YouTube URLs must never get SponsorBlock flags
+        let args_non_yt = download_args("https://vimeo.com/12345", &spec, &dirs, &env, false);
+        let strings_non_yt = args_as_strings(&args_non_yt);
+        assert!(!strings_non_yt.contains(&"--sponsorblock-mark".to_string()));
+        assert!(!strings_non_yt.contains(&"--sponsorblock-remove".to_string()));
+    }
+
+    #[test]
+    fn embed_metadata_without_chapters_passes_no_embed_chapters() {
+        let env = plain_env();
+        let dirs = JobDirs {
+            home: PathBuf::from("/home/user/downloads"),
+            temp: PathBuf::from("/home/user/downloads/.tmp-123"),
+        };
+        let mut spec = DownloadSpec::video(FormatChoice::Best);
+        spec.embed_metadata = true;
+        spec.embed_chapters = false;
+
+        let args = download_args("https://youtube.com/watch?v=abc", &spec, &dirs, &env, false);
+        let strings = args_as_strings(&args);
+
+        assert!(strings.contains(&"--embed-metadata".to_string()));
+        assert!(strings.contains(&"--no-embed-info-json".to_string()));
+        assert!(strings.contains(&"--no-embed-chapters".to_string()));
+        assert!(!strings.contains(&"--embed-chapters".to_string()));
+
+        let spec_none = DownloadSpec::video(FormatChoice::Best);
+        let args_none = download_args(
+            "https://youtube.com/watch?v=abc",
+            &spec_none,
+            &dirs,
+            &env,
+            false,
+        );
+        let strings_none = args_as_strings(&args_none);
+
+        assert!(!strings_none.contains(&"--embed-metadata".to_string()));
+        assert!(!strings_none.contains(&"--no-embed-info-json".to_string()));
+        assert!(!strings_none.contains(&"--no-embed-chapters".to_string()));
+        assert!(!strings_none.contains(&"--embed-chapters".to_string()));
     }
 }

@@ -3174,5 +3174,379 @@ Branch `m3-playlists-and-sites`.
   - `npm run check:ci && npm run check:runners && npm run check:tools` → all pass.
 - **Next step**: Ready for user testing.
 
+---
+
+## 2026-10-17 — M4 / Media processing (ffmpeg encode, probing, trim, audio-only, embeds, SponsorBlock) (spec §9, §8.4, §14 row M4, §15 item 8)
+
+Branch `m4-media-processing`.
+
+- **Done**
+  - **Backend (FFmpeg encoding & encoder catalogue)**:
+    - Implemented `services/encoders.rs`: OS-specific candidate catalogue (`libx264`, `libx265`, `*_nvenc`, `*_amf`, `*_qsv`, `*_vaapi`, `*_videotoolbox`), parsing of `ffmpeg -encoders`, background probe runner with 256×256 black frame test (`color=c=black:s=256x256:d=0.2`), 10-second timeout, cache by (path, mtime, version), and CPU fallback mapping (`h264_*` → `libx264`, `hevc_*` → `libx265`). (Note: version passed to cache was initially `job_tools.ytdlp.version`; corrected to `ffmpeg.version` in Review major 5).
+    - Implemented `services/ffmpeg.rs`: `TrimSpec`, timestamp parser (`SS`, `MM:SS`, `HH:MM:SS`), trim validator (`start < end <= duration`), expected duration calculator, `FfmpegProgressTracker` for `-nostdin -hide_banner -progress pipe:1 -nostats` parsing `out_time_us`, video/audio arg builders (`-ss` before `-i`, `-t`, `-movflags +faststart`), and `run_encode` runner. Output filename `<name>-encoded.<ext>`.
+    - Implemented audio-only encoding presets (spec §9.4): `aac` → `.m4a` (`-c:a aac -b:a 192k`), `mp3` → `.mp3` (`-c:a libmp3lame -q:a 2`), `opus` → `.opus` (`-c:a libopus -b:a 128k`).
+    - Implemented safe file lifecycle (spec §9.2, §12.2): original file is deleted **only** if ffmpeg exits with code 0 and output is non-empty; original is preserved on any encode failure or when `keep_original = true`.
+    - Extended `services/ytdlp.rs`: added `SponsorBlockMode` (`mark`, `remove`), embed flags (`--embed-metadata`, `--embed-thumbnail` with `--convert-thumbnails jpg`, `--embed-chapters`), `--sponsorblock-mark` and `--sponsorblock-remove`, and `JobStage::Encoding` variant.
+    - Updated `services/queue/model.rs`: added M4 fields to `ItemOptions`, added `ItemOptions::needs_encode()`, and mapped `JobStage::Encoding` to `ItemState::Encoding`.
+    - Integrated encoding stage into `services/queue/engine.rs`: sequential encode execution with `encode_semaphore` (capacity = 1), hardware-to-CPU fallback retry, auto-play via `tauri-plugin-opener`, and live encode progress dispatching.
+    - Added IPC handlers in `commands/system.rs` (`encoders_probe`, `open_path`, `reveal_path`) and mapped M4 fields in `commands/queue.rs`.
+    - Updated `tests/bin/fake_tool.rs` and created integration test suite `tests/ffmpeg_encode.rs` testing encoder probing, CPU/audio encoding, hardware failure CPU fallback, and keep_original file lifecycles.
+  - **Frontend (Settings, Stores, AddBar, GeneralSettings, and i18n)**:
+    - Updated `src/lib/settings.ts`: bumped settings schema version to 6, added `SponsorBlockMode` and M4 configuration defaults (`keepOriginalAfterEncode`, `autoPlay`, `embedMetadata`, `embedThumbnail`, `embedChapters`, `sponsorblockMode`, `sponsorblockCategories`, `defaultVideoCodec`, `defaultAudioCodec`).
+    - Updated `src/lib/queue.ts`: added M4 fields to `ItemOptions`, `AddItemRequest`, `EncoderInfo`, and mapped `"encoding"` to `"job.label.encoding"`.
+    - Updated `src/lib/stores/tools.svelte.ts`: added `probedEncoders`, `probingEncoders`, and `probeEncoders(force?: boolean)` IPC method.
+    - Implemented `src/lib/addbar.ts`: pure functions `parseTrimTime`, `validateTrimInput`, `AUDIO_CODEC_OPTIONS`, and `SPONSORBLOCK_CATEGORY_KEYS`, with 21 unit tests in `src/lib/addbar.test.ts`.
+    - Updated `src/lib/stores/addbar.svelte.ts`: added M4 fields to `AddRow`, `setMediaOptions` with trim->encode coupling, and forwarded all M4 fields in `toRequests()`.
+    - Updated `src/lib/components/AddBar.svelte`: wired media options into the "More options" drawer (re-encode toggle, probed video codecs, audio codecs, trim inputs with real-time validation error feedback, keep original, auto-play, embed checkboxes, SponsorBlock mode with remove warning, and category checklist), plus background encoder probe on mount.
+    - Updated `src/lib/pages/settings/GeneralSettings.svelte`: added "Media processing & encoders" group with default video/audio codecs, "Detect hardware encoders" button, keep original toggle, auto-play toggle, default embed checkboxes, and default SponsorBlock mode & category checklist.
+    - Localised all 43 new keys across `src/lib/i18n/en.json` and `src/lib/i18n/it.json` with 100% parity verified by tests.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 123 integration = **453 passed**, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, **259 passed**, 0 failed.
+  - `npm run build` → production bundle compiled in ~494ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+  - Partial acceptance checklist item 8 (spec §15): video/audio encode, fake-tool probing, CPU fallback execution, trim unit tests, originals untouched on failure.
+- **Not verified / stubbed**
+  - OS-specific proprietary hardware encoders on macOS/Windows host (host is Linux; probed via fake tool suite and system ffmpeg).
+  - `validate_trim` not yet wired into `queue_add` or `engine.rs`, and invalid trim inputs not yet blocked on submit (addressed in Review blocker 1).
+  - `Trim` UI inputs hidden when `Encode` unchecked (addressed in Review blocker 4).
+  - Encoder cache passed `job_tools.ytdlp.version` instead of ffmpeg version (addressed in Review major 5).
+  - Hardware-to-CPU encoder fallback did not notify the user (addressed in Review major 8).
+- **Spec items marked "verify" that I checked**
+  - `ffmpeg -progress pipe:1` microseconds (`out_time_us`), `-movflags +faststart`, `--convert-thumbnails jpg`, and `--sponsorblock-mark / --sponsorblock-remove` verified against installed tools.
+- **Decisions/deviations**: None.
+- **Next step**: Address M4 code review items.
 
 
+
+
+
+## 2026-10-17 — M4 / Review blocker: reject invalid trim input
+- Done: new `ffmpeg::parse_and_validate_trim` (parse + `validate_trim`); `queue_add` rejects malformed/inverted trim (checked against `duration_sec` when known); engine fails the item before ffmpeg on invalid trim (original file kept) instead of silently dropping parse errors; AddBar disables submit while any ready row shows a trim error.
+- Verified by running: cargo fmt --check (ok), cargo clippy --all-targets -D warnings (ok), cargo test (all pass, new unit test included), npm run check (0 errors, 0 warnings).
+- Not verified: manual UI repro in `npm run tauri dev`; `toRequests()` itself is not filtered (submit is blocked in the UI and the backend rejects).
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: resume/retry after Encoding re-downloaded
+- Done: entering `Encoding` now persists `item.file` (plus runtime/heights, `size_bytes = None`); `run_item` skips yt-dlp and goes straight to the encode stage when the item needs encoding, has `file` on disk and no `size_bytes` (i.e. never reached Done). Fixes resume/crash-recovery/retry re-downloading or being archive-skipped without encoding.
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: no new automated test for the resume path; not exercised manually. ffmpeg stderr tail still goes only into the error detail, not `log_tail`.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: partial encode output left on cancel
+- Done: `run_encode` points ffmpeg at `<stem>-encoded.sdp-part.<ext>` (`partial_output_path`), removes it on Cancelled/Failed, and renames it onto the final name only after a successful non-empty encode; the original is deleted only after that rename. A pre-existing `-encoded` file is no longer truncated/deleted by a failed or cancelled encode. `derive_encoded_output_path` builds the stem as `OsString` (no `"output"` fallback for non-UTF-8 names).
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass, incl. existing ffmpeg_encode integration tests + new unit test), npm run check (0 errors, 0 warnings).
+- Not verified: no integration test asserting the partial file is removed on cancel; not exercised manually.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review blocker: Trim and Auto-play hidden behind Encode
+- Done: in `AddBar.svelte` the Trim fields and per-item Auto-play are now outside `{#if row.encode}` (only codecs and Keep original stay inside). The Encode checkbox is disabled while a trim range is set, with `aria-describedby` pointing at the existing trim hint ("Entering a trim range automatically enables re-encoding").
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: visual check in `npm run tauri dev` not done.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 7: items shown as Encoding while waiting for the lane
+- Done: `run_item` now persists the downloaded file, then acquires the encode-lane permit, and only then switches the item to `Encoding` (so only items running ffmpeg show it). `encode_semaphore` is a `Mutex<Arc<Semaphore>>`; `QueueEngine::configure` replaces it when the encode capacity changes (running encodes keep their old permits).
+- Verified by running: cargo fmt --check (ok), cargo clippy -D warnings (ok), cargo test (all pass), npm run check (0 errors, 0 warnings).
+- Not verified: no new test for the ordering/resize; not exercised manually.
+- Known trade-off: an item waiting for the encode lane stays in `Downloading` (100%) and keeps its download-lane slot until it gets the permit. Items already waiting on the old semaphore when the capacity changes keep waiting on it.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 7 follow-up: dynamic encode slot & separate waiting label
+- Done:
+  - Completed downloads needing encoding immediately free the download lane (transitioning to `Encoding` with `progress.label = "waitingEncode"` and `inner.wake.notify_waiters()`).
+  - Added `job.label.waitingEncode` ("Waiting for the encoder…" / "In attesa della codifica…") in `en.json`, `it.json`, `queue.ts` and `usage.test.ts`.
+  - Replaced static semaphore with dynamic slot counter (`encodes_running`, `encode_slot: Notify`) checked against live lane capacity (`lanes.capacity(Lane::Encode)`). When `QueueEngine::configure` updates lane capacity, waiting tasks are immediately notified and re-evaluate against the new limit.
+  - Once a slot is acquired, progress transitions to `label = "encoding"` (0%). Dropping `EncodeSlot` decrements running count and notifies waiters.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 332 unit tests + integration test suites passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 259 passed.
+  - `npm run build` → production build succeeded.
+- Not verified: visual UI testing under `npm run tauri dev`.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 5: encoder probe cache uses ffmpeg version and resolves ffmpeg directly (spec §9.3)
+- Done:
+  - Made `resolve_cached` in `commands/env.rs` public so single tools can be resolved through session cache and user overrides without triggering job tool requirements.
+  - Updated `encoders_probe` in `commands/system.rs` to resolve `tools::FFMPEG` directly via `resolve_cached` instead of calling `resolve_job_tools`, eliminating the false failure when `yt-dlp` is not yet installed.
+  - Passed `ffmpeg.version.as_deref()` instead of `job_tools.ytdlp.version` to `probe_all_encoders`, ensuring the encoder cache is keyed by `(ffmpeg_path, ffmpeg_mtime, ffmpeg_version)` as required by spec §9.3.
+  - Added integration test `encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version` in `tests/ffmpeg_encode.rs` verifying probing works without yt-dlp and caches by the ffmpeg version.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 124 integration = 454 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 259 passed.
+  - `npm run build` → built in 471ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 6: align default audioCodec with UI and hide video codec for audioOnly (spec §9.3, §11.3, §11.6)
+- Done:
+  - Defaulted `default_audio_codec` to `Some("aac".to_owned())` in `src-tauri/src/state.rs` (`Settings::default()` and `Settings::normalise()`).
+  - Defaulted `defaultAudioCodec` to `"aac"` in `src/lib/settings.ts` (`DEFAULT_SETTINGS` and `normaliseSettings()`).
+  - Initialized `audioCodec` in `src/lib/stores/addbar.svelte.ts` to `defaultAudioCodec ?? "aac"`.
+  - Updated audio encode fallback in `src-tauri/src/services/queue/engine.rs` from `Opus` to `AudioCodec::Aac` to align with the UI default.
+  - Hid the video codec dropdown in `src/lib/components/AddBar.svelte` when `choiceFor(row).kind === "audioOnly"`.
+  - Added assertions in `src/lib/settings.test.ts`, `src-tauri/tests/settings_ipc.rs`, and `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 124 integration = 454 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 464ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 8: inform user on hardware-to-CPU encoder fallback (spec §9.3)
+- Done:
+  - Matched `used_cpu_fallback` from `ffmpeg::run_encode` in `services/queue/engine.rs`.
+  - When true, appended notice to `item.log_tail` and pushed user-facing toast `toast.hardwareEncoderFallback`.
+  - Added localized strings for `toast.hardwareEncoderFallback` in `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+  - Added integration test `hardware_encoder_fallback_informs_user_via_toast_and_log_tail` in `tests/ffmpeg_encode.rs` verifying toast emission and log tail notice.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 330 unit + 125 integration = 455 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 476ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 9: treat embedding failures as warnings and fix metadata flags (spec §8.4)
+- Done:
+  - Updated `download_args` in `src-tauri/src/services/ytdlp.rs` so that when `spec.embed_metadata` is true, `--no-embed-info-json` is always passed and `--no-embed-chapters` is passed if `!spec.embed_chapters`, preventing implicit embedding of chapters and info-json.
+  - Updated `run_attempt` in `src-tauri/src/services/job.rs` to treat postprocessor-only embedding errors (`YtdlpErrorCode::Unknown` when an embed option was requested and the output media file already exists on disk) as non-fatal warnings instead of failing the job.
+  - Added unit test `embed_metadata_without_chapters_passes_no_embed_chapters` in `src-tauri/src/services/ytdlp.rs`.
+  - Updated `src-tauri/tests/bin/fake_ytdlp.rs` to simulate embedding failure after writing the output media file on `embed-fail` URLs.
+  - Added integration tests `an_embedding_failure_is_treated_as_a_warning_when_output_file_exists` and `a_job_fails_when_tool_fails_and_no_embed_option_was_requested` in `src-tauri/tests/ytdlp_job.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 331 unit + 126 integration = 457 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 482ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked:
+  - Verified `yt-dlp --help` flags: `--embed-metadata` implies chapters/infojson unless `--no-embed-chapters` and `--no-embed-info-json` are specified.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 10: gate SponsorBlock on YouTube URLs and prevent unchecking all categories (spec §8.4)
+- Done:
+  - Gated `--sponsorblock-mark` and `--sponsorblock-remove` in `src-tauri/src/services/ytdlp.rs` on `jsruntime::is_youtube_url(url)` so non-YouTube URLs never receive SponsorBlock arguments.
+  - In `src/lib/components/AddBar.svelte` and `src/lib/pages/settings/GeneralSettings.svelte`, disabled unchecking the last category when only one category is selected (`disabled={length === 1 && includes(cat)}`) and ignored uncheck events if length <= 1.
+  - In `src-tauri/src/commands/queue.rs`, resolved `sponsorblock_mode` and `sponsorblock_categories` such that empty category lists or explicit mode `"off"` are treated as `SponsorBlockMode::Off` (`None`), rather than silently falling back to global settings.
+  - In `src/lib/queue.ts` and `src/lib/stores/addbar.svelte.ts`, allowed `"off"` in `AddItemRequest.sponsorblockMode` and defaulted `row.sponsorblockMode ?? "off"` in `toRequests()`.
+  - Added unit test assertion in `src-tauri/src/services/ytdlp.rs` verifying non-YouTube URLs (e.g. Vimeo) do not get SponsorBlock flags even when enabled in spec.
+  - Added integration test `queue_add_treats_empty_sponsorblock_categories_or_off_as_disabled` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 331 unit + 127 integration = 458 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 260 passed.
+  - `npm run build` → built in 490ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 11: videotoolbox fallback, hevc_vaapi tag, and bound probe concurrency (spec §9.3)
+- Done:
+  - Added `"-tag:v", "hvc1"` to `hevc_vaapi` in `ENCODER_CATALOGUE` in `src-tauri/src/services/encoders.rs` so all HEVC hardware encoders generate QuickTime/Apple-compatible MP4 files.
+  - Implemented VideoToolbox `-b:v` fallback (`&["-b:v", "2M"]` / `&["-b:v", "2M", "-tag:v", "hvc1"]`) in `src-tauri/src/services/encoders.rs` via `videotoolbox_fallback_args` and `probe_encoder` retry.
+  - Updated video encoding attempt flow in `src-tauri/src/services/ffmpeg.rs` (`run_encode_attempts` and `build_video_encode_args_with_custom_encoder`) to retry with VideoToolbox `-b:v` fallback before falling back to CPU encoder (`libx264`/`libx265`).
+  - Bounded concurrency in `probe_all_encoders` using `tokio::sync::Semaphore::new(2)` and `tokio::spawn`, preserving candidate catalogue order.
+  - Added `InFlightDeduplicator` in `src/lib/tools.ts` and used it in `src/lib/stores/tools.svelte.ts` to deduplicate concurrent in-flight `probeEncoders()` calls.
+  - Added unit tests in `src-tauri/src/services/encoders.rs`, integration tests in `src-tauri/tests/ffmpeg_encode.rs`, and deduplicator unit tests in `src/lib/tools.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 333 unit + 130 integration = 463 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 483ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 12: duplicate queue detection distinguishes M4 options (spec §7.3)
+- Done:
+  - Included `encode`, `video_codec`, `audio_codec`, `trim_start`, `trim_end`, `keep_original`, `embed_metadata`, `embed_thumbnail`, `embed_chapters`, `sponsorblock_mode`, and `sponsorblock_categories` in `ItemOptions::signature` in `src-tauri/src/services/queue/model.rs`.
+  - Added unit test `the_options_signature_separates_m4_options` in `src-tauri/src/services/queue/model.rs`.
+  - Added integration test `queue_add_does_not_treat_different_m4_options_as_duplicates` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 334 unit + 131 integration = 465 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 440ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review major 13: align Task 4 progress entry with actual implementation (spec §14, §15)
+- Done:
+  - Corrected Task 4 entry in `docs/PROGRESS.md` to accurately reflect the initial state of encoder version caching, trim validation wiring, UI visibility, and fallback notification, recording them as deferred/stubbed until their respective review fixes (#1, #4, #5, #8).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 334 unit + 131 integration = 465 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~440ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+
+## 2026-10-17 — M4 / Review minors 14, 15, 16: ffmpeg child temp_dir, ffprobe duration fallback, and remove dead helper (spec §4.9, §9.1)
+- Done:
+  - Removed unused dead helper `EncoderDefinition::to_info` in `src-tauri/src/services/encoders.rs` (Review Minor 16).
+  - Passed `temp_dir` to `ToolCommand` in `run_single_probe_attempt`, `query_ffmpeg_encoders`, `probe_encoder`, and `probe_all_encoders` in `src-tauri/src/services/encoders.rs`, and wired `state.tools().temp_dir()` from `src-tauri/src/commands/system.rs` (Review Minor 14, Spec §4.9).
+  - Added `temp_dir: Option<PathBuf>` to `EncodeRequest` and passed `temp_dir` to `ToolCommand` in `execute_single_encode` and `run_encode` in `src-tauri/src/services/ffmpeg.rs`, passing `environment.private_temp` from `src-tauri/src/services/queue/engine.rs` (Review Minor 14, Spec §4.9).
+  - Added `find_ffprobe` and `probe_file_duration` in `src-tauri/src/services/ffmpeg.rs` using `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -- <input>` with child process `temp_dir` propagation (Review Minor 15, Spec §9.1).
+  - Added `ffprobe: Option<PathBuf>` to `JobTools` and `JobEnvironment`, resolving it in `resolve_job_tools` and passing it to jobs and queue items.
+  - In `src-tauri/src/services/queue/engine.rs`, when `duration_sec` is `None` on an item needing encode, probed the downloaded file duration with `ffprobe` before encode, updated `item.duration_sec`, and passed `total_duration` to `parse_and_validate_trim` (exercising `ffmpeg.rs:183-190`) and `EncodeRequest` (Review Minor 15, Spec §9.1).
+  - In `src-tauri/src/services/ffmpeg.rs` `run_encode`, added fallback to probe duration via `ffprobe` when `request.total_duration` is `None`, ensuring expected duration and progress percentage / ETA are computed during encode.
+  - Added `ffprobe` multi-call support and `record_env.txt` handling to `src-tauri/tests/bin/fake_tool.rs`.
+  - Added integration tests `ffmpeg_and_encoders_pass_private_temp_dir_to_child_processes`, `encode_falls_back_to_ffprobe_duration_when_total_duration_is_none`, and `queue_engine_probes_duration_with_ffprobe_and_validates_trim` in `src-tauri/tests/ffmpeg_encode.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 333 unit + 134 integration = 467 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~466ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: continue M4 review items.
+## 2026-10-17 — M4 / Review follow-up: push stderr to item log_tail on ffmpeg failure and preserve attached thumbnails during re-encode (spec §8.4, §9.2, §9.4)
+- Done:
+  - In `src-tauri/src/services/queue/engine.rs`, updated `EncodeOutcome::Failed` to iterate over `stderr_tail` and push each line to `item.push_log(line)` so the card's log viewer displays the failure output, matching CPU fallback behavior.
+  - Added `embed_thumbnail: bool` to `VideoEncodeOptions` and `AudioEncodeOptions` in `src-tauri/src/services/ffmpeg.rs`, wired from `options.embed_thumbnail` in `engine.rs`.
+  - In `src-tauri/src/services/ffmpeg.rs` `build_video_encode_args_with_custom_encoder`: when `embed_thumbnail` is true, map `0:V:0?`, `0:a?`, `0:v:disp:attached_pic?` and add `-c:v:disp:attached_pic copy -disposition:v:disp:attached_pic attached_pic` so the embedded thumbnail/cover art is preserved and not dropped or re-encoded with the video codec.
+  - In `src-tauri/src/services/ffmpeg.rs` `build_audio_encode_args`: when `embed_thumbnail` is true and the container supports attached picture streams (`AudioCodec::Aac` `.m4a` and `AudioCodec::Mp3` `.mp3`), map `0:a:0?` and `0:v:disp:attached_pic?` with copy disposition instead of passing `-vn`, preserving embedded thumbnails during audio re-encoding. (Opus keeps `-vn` as Ogg/Opus does not support video attached_pic streams).
+  - Added unit tests in `src-tauri/src/services/ffmpeg.rs` for `build_video_encode_args` and `build_audio_encode_args` with `embed_thumbnail: true`.
+  - Added integration tests `queue_engine_pushes_ffmpeg_stderr_to_log_tail_on_failure` and `embed_thumbnail_preserves_attached_pic_in_ffmpeg_args` in `src-tauri/tests/ffmpeg_encode.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~486ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: proceed to M5 or next planned phase.
+
+## 2026-10-17 — M4 / CI fix: fake_tool multi-call matching for suffixed binaries (spec §5.2, §15 item 8)
+- Done:
+  - In `src-tauri/tests/bin/fake_tool.rs`, updated the multi-call dispatcher so that target-triple suffixed binary names (`<tool>-<triple>`, e.g. `ffmpeg-x86_64-unknown-linux-gnu`, `yt-dlp-*`, `qjs-*`, `ffprobe-*`) match their corresponding tool handler (`run_ffmpeg`, `run_ytdlp`, etc.) instead of falling through to generic fake_tool CLI commands with exit code 2.
+  - In `src-tauri/tests/ffmpeg_encode.rs` `encoders_probe_succeeds_without_ytdlp_and_caches_ffmpeg_version`, ensured the bundled fake ffmpeg binary is copied as both suffixed (`ffmpeg-{triple}`) and plain (`ffmpeg`/`ffmpeg.exe`) with Unix executable permissions, and asserted that `resolved_ffmpeg.source` resolves directly to `ToolSource::Bundled`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~476ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: push branch to remote and verify CI checks.
+
+## 2026-10-17 — M4 / CI fix: eliminate flusher race condition in hardware encoder fallback test (spec §7.6, §9.3, §15)
+- Done:
+  - In `src-tauri/tests/ffmpeg_encode.rs` `hardware_encoder_fallback_informs_user_via_toast_and_log_tail`, fixed a race condition where the polling loop exited immediately upon `item.state == Done` without waiting for the asynchronous `flusher_loop` to deliver the `toast.hardwareEncoderFallback` event to the sink.
+  - Polled for both item completion and toast delivery, and shut down the engine cleanly before running assertions to prevent orphaned engine tasks from attempting file writes after fixture deletion.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~457ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+## 2026-10-17 — M4 / Bug fix: pass --no-quiet to prevent --print from silencing archive skip output (spec §6.4, §8.3)
+- Done:
+  - In `src-tauri/src/services/ytdlp.rs` `download_args`: added `--no-quiet` to base flags and following `--print`. In yt-dlp, `--print` implies `--quiet`, which suppressed the archive skip line (`[download] <id>: has already been recorded in the archive`). Because the video was already recorded in `--download-archive`, yt-dlp skipped downloading it without printing `SDP_FILE`, but because `--print` enabled quiet mode, stdout was empty and `job.rs` never saw the archive skip line, causing the job to fail with `yt-dlp exited 0 but never printed the final path (SDP_FILE)`.
+  - In `src-tauri/src/services/job.rs` `AttemptShared::on_stderr_line`: also checked `ytdlp::is_archive_skip_line(line)` as a defensive measure.
+  - In `src-tauri/src/services/ytdlp.rs` unit tests: verified `--no-quiet` is present in `the_base_arguments_are_all_present_and_the_url_comes_last_after_double_dash`.
+  - In `src-tauri/tests/bin/fake_ytdlp.rs`: updated `archive-skip` handling to mirror real yt-dlp by silencing the skip line if `--print` is passed without `--no-quiet`, preventing regressions.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 135 integration = 470 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → production bundle compiled in ~450ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all passed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: yt-dlp `--help` confirms `--print` implies `--quiet`, and `--no-quiet` explicitly deactivates quiet mode. Live execution with pinned yt-dlp binary confirmed `--no-quiet` restores `[download] <id>: has already been recorded in the archive`.
+- Decisions/deviations (also in DECISIONS.md): None.
+## 2026-10-17 — Tools / UI fix: show clearPath button whenever tool override is configured and hide install on bundled tools (spec §5.2, §11.8)
+- Done:
+  - In `src/lib/pages/ToolsPage.svelte`: updated the `clearPath` ("Ripristina") button visibility condition to check `tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])`. Previously, if a custom override path pointed to an unexecutable or missing file, `resolve()` returned `None`, which caused `tool.source` to be `null` and hid the "Ripristina" button, trapping the user without a way to reset to the bundled tool.
+  - In `src/lib/pages/ToolsPage.svelte`: updated the `install` button visibility condition to `!tool.bundled && tool.installable && !tool.path` so that bundled tools (like `qjs` and `yt-dlp`) never present an on-demand install action.
+- Verified by running:
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 474ms.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None in this step.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: push commit to remote.
+
+## 2026-10-17 — M4 / Bug fix: scope download archive fallback to playlist items so single videos can always be re-downloaded (spec §6.4, §8.2)
+- Done:
+  - In `src-tauri/src/commands/queue.rs` `queue_add`: changed `use_archive` resolution from `item.use_archive.unwrap_or(settings.use_download_archive)` to only fall back to `settings.use_download_archive` when `item.group_id.is_some()` (playlist items), and `false` for standalone single-video items (`group_id == None`). Previously, single-video requests from the Add bar omitted `useArchive`, inherited `use_download_archive: true` from global settings, recorded their video IDs in `archive.txt`, and prevented the user from ever re-downloading a video whose output file had been deleted from disk.
+  - In `src/lib/components/PlaylistPanel.svelte`: initialised `useArchive` from `settingsStore.settings.useDownloadArchive` instead of a hard-coded `true`, so the global "Use download archive" setting in the "Playlists & archive" section governs the playlist panel's default while allowing per-run overrides ("Ignore archive for this run").
+  - In `src/lib/settings.ts` and `src/lib/settings.test.ts`: aligned `DEFAULT_SETTINGS.useDownloadArchive` (`true`) and `normaliseSettings` with the Rust backend default (`Settings::default().use_download_archive == true`, spec §6.4).
+  - Added integration test `queue_add_scopes_download_archive_fallback_to_playlist_items` in `src-tauri/tests/queue_ipc.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 335 unit + 136 integration = 471 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 12 test files, 262 passed.
+  - `npm run build` → built in 442ms.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: Spec §6.4 specifies `--download-archive <app data>/archive.txt` under "YouTube playlists and channels" ("skip already downloaded (download archive, default on for playlists)").
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: commit changes.

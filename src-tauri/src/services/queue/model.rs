@@ -359,6 +359,30 @@ pub struct ItemOptions {
     pub custom_headers: Vec<String>,
     /// Allow one retry with `--impersonate chrome` on `ANTIBOT` (spec §6.3.5, §8.5).
     pub impersonate_retry: bool,
+    /// Encode with ffmpeg after download (spec §9.2).
+    pub encode: bool,
+    /// Video encoder identifier (e.g. `libx264`, `h264_nvenc`, spec §9.3).
+    pub video_codec: Option<String>,
+    /// Audio codec identifier (e.g. `aac`, `mp3`, `opus`, spec §9.4).
+    pub audio_codec: Option<String>,
+    /// Trim start timestamp string (e.g. `"00:01:30"`, spec §9.2).
+    pub trim_start: Option<String>,
+    /// Trim end timestamp string (spec §9.2).
+    pub trim_end: Option<String>,
+    /// Keep the original downloaded file after successful encode (default `false`, spec §9.2).
+    pub keep_original: bool,
+    /// Automatically open media with the system player upon completion (spec §9.5).
+    pub auto_play: bool,
+    /// `--embed-metadata` (spec §8.4).
+    pub embed_metadata: bool,
+    /// `--embed-thumbnail` with `--convert-thumbnails jpg` (spec §8.4).
+    pub embed_thumbnail: bool,
+    /// `--embed-chapters` (spec §8.4).
+    pub embed_chapters: bool,
+    /// Optional SponsorBlock mode (`mark` or `remove`, spec §8.4).
+    pub sponsorblock_mode: Option<ytdlp::SponsorBlockMode>,
+    /// User-selectable SponsorBlock categories (spec §8.4).
+    pub sponsorblock_categories: Vec<String>,
 }
 
 impl Default for ItemOptions {
@@ -381,12 +405,39 @@ impl Default for ItemOptions {
             user_agent: None,
             custom_headers: Vec::new(),
             impersonate_retry: true,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: false,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
         }
     }
 }
 
 impl ItemOptions {
-    /// The `DownloadSpec` the job runner needs (spec §8.2).
+    /// Does this item need an encode/trim stage after download? (spec §9.2)
+    ///
+    /// "Trim implies Encode (coupling kept from the original)"
+    pub fn needs_encode(&self) -> bool {
+        self.encode
+            || self
+                .trim_start
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || self
+                .trim_end
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// The `DownloadSpec` the job runner needs (spec §8.2, §8.4).
     pub fn to_download_spec(&self) -> ytdlp::DownloadSpec {
         ytdlp::DownloadSpec {
             kind: self.kind.to_job_kind(),
@@ -405,6 +456,11 @@ impl ItemOptions {
             custom_headers: self.custom_headers.clone(),
             impersonate_chrome: false,
             impersonate_retry: self.impersonate_retry,
+            embed_metadata: self.embed_metadata,
+            embed_thumbnail: self.embed_thumbnail,
+            embed_chapters: self.embed_chapters,
+            sponsorblock_mode: self.sponsorblock_mode,
+            sponsorblock_categories: self.sponsorblock_categories.clone(),
         }
     }
 
@@ -415,12 +471,30 @@ impl ItemOptions {
             CookieChoice::Browser(name) => format!("browser:{name}"),
             CookieChoice::File(path) => format!("file:{}", path.display()),
         };
+        let sb_mode = match self.sponsorblock_mode {
+            None => "none",
+            Some(ytdlp::SponsorBlockMode::Mark) => "mark",
+            Some(ytdlp::SponsorBlockMode::Remove) => "remove",
+        };
+        let mut sb_categories = self.sponsorblock_categories.clone();
+        sb_categories.sort();
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind.as_str(),
             self.quality.signature(),
             self.output_dir.display(),
-            cookies
+            cookies,
+            self.encode,
+            self.video_codec.as_deref().unwrap_or(""),
+            self.audio_codec.as_deref().unwrap_or(""),
+            self.trim_start.as_deref().unwrap_or(""),
+            self.trim_end.as_deref().unwrap_or(""),
+            self.keep_original,
+            self.embed_metadata,
+            self.embed_thumbnail,
+            self.embed_chapters,
+            sb_mode,
+            sb_categories.join(","),
         )
     }
 }
@@ -505,6 +579,7 @@ impl ItemProgress {
             JobStage::Preparing => ItemState::Queued,
             JobStage::Downloading => ItemState::Downloading,
             JobStage::PostProcessing => ItemState::PostProcessing,
+            JobStage::Encoding => ItemState::Encoding,
             JobStage::Done => ItemState::Done,
             JobStage::Failed => ItemState::Failed,
             JobStage::Cancelled => ItemState::Cancelled,
@@ -1132,6 +1207,79 @@ mod tests {
         assert_ne!(base.signature(), other_folder.signature());
         assert_ne!(base.signature(), other_cookies.signature());
         assert_eq!(base.signature(), ItemOptions::default().signature());
+    }
+
+    #[test]
+    fn the_options_signature_separates_m4_options() {
+        let base = ItemOptions::default();
+        let other_encode = ItemOptions {
+            encode: true,
+            ..base.clone()
+        };
+        let other_vcodec = ItemOptions {
+            video_codec: Some("libx264".into()),
+            ..base.clone()
+        };
+        let other_acodec = ItemOptions {
+            audio_codec: Some("opus".into()),
+            ..base.clone()
+        };
+        let other_trim_start = ItemOptions {
+            trim_start: Some("00:10".into()),
+            ..base.clone()
+        };
+        let other_trim_end = ItemOptions {
+            trim_end: Some("00:20".into()),
+            ..base.clone()
+        };
+        let other_keep_original = ItemOptions {
+            keep_original: true,
+            ..base.clone()
+        };
+        let other_embed_metadata = ItemOptions {
+            embed_metadata: true,
+            ..base.clone()
+        };
+        let other_embed_thumbnail = ItemOptions {
+            embed_thumbnail: true,
+            ..base.clone()
+        };
+        let other_embed_chapters = ItemOptions {
+            embed_chapters: true,
+            ..base.clone()
+        };
+        let other_sb_mode = ItemOptions {
+            sponsorblock_mode: Some(ytdlp::SponsorBlockMode::Mark),
+            ..base.clone()
+        };
+        let other_sb_cats = ItemOptions {
+            sponsorblock_categories: vec!["sponsor".into()],
+            ..base.clone()
+        };
+
+        assert_ne!(base.signature(), other_encode.signature());
+        assert_ne!(base.signature(), other_vcodec.signature());
+        assert_ne!(base.signature(), other_acodec.signature());
+        assert_ne!(base.signature(), other_trim_start.signature());
+        assert_ne!(base.signature(), other_trim_end.signature());
+        assert_ne!(base.signature(), other_keep_original.signature());
+        assert_ne!(base.signature(), other_embed_metadata.signature());
+        assert_ne!(base.signature(), other_embed_thumbnail.signature());
+        assert_ne!(base.signature(), other_embed_chapters.signature());
+        assert_ne!(base.signature(), other_sb_mode.signature());
+        assert_ne!(base.signature(), other_sb_cats.signature());
+
+        let clip_a = ItemOptions {
+            trim_start: Some("00:00".into()),
+            trim_end: Some("00:10".into()),
+            ..base.clone()
+        };
+        let clip_b = ItemOptions {
+            trim_start: Some("00:20".into()),
+            trim_end: Some("00:30".into()),
+            ..base
+        };
+        assert_ne!(clip_a.signature(), clip_b.signature());
     }
 
     #[test]

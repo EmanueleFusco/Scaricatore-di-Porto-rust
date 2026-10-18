@@ -256,3 +256,29 @@ export function wizardToolNames(tools: readonly ToolStatus[]): string[] {
     .filter((name) => !present.includes(name));
   return [...present, ...rest];
 }
+
+/**
+ * In-flight promise deduplicator for background probing operations (spec §9.3).
+ * Concurrent calls without `force` share the same promise; `force` initiates a new run.
+ */
+export class InFlightDeduplicator<T> {
+  #inFlight: Promise<T> | null = null;
+
+  run(fn: () => Promise<T>, force = false): Promise<T> {
+    if (!force && this.#inFlight) {
+      return this.#inFlight;
+    }
+    const promise = fn();
+    this.#inFlight = promise;
+    void promise.finally(() => {
+      if (this.#inFlight === promise) {
+        this.#inFlight = null;
+      }
+    });
+    return promise;
+  }
+
+  get inFlight(): Promise<T> | null {
+    return this.#inFlight;
+  }
+}

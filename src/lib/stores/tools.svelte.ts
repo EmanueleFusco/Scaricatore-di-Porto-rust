@@ -12,12 +12,14 @@ import {
   normaliseSelfTest,
   normaliseToolStatus,
   normaliseToolsView,
+  InFlightDeduplicator,
   type SelfTestReport,
   type ToolProgressEvent,
   type ToolStatus,
   type ToolsView,
   type UpdateOutcome,
 } from "$lib/tools";
+import type { EncoderInfo } from "$lib/queue";
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 
 const EMPTY_VIEW: ToolsView = {
@@ -52,6 +54,27 @@ class ToolsStore {
   /** Last "Test YouTube extraction" run (spec §5.3.6). */
   selfTest = $state<SelfTestReport | null>(null);
   selfTestRunning = $state(false);
+  /** Probed video encoders (spec §9.3). */
+  probedEncoders = $state<EncoderInfo[]>([]);
+  probingEncoders = $state(false);
+  #encoderDeduplicator = new InFlightDeduplicator<EncoderInfo[]>();
+
+  /** Probe video encoders (spec §9.3: run in the background, cache by path/mtime/version). */
+  async probeEncoders(force = false): Promise<EncoderInfo[]> {
+    if (!isTauriRuntime()) return [];
+    return this.#encoderDeduplicator.run(async () => {
+      this.probingEncoders = true;
+      try {
+        const res = await invoke<EncoderInfo[]>("encoders_probe", { force });
+        this.probedEncoders = res;
+        return res;
+      } catch {
+        return [];
+      } finally {
+        this.probingEncoders = false;
+      }
+    }, force);
+  }
 
   /** Read every tool. Safe to call from `onMount` and from a Refresh button. */
   async refresh(): Promise<void> {

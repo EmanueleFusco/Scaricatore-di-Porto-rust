@@ -300,7 +300,13 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
         }
     }
     if url.contains("archive-skip") && args.iter().any(|arg| arg == "--download-archive") {
-        println!("[download] fakeid: has already been recorded in the archive");
+        // Real yt-dlp implies `--quiet` when `--print` is present; it only
+        // outputs the skip message if `--no-quiet` is also passed.
+        let quiet =
+            args.iter().any(|arg| arg == "--print") && !args.iter().any(|arg| arg == "--no-quiet");
+        if !quiet {
+            println!("[download] fakeid: has already been recorded in the archive");
+        }
         return 0;
     }
     // A transient network failure that heals on the second attempt: the queue's
@@ -502,6 +508,10 @@ fn download_body(args: &[String], url: &str, runtime: &str) -> i32 {
     let file = home.join(name);
     let _ = std::fs::write(&file, b"fake media bytes");
     print_file_line(args, &file);
+    if url.contains("embed-fail") {
+        eprintln!("ERROR: [EmbedThumbnail] Only mp4, mkv and ogg support embedding thumbnails");
+        return 1;
+    }
     0
 }
 

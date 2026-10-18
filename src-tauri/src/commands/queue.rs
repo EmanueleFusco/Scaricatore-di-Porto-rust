@@ -74,6 +74,7 @@ impl<R: Runtime> ToolProvider for AppToolProvider<R> {
             Ok(JobEnvironment {
                 ytdlp: tools.ytdlp.path,
                 ffmpeg: tools.ffmpeg,
+                ffprobe: tools.ffprobe,
                 runtimes: tools.runtimes,
                 memory: state.runtime_memory().clone(),
                 private_temp: tools.private_temp,
@@ -149,6 +150,30 @@ pub struct AddItemRequest {
     /// §11.3).
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub custom_headers: Vec<String>,
+    #[serde(default)]
+    pub encode: Option<bool>,
+    #[serde(default)]
+    pub video_codec: Option<String>,
+    #[serde(default)]
+    pub audio_codec: Option<String>,
+    #[serde(default)]
+    pub trim_start: Option<String>,
+    #[serde(default)]
+    pub trim_end: Option<String>,
+    #[serde(default)]
+    pub keep_original: Option<bool>,
+    #[serde(default)]
+    pub auto_play: Option<bool>,
+    #[serde(default)]
+    pub embed_metadata: Option<bool>,
+    #[serde(default)]
+    pub embed_thumbnail: Option<bool>,
+    #[serde(default)]
+    pub embed_chapters: Option<bool>,
+    #[serde(default)]
+    pub sponsorblock_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    pub sponsorblock_categories: Vec<String>,
 }
 
 fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -313,7 +338,44 @@ pub async fn queue_add<R: Runtime>(
                 custom_headers.push(trimmed.to_owned());
             }
         }
-        let use_archive = item.use_archive.unwrap_or(settings.use_download_archive);
+        // Spec §6.4: the download archive is for playlists ("skip already
+        // downloaded (download archive, default on for playlists)"). Single-video
+        // requests (`group_id == None`) do not pass `--download-archive` unless
+        // `use_archive` is explicitly requested, so a user can always re-download
+        // an individual video even if they deleted the file from disk.
+        let use_archive = item.use_archive.unwrap_or_else(|| {
+            if item.group_id.is_some() {
+                settings.use_download_archive
+            } else {
+                false
+            }
+        });
+
+        // Spec §9.2/§12.11: reject a malformed or inverted trim range up front.
+        crate::services::ffmpeg::parse_and_validate_trim(
+            item.trim_start.as_deref().filter(|s| !s.trim().is_empty()),
+            item.trim_end.as_deref().filter(|s| !s.trim().is_empty()),
+            item.duration_sec.map(|d| d as f64),
+        )
+        .map_err(|err| ErrorInfo::new(ErrorCode::Unsupported, format!("invalid trim: {err}")))?;
+
+        let (sponsorblock_mode, sponsorblock_categories) = match item.sponsorblock_mode.as_deref() {
+            Some("mark") if item.sponsorblock_categories.is_empty() => (None, Vec::new()),
+            Some("remove") if item.sponsorblock_categories.is_empty() => (None, Vec::new()),
+            Some("mark") => (
+                Some(crate::services::ytdlp::SponsorBlockMode::Mark),
+                item.sponsorblock_categories,
+            ),
+            Some("remove") => (
+                Some(crate::services::ytdlp::SponsorBlockMode::Remove),
+                item.sponsorblock_categories,
+            ),
+            Some("off") => (None, Vec::new()),
+            _ => (
+                settings.sponsorblock_mode,
+                settings.sponsorblock_categories.clone(),
+            ),
+        };
 
         let options = ItemOptions {
             kind,
@@ -350,6 +412,24 @@ pub async fn queue_add<R: Runtime>(
                 .or_else(|| settings.custom_user_agent.clone()),
             custom_headers,
             impersonate_retry: settings.impersonate_retry,
+            encode: item.encode.unwrap_or(false),
+            video_codec: item
+                .video_codec
+                .or_else(|| settings.default_video_codec.clone()),
+            audio_codec: item
+                .audio_codec
+                .or_else(|| settings.default_audio_codec.clone()),
+            trim_start: item.trim_start.filter(|s| !s.trim().is_empty()),
+            trim_end: item.trim_end.filter(|s| !s.trim().is_empty()),
+            keep_original: item
+                .keep_original
+                .unwrap_or(settings.keep_original_after_encode),
+            auto_play: item.auto_play.unwrap_or(settings.auto_play),
+            embed_metadata: item.embed_metadata.unwrap_or(settings.embed_metadata),
+            embed_thumbnail: item.embed_thumbnail.unwrap_or(settings.embed_thumbnail),
+            embed_chapters: item.embed_chapters.unwrap_or(settings.embed_chapters),
+            sponsorblock_mode,
+            sponsorblock_categories,
         };
 
         requests.push(AddRequest {

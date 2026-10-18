@@ -125,7 +125,7 @@
                   {tt("tools.action.update")}
                 </button>
               {/if}
-              {#if tool.installable && !tool.path}
+              {#if !tool.bundled && tool.installable && !tool.path}
                 <button
                   type="button"
                   class="btn"
@@ -169,7 +169,7 @@
                   {tt("tools.action.ownPath")}
                 </button>
               {/if}
-              {#if tool.source === "override"}
+              {#if tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])}
                 <button
                   type="button"
                   class="btn"

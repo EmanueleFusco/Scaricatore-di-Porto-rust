@@ -84,6 +84,7 @@ fn settings_get_returns_the_defaults_on_a_fresh_install() {
         scaricatore_di_porto_lib::state::SETTINGS_SCHEMA_VERSION
     );
     assert!(value["settings"]["defaultOutputDir"].is_null());
+    assert_eq!(value["settings"]["defaultAudioCodec"], "aac");
     assert!(value["recovery"].is_null());
     assert!(
         value["settingsPath"]

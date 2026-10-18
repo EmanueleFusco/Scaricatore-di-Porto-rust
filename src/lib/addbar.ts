@@ -160,3 +160,117 @@ export function explicitChoiceFor(format: FormatLite): QualityChoice {
   const audio = format.acodec !== null && format.acodec !== "none";
   return { kind: "explicit", formatId: format.formatId, hasAudio: audio };
 }
+
+/** Parse trim time string into fractional seconds (spec §9.2). */
+export function parseTrimTime(raw: string): number | null {
+  const s = raw.trim();
+  if (s === "") return null;
+  const parts = s.split(":");
+  if (parts.length === 1) {
+    const sec = Number(parts[0]);
+    if (!Number.isFinite(sec) || sec < 0) return null;
+    return sec;
+  }
+  if (parts.length === 2) {
+    const min = Number(parts[0]);
+    const sec = Number(parts[1]);
+    if (!Number.isFinite(min) || !Number.isFinite(sec) || min < 0 || sec < 0 || sec >= 60) {
+      return null;
+    }
+    return min * 60 + sec;
+  }
+  if (parts.length === 3) {
+    const hr = Number(parts[0]);
+    const min = Number(parts[1]);
+    const sec = Number(parts[2]);
+    if (
+      !Number.isFinite(hr) ||
+      !Number.isFinite(min) ||
+      !Number.isFinite(sec) ||
+      hr < 0 ||
+      min < 0 ||
+      min >= 60 ||
+      sec < 0 ||
+      sec >= 60
+    ) {
+      return null;
+    }
+    return hr * 3600 + min * 60 + sec;
+  }
+  return null;
+}
+
+export interface TrimValidationResult {
+  valid: boolean;
+  startSec: number | null;
+  endSec: number | null;
+  errorKey: string | null;
+}
+
+/** Validate start and end trim against media duration (spec §9.2). */
+export function validateTrimInput(
+  startRaw: string,
+  endRaw: string,
+  mediaDurationSec: number | null,
+): TrimValidationResult {
+  const hasStart = startRaw.trim() !== "";
+  const hasEnd = endRaw.trim() !== "";
+
+  if (!hasStart && !hasEnd) {
+    return { valid: true, startSec: null, endSec: null, errorKey: null };
+  }
+
+  let startSec: number | null = null;
+  let endSec: number | null = null;
+
+  if (hasStart) {
+    startSec = parseTrimTime(startRaw);
+    if (startSec === null) {
+      return { valid: false, startSec: null, endSec: null, errorKey: "queue.add.trim.error.invalidFormat" };
+    }
+  }
+
+  if (hasEnd) {
+    endSec = parseTrimTime(endRaw);
+    if (endSec === null) {
+      return { valid: false, startSec, endSec: null, errorKey: "queue.add.trim.error.invalidFormat" };
+    }
+    if (endSec <= 0) {
+      return { valid: false, startSec, endSec, errorKey: "queue.add.trim.error.invalidFormat" };
+    }
+  }
+
+  if (startSec !== null && endSec !== null && startSec >= endSec) {
+    return { valid: false, startSec, endSec, errorKey: "queue.add.trim.error.startNotBeforeEnd" };
+  }
+
+  if (mediaDurationSec !== null && mediaDurationSec > 0) {
+    if (startSec !== null && startSec > mediaDurationSec) {
+      return { valid: false, startSec, endSec, errorKey: "queue.add.trim.error.startExceedsDuration" };
+    }
+    if (endSec !== null && endSec > mediaDurationSec) {
+      return { valid: false, startSec, endSec, errorKey: "queue.add.trim.error.endExceedsDuration" };
+    }
+  }
+
+  return { valid: true, startSec, endSec, errorKey: null };
+}
+
+/** Standard audio codecs for media processing (spec §9.4). */
+export const AUDIO_CODEC_OPTIONS = [
+  { value: "aac", label: "AAC (.m4a)" },
+  { value: "mp3", label: "MP3 (.mp3)" },
+  { value: "opus", label: "Opus (.opus)" },
+] as const;
+
+/** Standard SponsorBlock categories (spec §8.4). */
+export const SPONSORBLOCK_CATEGORY_KEYS = [
+  "sponsor",
+  "selfpromo",
+  "interaction",
+  "intro",
+  "outro",
+  "preview",
+  "filler",
+  "music_offtopic",
+] as const;
