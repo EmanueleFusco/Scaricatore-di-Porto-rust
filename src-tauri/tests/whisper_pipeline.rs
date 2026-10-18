@@ -226,6 +226,54 @@ async fn transcribe_gpu_failure_retries_with_ng() {
 }
 
 #[tokio::test]
+async fn transcribe_non_gpu_failure_does_not_retry_with_ng() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("non_gpu_fail_sample.mp4");
+
+    // Signal fake_whisper to simulate a total / non-GPU failure
+    fs::write(fix.exe_dir().join("fail_whisper_all.txt"), b"1").expect("write fail all flag");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("auto".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let result = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        result.is_err(),
+        "transcription must fail on total whisper failure"
+    );
+
+    // On Linux/CPU builds, non-GPU failure must NOT trigger a second invocation with -ng
+    let calls_path = fix.exe_dir().join("fake-whisper.calls");
+    let calls: u32 = fs::read_to_string(&calls_path)
+        .expect("fake-whisper.calls must exist")
+        .trim()
+        .parse()
+        .expect("parse calls");
+    assert_eq!(
+        calls, 1,
+        "sdp-whisper must be spawned only once on non-GPU failure, but was retried with -ng"
+    );
+
+    let log = fs::read_to_string(fix.exe_dir().join("fake-whisper.log")).unwrap_or_default();
+    assert!(
+        !log.contains("-ng"),
+        "-ng must not be passed when retrying CPU-only / non-GPU failures: {log}"
+    );
+}
+
+#[tokio::test]
 async fn transcribe_hallucination_guard_detects_loops() {
     let fix = Fixture::new();
     let media = fix.create_dummy_media("hallucinating_sample.mp4");

@@ -350,6 +350,24 @@ fn run_whisper(args: &[String]) -> i32 {
             .and_then(|d| std::fs::read_to_string(d.join(name)).ok())
     };
 
+    if let Some(dir) = &exe_dir {
+        let calls_path = dir.join("fake-whisper.calls");
+        let count = std::fs::read_to_string(&calls_path)
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _ = std::fs::write(&calls_path, count.to_string());
+
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("fake-whisper.log"))
+        {
+            let _ = writeln!(file, "{}", args.join(" "));
+        }
+    }
+
     if let Some(sleep_ms) =
         read_flag("fake_whisper_sleep.txt").or_else(|| std::env::var("FAKE_WHISPER_SLEEP_MS").ok())
     {

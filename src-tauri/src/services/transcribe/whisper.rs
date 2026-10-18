@@ -1174,6 +1174,69 @@ pub async fn execute_whisper_attempt(
     process::spawn_tool_with_sinks(cmd, token.clone(), sinks).await
 }
 
+/// Check if stderr indicates a GPU backend failure (e.g. CUDA, Metal, Vulkan, HIP, VRAM OOM).
+pub fn is_gpu_failure(stderr_tail: &[String]) -> bool {
+    let gpu_keywords = [
+        "cuda",
+        "metal",
+        "vulkan",
+        "ggml_vk",
+        "ggml_metal",
+        "ggml_cuda",
+        "ggml_hip",
+        "rocm",
+        "hip",
+        "out of memory",
+        "out of device memory",
+        "out of vram",
+        "gpu",
+    ];
+
+    stderr_tail.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        gpu_keywords.iter().any(|kw| lower.contains(kw))
+    })
+}
+
+/// Check if stderr indicates an explicit non-GPU failure that cannot be resolved by `-ng`.
+pub fn is_explicit_non_gpu_failure(stderr_tail: &[String]) -> bool {
+    let non_gpu_keywords = [
+        "failed to read magic",
+        "invalid model file",
+        "failed to open",
+        "unrecognized argument",
+        "unknown option",
+        "simulated total whisper failure",
+        "no such file or directory",
+        "error: failed to load model",
+    ];
+
+    stderr_tail.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        non_gpu_keywords.iter().any(|kw| lower.contains(kw))
+    })
+}
+
+/// Check whether a non-zero exit from `sdp-whisper` should be retried with `-ng` (spec §10.2 item 6, §5.4).
+///
+/// Per spec §10.2: "Failure handling: non-zero exit -> if the build used GPU, retry once with -ng".
+/// On Linux and Windows, the official sdp-whisper sidecar is built CPU-only (GGML_CUDA=OFF,
+/// GGML_VULKAN=OFF), so retrying with `-ng` is only attempted when stderr indicates a GPU backend
+/// failure (e.g. a custom Vulkan/CUDA build or test simulation). On macOS, the sidecar build
+/// enables Metal GPU acceleration by default, so it retries once with `-ng` unless stderr indicates
+/// an explicit non-GPU failure (e.g. corrupt model file, file not found, invalid flags).
+pub fn should_retry_with_no_gpu(stderr_tail: &[String]) -> bool {
+    if is_gpu_failure(stderr_tail) {
+        return true;
+    }
+
+    if cfg!(target_os = "macos") {
+        !is_explicit_non_gpu_failure(stderr_tail)
+    } else {
+        false
+    }
+}
+
 /// Options requesting a transcription run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscribeRequest {
@@ -1358,8 +1421,8 @@ pub async fn run_transcribe(
             return Err(AppError::Process("Transcription cancelled".to_string()));
         }
 
-        // Retry once with -ng on non-zero exit (spec §10.2 item 6)
-        if !res.success() && !whisper_args.no_gpu {
+        // Retry once with -ng on non-zero exit only if GPU was used or GPU failure occurred (spec §10.2 item 6, §5.4)
+        if !res.success() && !whisper_args.no_gpu && should_retry_with_no_gpu(&res.stderr_tail) {
             clean_whisper_partials(&chunk_out_base);
             whisper_args.no_gpu = true;
             res = execute_whisper_attempt(
@@ -1883,5 +1946,71 @@ mod tests {
             sub_paths1.vtt,
             temp.path().join("transcripts").join("lecture (1).vtt")
         );
+    }
+
+    #[test]
+    fn is_gpu_failure_matches_gpu_indicators() {
+        assert!(is_gpu_failure(&[
+            "fake whisper: simulated GPU failure (CUDA out of memory)".to_string()
+        ]));
+        assert!(is_gpu_failure(&[
+            "ggml_metal_init: failed to allocate Metal buffer".to_string()
+        ]));
+        assert!(is_gpu_failure(&[
+            "ggml_vk_init: Vulkan device creation failed".to_string()
+        ]));
+        assert!(is_gpu_failure(&[
+            "hipErrorOutOfMemory: out of memory".to_string()
+        ]));
+        assert!(!is_gpu_failure(&[
+            "fake whisper: simulated total whisper failure".to_string()
+        ]));
+        assert!(!is_gpu_failure(&[
+            "error: failed to read magic: invalid model file".to_string()
+        ]));
+        assert!(!is_gpu_failure(&[]));
+    }
+
+    #[test]
+    fn is_explicit_non_gpu_failure_matches_model_and_io_errors() {
+        assert!(is_explicit_non_gpu_failure(&[
+            "error: failed to read magic: invalid model file".to_string()
+        ]));
+        assert!(is_explicit_non_gpu_failure(&[
+            "error: failed to open input file: No such file or directory".to_string()
+        ]));
+        assert!(is_explicit_non_gpu_failure(&[
+            "fake whisper: simulated total whisper failure".to_string()
+        ]));
+        assert!(!is_explicit_non_gpu_failure(&[
+            "CUDA out of memory".to_string()
+        ]));
+        assert!(!is_explicit_non_gpu_failure(&[]));
+    }
+
+    #[test]
+    fn should_retry_with_no_gpu_checks_gpu_and_platform() {
+        let gpu_tail = vec!["fake whisper: simulated GPU failure (CUDA out of memory)".to_string()];
+        let total_fail_tail = vec!["fake whisper: simulated total whisper failure".to_string()];
+        let corrupt_model_tail =
+            vec!["error: failed to read magic: invalid model file".to_string()];
+
+        // Stderr with GPU failure always retries on all platforms
+        assert!(should_retry_with_no_gpu(&gpu_tail));
+
+        if cfg!(target_os = "macos") {
+            // On macOS, generic non-zero exits retry unless explicitly non-GPU
+            assert!(!should_retry_with_no_gpu(&total_fail_tail));
+            assert!(!should_retry_with_no_gpu(&corrupt_model_tail));
+            assert!(should_retry_with_no_gpu(&["unspecified error".to_string()]));
+        } else {
+            // On Linux and Windows, CPU-only builds do NOT retry non-GPU failures
+            assert!(!should_retry_with_no_gpu(&total_fail_tail));
+            assert!(!should_retry_with_no_gpu(&corrupt_model_tail));
+            assert!(!should_retry_with_no_gpu(
+                &["unspecified error".to_string()]
+            ));
+            assert!(!should_retry_with_no_gpu(&[]));
+        }
     }
 }
