@@ -216,18 +216,20 @@
       "versioning": "pinned",
       "version": "1.9.5",
       "minVersion": "1.7.0",
+      "releaseUrl": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}",
       "note": [
         "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
         "Built from pinned whisper.cpp tag v1.9.5 by .github/workflows/whisper-sidecar.yml.",
-        "Attached to releases as sdp-whisper-<target-triple>[.exe]."
+        "Attached to releases as sdp-whisper-<target-triple>[.exe].",
+        "Checksum for x86_64-unknown-linux-gnu verified byte-for-byte from tag v1.9.5 build."
       ],
       "platforms": {
         "x86_64-unknown-linux-gnu": {
           "asset": "sdp-whisper-x86_64-unknown-linux-gnu",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-unknown-linux-gnu",
+          "sha256": "c0cc33d49a950ecda4089ba7448a576ab7286b950c48c2e718bd8913c97932eb"
         },
         "aarch64-unknown-linux-gnu": {
           "asset": "sdp-whisper-aarch64-unknown-linux-gnu",

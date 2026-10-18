@@ -686,6 +686,15 @@ mod tests {
         assert_eq!(whisper.versioning, Versioning::Pinned);
         assert_eq!(whisper.version.as_deref(), Some("1.9.5"));
 
+        let whisper_entry = manifest
+            .entry(SDP_WHISPER, "x86_64-unknown-linux-gnu")
+            .expect("a linux x64 sdp-whisper asset");
+        assert_eq!(whisper_entry.archive_kind, ArchiveKind::None);
+        assert!(
+            whisper_entry.is_installable(),
+            "sdp-whisper must carry url + sha256 so the lazy install works"
+        );
+
         let deno = manifest.tool(DENO).expect("deno is in the manifest");
         assert!(!deno.bundled, "Deno is downloaded on demand, never bundled");
         assert_eq!(deno.versioning, Versioning::Pinned);
@@ -714,6 +723,33 @@ mod tests {
                 "{triple} must be installable, not a half-declared entry"
             );
         }
+    }
+
+    #[test]
+    fn whisper_sidecar_asset_has_url_and_checksum_where_pinned() {
+        let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
+        let whisper = manifest.tool(SDP_WHISPER).expect("sdp-whisper");
+        assert!(!whisper.platforms.is_empty());
+        assert_eq!(
+            whisper.release_url.as_deref(),
+            Some(
+                "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"
+            )
+        );
+
+        let linux = whisper
+            .platforms
+            .get("x86_64-unknown-linux-gnu")
+            .expect("x86_64-unknown-linux-gnu entry");
+        assert_eq!(linux.archive_kind, ArchiveKind::None);
+        assert!(
+            linux.url.is_some() && linux.sha256.is_some(),
+            "linux whisper asset must carry url and sha256"
+        );
+        assert!(
+            linux.is_installable(),
+            "x86_64-unknown-linux-gnu whisper asset must be installable, not an unpinned entry"
+        );
     }
 
     #[test]

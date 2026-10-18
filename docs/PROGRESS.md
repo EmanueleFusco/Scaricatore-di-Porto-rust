@@ -3693,3 +3693,22 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix pinned sdp-whisper asset URL and checksum in manifest (B4, Checklist #2, spec §5.1, §5.4)
+- Done:
+  - Fixed B4: populated real asset releaseUrl template and Linux x86_64 url and sha256 checksum for `sdp-whisper` in `tools.manifest.json`:
+    - Added `"releaseUrl": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"` to the `sdp-whisper` tool definition.
+    - Set `"url": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-unknown-linux-gnu"` and `"sha256": "c0cc33d49a950ecda4089ba7448a576ab7286b950c48c2e718bd8913c97932eb"` (verified byte-for-byte by compiling `whisper.cpp` pinned tag `v1.9.5` with the exact flags in `whisper-sidecar.yml`).
+    - Added unit test `whisper_sidecar_asset_has_url_and_checksum_where_pinned` and asserted installability in `the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback` in `src-tauri/src/services/manifest.rs`.
+- Verified by running:
+  - `cargo test whisper_sidecar_asset_has_url_and_checksum_where_pinned` → FAILS before fix (panic: `assertion left == right failed (left: None, right: Some("https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"))`), PASSES after fix.
+  - `cargo test the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback` → FAILS before fix (panic: `sdp-whisper must carry url + sha256 so the lazy install works`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 366 unit + 155 integration = 521 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: macOS and Windows sdp-whisper checksums (Tier 1/Tier 2 CI-built targets; cannot run MSVC or macOS Metal builds in Linux environment, pending whisper-sidecar CI release).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
