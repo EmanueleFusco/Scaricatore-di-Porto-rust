@@ -14,9 +14,18 @@
  * Svelte runtime.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { normaliseInspected, inspectDelay, MetadataCache, type Inspected } from "$lib/inspect";
-import { QUALITY_PRESETS, newLinks, splitLinks } from "$lib/addbar";
-import { isTauriRuntime } from "$lib/stores/settings.svelte";
+import {
+  isVideoWithListUrl,
+  normaliseInspected,
+  inspectDelay,
+  MetadataCache,
+  PLAYLIST_PAGE_SIZE,
+  type Inspected,
+  type InspectRequestOptions,
+} from "$lib/inspect";
+import { QUALITY_PRESETS, newLinks, parseHeaderLines, splitLinks } from "$lib/addbar";
+import { mergeEntries, nextPageRange } from "$lib/playlist";
+import { isTauriRuntime, settingsStore } from "$lib/stores/settings.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
 import type { BackendErrorInfo } from "$lib/settings";
 
@@ -25,12 +34,27 @@ export interface AddRow {
   /** Stable within one session; not the backend's item id. */
   key: string;
   url: string;
-  state: "pending" | "checking" | "ready" | "error" | "skipped";
+  /**
+   * `choice`: a `watch?v=…&list=…` link waiting for *This video only* /
+   * *Whole playlist* (spec §6.4). `playlist`: a playlist whose selection panel
+   * is open; it is added through the panel, never by the main buttons.
+   */
+  state: "pending" | "checking" | "choice" | "ready" | "playlist" | "error" | "skipped";
   inspected: Inspected | null;
   errorKey: string | null;
   errorDetail: string | null;
   /** `null` means "whatever the preset says". */
   quality: QualityChoice | null;
+  /** Inspect (and download) the single video of a `…&list=…` link (spec §6.4). */
+  noPlaylist: boolean;
+  /** Live streams: `true` = record from the start, `false` = from now. */
+  liveFromStart: boolean;
+  /** "More options" (spec §11.3): per-link network headers, as typed. */
+  referer: string;
+  userAgent: string;
+  customHeaders: string;
+  /** Loading the next page of a playlist ("Load more", spec §6.4). */
+  loadingMore: boolean;
 }
 
 const MAX_ROWS = 500;
@@ -130,6 +154,12 @@ class AddBarStore {
         errorKey: null,
         errorDetail: null,
         quality: null,
+        noPlaylist: false,
+        liveFromStart: false,
+        referer: "",
+        userAgent: "",
+        customHeaders: "",
+        loadingMore: false,
       };
     });
     if (rows.length === 0) return;
@@ -141,6 +171,17 @@ class AddBarStore {
     // process, no network, no spinner. Only the others are asked for.
     const misses: AddRow[] = [];
     for (const row of rows) {
+      // Spec §6.4: a video-with-list link asks once, unless the setting (or an
+      // earlier "remember for this session") already decided.
+      if (isVideoWithListUrl(row.url)) {
+        const decided = this.#decidedBehaviour();
+        if (decided === null) {
+          this.#patch(row.key, { state: "choice" });
+          continue;
+        }
+        this.#patch(row.key, { noPlaylist: decided === "video" });
+        row.noPlaylist = decided === "video";
+      }
       const hit = this.#cache.get(row.url);
       if (hit === undefined) {
         misses.push(row);
@@ -173,6 +214,86 @@ class AddBarStore {
     } catch (err) {
       this.#fail(err);
     }
+  }
+
+  /** Tick "remember for this session" on the inline choice (spec §6.4). */
+  rememberChoice = $state(false);
+  #sessionChoice: "video" | "playlist" | null = null;
+
+  /** What a `…&list=…` link does without asking, or `null` to ask. */
+  #decidedBehaviour(): "video" | "playlist" | null {
+    const setting = settingsStore.settings.playlistUrlBehavior;
+    if (setting === "video" || setting === "playlist") return setting;
+    return this.#sessionChoice;
+  }
+
+  /** The user's answer to *This video only* / *Whole playlist*. */
+  async choosePlaylistMode(key: string, mode: "video" | "playlist"): Promise<void> {
+    if (this.rememberChoice) this.#sessionChoice = mode;
+    const row = this.rows.find((candidate) => candidate.key === key);
+    if (row === undefined || row.state !== "choice") return;
+    this.#patch(key, { noPlaylist: mode === "video", state: "pending" });
+    // Apply the same answer to the other links still waiting, when remembered.
+    const others = this.rememberChoice
+      ? this.rows.filter((candidate) => candidate.state === "choice" && candidate.key !== key)
+      : [];
+    for (const other of others) {
+      this.#patch(other.key, { noPlaylist: mode === "video", state: "pending" });
+    }
+    const keys = new Set([key, ...others.map((other) => other.key)]);
+    await this.#check(this.rows.filter((candidate) => keys.has(candidate.key)));
+  }
+
+  /** "Load more" of a playlist: the next page, merged by position (spec §6.4). */
+  async loadMore(key: string): Promise<void> {
+    const row = this.rows.find((candidate) => candidate.key === key);
+    if (!isTauriRuntime() || row === undefined || row.inspected?.kind !== "playlist") return;
+    if (row.loadingMore) return;
+    const known = row.inspected;
+    this.#patch(key, { loadingMore: true });
+    try {
+      const [from, to] = nextPageRange(known.entries.length, PLAYLIST_PAGE_SIZE);
+      const raw = await invoke<unknown[]>("inspect_urls", {
+        requestId: ++this.#request,
+        urls: [row.url],
+        options: { ...this.#optionsOf(row), itemRange: [from, to] },
+      });
+      const answer = (raw[0] ?? {}) as Record<string, unknown>;
+      if (!answer.inspected) {
+        this.#patch(key, { loadingMore: false });
+        return;
+      }
+      const page = normaliseInspected(answer.inspected);
+      if (page.kind !== "playlist") {
+        this.#patch(key, { loadingMore: false });
+        return;
+      }
+      this.#patch(key, {
+        loadingMore: false,
+        inspected: {
+          ...known,
+          count: page.count ?? known.count,
+          entries: mergeEntries(known.entries, page.entries),
+          truncated: page.truncated,
+        },
+      });
+    } catch (err) {
+      this.#patch(key, { loadingMore: false });
+      this.#fail(err);
+    }
+  }
+
+  /** Per-link record-from-start choice of a live stream (spec §6.4). */
+  setLiveFromStart(key: string, fromStart: boolean): void {
+    this.#patch(key, { liveFromStart: fromStart });
+  }
+
+  /** Per-link "More options": referer, user agent, extra headers (spec §11.3). */
+  setNetworkOptions(
+    key: string,
+    options: Partial<Pick<AddRow, "referer" | "userAgent" | "customHeaders">>,
+  ): void {
+    this.#patch(key, options);
   }
 
   removeRow(key: string): void {
@@ -232,6 +353,7 @@ class AddBarStore {
     return this.ready.map((row) => {
       const video = row.inspected?.kind === "video" ? row.inspected : null;
       const quality = this.effectiveQuality(row);
+      const headers = parseHeaderLines(row.customHeaders);
       return {
         url: row.url,
         title: video?.title ?? null,
@@ -241,6 +363,11 @@ class AddBarStore {
         quality,
         outputDir: this.folder,
         groupId: null,
+        // `null` for a normal video: only a live stream has a mode to record in.
+        liveFromStart: video?.isLive ? row.liveFromStart : null,
+        referer: row.referer.trim() === "" ? null : row.referer.trim(),
+        userAgent: row.userAgent.trim() === "" ? null : row.userAgent.trim(),
+        customHeaders: headers,
       };
     });
   }
@@ -250,29 +377,64 @@ class AddBarStore {
     this.rows = this.rows.filter((row) => row.state !== "ready");
   }
 
+  /** The per-inspection flags of one row (spec §6.2, §6.4, §11.3). */
+  #optionsOf(row: AddRow): InspectRequestOptions {
+    const headers = parseHeaderLines(row.customHeaders);
+    return {
+      noPlaylist: row.noPlaylist ? true : undefined,
+      referer: row.referer.trim() === "" ? null : row.referer.trim(),
+      userAgent: row.userAgent.trim() === "" ? null : row.userAgent.trim(),
+      customHeaders: headers,
+    };
+  }
+
   async #check(rows: AddRow[]): Promise<void> {
     if (!isTauriRuntime() || rows.length === 0) return;
     this.#request += 1;
     const request = this.#request;
-    const urls = rows.map((row) => row.url);
     this.#mark(rows.map((row) => row.key), "checking");
 
+    // One batch per distinct set of flags: the backend takes one `options` per
+    // call, and most pastes have a single group.
+    const batches = new Map<string, { options: InspectRequestOptions; rows: AddRow[] }>();
+    for (const row of rows) {
+      const options = this.#optionsOf(row);
+      const id = JSON.stringify(options);
+      const batch = batches.get(id) ?? { options, rows: [] };
+      batch.rows.push(row);
+      batches.set(id, batch);
+    }
+
     try {
-      const raw = await invoke<unknown[]>("inspect_urls", { requestId: request, urls });
-      if (request !== this.#request) return; // stale answer (spec §12.12)
-      this.#applyAnswers(raw);
-    } catch (err) {
-      if (request !== this.#request) return;
-      const info = err as Partial<BackendErrorInfo>;
-      this.#mark(rows.map((row) => row.key), "error");
-      for (const row of rows) {
-        this.#patch(row.key, {
-          errorKey: typeof info?.messageKey === "string" ? info.messageKey : "error.tauri",
-          errorDetail: typeof info?.detail === "string" ? info.detail : null,
-        });
-      }
+      await Promise.all(
+        [...batches.values()].map(async (batch) => {
+          try {
+            const raw = await invoke<unknown[]>("inspect_urls", {
+              requestId: request,
+              urls: batch.rows.map((row) => row.url),
+              options: batch.options,
+            });
+            if (request !== this.#request) return; // stale answer (spec §12.12)
+            this.#applyAnswers(raw);
+          } catch (err) {
+            if (request !== this.#request) return;
+            const info = err as Partial<BackendErrorInfo>;
+            for (const row of batch.rows) {
+              this.#patch(row.key, {
+                state: "error",
+                errorKey: typeof info?.messageKey === "string" ? info.messageKey : "error.tauri",
+                errorDetail: typeof info?.detail === "string" ? info.detail : null,
+              });
+            }
+          }
+        }),
+      );
     } finally {
-      if (request === this.#request) this.checking = false;
+      if (request === this.#request) {
+        this.checking = this.rows.some(
+          (row) => row.state === "checking" || row.state === "pending",
+        );
+      }
     }
   }
 
@@ -306,13 +468,24 @@ class AddBarStore {
       if (inspected.kind === "video") {
         this.#cache.set(row.url, inspected);
       }
-      // A playlist is not a queue item in M2 (spec §6.4 arrives in M3): the row
-      // says so instead of quietly downloading the wrong thing.
+      // A refusal the inspection itself classified (auth, unsupported page, …)
+      // is an inline error with its own message, never a downloadable row.
+      if (inspected.kind === "error") {
+        this.#patch(row.key, {
+          state: "error",
+          inspected,
+          errorKey: inspected.messageKey,
+          errorDetail: inspected.detail,
+        });
+        continue;
+      }
+      // A playlist opens the selection panel (spec §6.4, §11.4); it is added
+      // through the panel, not by the main buttons.
       if (inspected.kind === "playlist") {
         this.#patch(row.key, {
-          state: "skipped",
+          state: "playlist",
           inspected,
-          errorKey: "queue.add.playlist.unsupported",
+          errorKey: null,
           errorDetail: null,
         });
         continue;

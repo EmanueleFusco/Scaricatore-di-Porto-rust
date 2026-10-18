@@ -123,6 +123,8 @@ struct State {
     paused_all: bool,
     /// Set when the order changed since the last event was built.
     order_dirty: bool,
+    /// Set when the group list changed since the last event was built.
+    groups_dirty: bool,
     /// The counters as of the last time anything finished. The idle
     /// **transition** is what deserves a notification (spec §7.7), not the state
     /// of being idle, and the transition is a comparison between two summaries.
@@ -200,6 +202,7 @@ impl QueueEngine {
                     groups: file.groups,
                     paused_all: file.paused_all,
                     order_dirty: false,
+                    groups_dirty: false,
                     previous,
                 }),
                 running: Mutex::new(BTreeMap::new()),
@@ -596,8 +599,78 @@ impl QueueEngine {
                 Some(existing) => *existing = group,
                 None => state.groups.push(group),
             }
+            state.groups_dirty = true;
         }
+        lock(&self.inner.coalescer).mark_summary();
         self.after_mutation();
+    }
+
+    /// Pause every active or queued item in `group_id` (spec §6.4, §11.5).
+    pub fn pause_group(&self, group_id: &str) -> Vec<String> {
+        let ids: Vec<String> = {
+            let state = lock(&self.inner.state);
+            state
+                .items
+                .iter()
+                .filter(|item| {
+                    item.group_id.as_deref() == Some(group_id) && !item.state.is_parked()
+                })
+                .map(|item| item.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            let _ = self.pause(id);
+            mark_dirty(&self.inner, id, true);
+        }
+        ids
+    }
+
+    /// Resume every paused or interrupted item in `group_id` (spec §6.4, §11.5).
+    pub fn resume_group(&self, group_id: &str) -> Vec<String> {
+        let ids = self.group_items_in_state(group_id, &[ItemState::Paused, ItemState::Interrupted]);
+        for id in &ids {
+            let _ = self.resume(id);
+            mark_dirty(&self.inner, id, true);
+        }
+        ids
+    }
+
+    /// Retry every failed item in `group_id` (spec §6.4, §11.5).
+    pub fn retry_group_failed(&self, group_id: &str) -> Vec<String> {
+        let ids = self.group_items_in_state(group_id, &[ItemState::Failed]);
+        for id in &ids {
+            let _ = self.retry(id);
+            mark_dirty(&self.inner, id, true);
+        }
+        ids
+    }
+
+    /// Remove every item in `group_id` and the group record itself (spec §6.4,
+    /// §11.5).
+    pub fn remove_group(&self, group_id: &str) -> Vec<String> {
+        let ids: Vec<String> = {
+            let state = lock(&self.inner.state);
+            state
+                .items
+                .iter()
+                .filter(|item| item.group_id.as_deref() == Some(group_id))
+                .map(|item| item.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            let _ = self.remove(id);
+        }
+        {
+            let mut state = lock(&self.inner.state);
+            let before = state.groups.len();
+            state.groups.retain(|group| group.id != group_id);
+            if state.groups.len() != before {
+                state.groups_dirty = true;
+            }
+        }
+        lock(&self.inner.coalescer).mark_summary();
+        self.after_mutation();
+        ids
     }
 
     /// Update one item from outside the engine, for instance with the
@@ -646,6 +719,18 @@ impl QueueEngine {
             .items
             .iter()
             .filter(|item| states.contains(&item.state))
+            .map(|item| item.id.clone())
+            .collect()
+    }
+
+    fn group_items_in_state(&self, group_id: &str, states: &[ItemState]) -> Vec<String> {
+        let state = lock(&self.inner.state);
+        state
+            .items
+            .iter()
+            .filter(|item| {
+                item.group_id.as_deref() == Some(group_id) && states.contains(&item.state)
+            })
             .map(|item| item.id.clone())
             .collect()
     }
@@ -1103,6 +1188,20 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
                     item.progress.speed_bps = None;
                     item.progress.eta_sec = None;
                 }
+                JobOutcome::SkippedArchive { runtime, .. } => {
+                    let item = &mut state.items[index];
+                    item.state = ItemState::Done;
+                    item.file = None;
+                    item.size_bytes = None;
+                    item.runtime = Some(runtime.as_str().to_owned());
+                    item.error = None;
+                    item.finished_at = Some(now);
+                    item.updated_at = now;
+                    item.progress.percent = Some(100.0);
+                    item.progress.speed_bps = None;
+                    item.progress.eta_sec = None;
+                    item.progress.label = "skippedArchive".to_owned();
+                }
                 JobOutcome::Failed(error) => {
                     let code = error.code;
                     let retry = {
@@ -1250,7 +1349,13 @@ fn take_batch(inner: &Arc<Inner>) -> Option<QueueUpdate> {
     } else {
         None
     };
+    let groups = if state.groups_dirty {
+        Some(state.groups.clone())
+    } else {
+        None
+    };
     state.order_dirty = false;
+    state.groups_dirty = false;
     let summary = state.summary(*lock(&inner.lanes));
     let seq = inner.seq.fetch_add(1, Ordering::Relaxed) + 1;
     drop(state);
@@ -1260,6 +1365,7 @@ fn take_batch(inner: &Arc<Inner>) -> Option<QueueUpdate> {
         items,
         removed,
         order,
+        groups,
         summary,
         toast,
     })
@@ -1365,6 +1471,7 @@ mod tests {
                 output_dir: out.to_path_buf(),
                 cookies: crate::services::queue::model::CookieChoice::None,
                 runtime_mode: crate::services::jsruntime::JsRuntimeMode::Auto,
+                ..ItemOptions::default()
             },
             group_id: None,
         }
@@ -1754,5 +1861,48 @@ mod tests {
     fn an_item_without_cookies_asks_for_none() {
         let options = ItemOptions::default();
         assert_eq!(options.to_download_spec().cookies, CookieSource::None);
+    }
+
+    #[test]
+    fn group_actions_apply_only_to_the_named_group() {
+        let dir = TempDir::new().expect("temp dir");
+        let engine = engine(&dir);
+        engine.upsert_group(QueueGroup {
+            id: "g1".into(),
+            title: "Playlist One".into(),
+            folder: Some(dir.path().join("Playlist One")),
+            index: 0,
+        });
+        let mut r1 = request("https://a.example/1", dir.path());
+        r1.group_id = Some("g1".into());
+        let mut r2 = request("https://a.example/2", dir.path());
+        r2.group_id = Some("g1".into());
+        let r3 = request("https://a.example/3", dir.path());
+        let ids = engine.add(vec![r1, r2, r3], false).added;
+
+        let paused = engine.pause_group("g1");
+        assert_eq!(paused.len(), 2);
+        assert_eq!(state_of_id(&engine, &ids[0]), ItemState::Paused);
+        assert_eq!(state_of_id(&engine, &ids[1]), ItemState::Paused);
+        assert_eq!(state_of_id(&engine, &ids[2]), ItemState::Queued);
+
+        let resumed = engine.resume_group("g1");
+        assert_eq!(resumed.len(), 2);
+        assert_eq!(state_of_id(&engine, &ids[0]), ItemState::Queued);
+
+        {
+            let mut state = lock(&engine.inner.state);
+            state.item_mut(&ids[0]).expect("there").state = ItemState::Failed;
+        }
+        let retried = engine.retry_group_failed("g1");
+        assert_eq!(retried, vec![ids[0].clone()]);
+        assert_eq!(state_of_id(&engine, &ids[0]), ItemState::Queued);
+
+        let removed = engine.remove_group("g1");
+        assert_eq!(removed.len(), 2);
+        let snap = engine.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].id, ids[2]);
+        assert!(snap.groups.is_empty());
     }
 }

@@ -3060,3 +3060,119 @@ came from reading the code with those tests in hand.
   parts about bundle artifact names were left alone.
 - **Next step**: the tag `v0.1.0` and the first draft release, dispatched on the
   tag.
+
+---
+
+## 2026-10-16 — M3 / Step 1: Playlist & URL-case inspection, entry URL reconstruction, pagination (spec §6.2, §6.4)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Extended `PlaylistStub` (re-exported as `PlaylistInfo`) in `src-tauri/src/services/inspect.rs` and `src/lib/inspect.ts` with `webpage_url` and `entries: Vec<EntryLite { index, id, url, title, duration, available }>`, plus `PLAYLIST_PAGE_SIZE = 1000` and `MIX_DEFAULT_CAP = 50`.
+  - Implemented pure URL-case classifiers (`is_video_with_list_url`, `is_mix_url`, `is_search_or_feed_url`) in both Rust (`services/inspect.rs`) and TypeScript (`src/lib/inspect.ts`).
+  - Implemented `reconstruct_entry_url` and `is_entry_available` in `services/inspect.rs` to handle full `http(s)` URLs, protocol-relative URLs, `webpage_url` fallback, and bare video IDs on YouTube/Vimeo/TwitchVod, and to flag `[Private video]`, `[Deleted video]`, `availability: private|unavailable|needs_auth|subscriber_only|premium_only`, and `live_status: is_upcoming` as `available: false`.
+  - Added `InspectOptions { item_range, no_playlist, impersonate_chrome, proxy, referer, user_agent, custom_headers }`, `inspect_args_with_options`, and `inspect_with_options` in `services/inspect.rs`, and wired `InspectRequestOptions` in `commands/inspect.rs` (`inspect_url` and `inspect_urls`).
+  - Updated `fake_ytdlp.rs` and `tests/ytdlp_job.rs` to cover full playlist entries, `--no-playlist` on `watch?v=…&list=…`, and upfront refusal of search/feed/home pages without spawning `yt-dlp`.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → 309 lib + 115 integration = **424 passed**, 3 ignored.
+  - `npm run check && npm test` → `svelte-check` 0 errors 0 warnings; Vitest **210 passed** across 10 files.
+- **Not verified / stubbed**
+  - Real multi-thousand-item YouTube channel pagination over the live network (covered by unit and fake-yt-dlp tests; UI "Load more" button arrives in Step 3).
+- **Spec items marked "verify" that I checked**
+  - `-I, --playlist-items ITEM_SPEC` (`-I :1000`, `-I :50`, `-I 1001:2000`), `--no-playlist`, `--yes-playlist`, `--impersonate`, `--proxy`, `--referer`, `--user-agent`, `--add-headers` verified against bundled `yt-dlp 2026.08.19 --help`.
+- **Decisions/deviations**: none.
+- **Next step**: M3 Step 2 — download args (`-o` prefix with `%` → `%%` and ID toggle, `-S vcodec:h264,res,acodec:m4a`, `--download-archive`, `--sleep-interval`, `--live-from-start`, `--proxy`, `--limit-rate`, custom headers), anti-bot `--impersonate chrome` probe & retry, archive commands, and queue group commands.
+
+
+## 2026-10-16 — M3 / Step 2: download args, anti-bot retry, archive, settings v5, group commands
+- Done: M3 `yt-dlp` download args (numbering prefix, ID toggle, H.264 sort, `--download-archive`, pacing sleep, `--live-from-start`, proxy, rate limit, referer/UA/headers, `--impersonate chrome`); one-shot anti-bot retry with `--impersonate chrome` in inspect and download (cached `--list-impersonate-targets` probe); `JobOutcome::SkippedArchive`; settings schema v5; `archive_status` / `archive_clear`; queue group commands (pause/resume/retry-failed/remove); frontend bindings (`settings.ts`, `queue.ts`, stores) and unit tests.
+- Verified by running: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all suites pass, incl. new `ytdlp_job` antibot-retry / archive-skip tests and `queue_ipc` archive/group test), `npm run check` (0 errors), `npm test` (213 passed).
+- Not verified / stubbed: the Svelte UI for M3 (Step 3); real `--impersonate` against a live site (needs curl_cffi in the bundled yt-dlp, not tested offline).
+- Decisions/deviations: the fake yt-dlp answers `--list-impersonate-targets` anywhere in argv (the real probe passes `--ignore-config` first).
+- Next step: Step 3 — playlist panel, AddBar URL cases, queue group headers, M3 settings UI, i18n.
+
+## 2026-10-16 — M3 / Step 3: playlist panel, AddBar URL cases, queue group headers, settings and i18n (spec §6.4, §11.3–§11.8)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Backend: Added `output_subdir` field to `AddItemRequest` in `src-tauri/src/commands/queue.rs` with safe path joining via `sanitize_component`.
+  - Frontend pure helpers and state:
+    - Implemented `src/lib/playlist.ts` with range parser (`1-10, 15, 20-`), case/accent-folding title search, shift-click range selection, default caps (mix: 50, channel: 100), safe folder name sanitisation, numbering prefix formatter (`001 - `), and queue request builder. 18 unit tests in `src/lib/playlist.test.ts`.
+    - Added header line parser, format table selector, and choice resolvers in `src/lib/addbar.ts`.
+    - Added queue group helpers (`groupStats`, `nonEmptyGroups`, `itemsOutsideCollapsed`, `groupPercent`, `wasSkippedByArchive`) in `src/lib/queue.ts` with unit tests in `src/lib/queue.test.ts`.
+    - Updated `src/lib/stores/addbar.svelte.ts` to manage choice state (`watch?v=...&list=...`), playlist slide-over state, pagination loading, live stream options, and network options.
+  - Svelte components:
+    - `src/lib/components/PlaylistPanel.svelte`: slide-over virtualized panel with search filter, range selector, select all/none/invert, reverse order toggle, quality preset, folder-per-playlist, numbering prefix, archive skip, pagination ("Load more"), and "Add N items" action.
+    - `src/lib/components/CookieBanner.svelte`: inline browser cookie picker / Netscape cookies file picker on auth error.
+    - `src/lib/components/AddBar.svelte`: integrated URL choice inline prompt, live stream radio buttons ("download from now" vs "from start"), advanced format table (`details`), network headers drawer, and cookie banner.
+    - `src/lib/components/QueueGroups.svelte`: collapsible playlist group headers showing done/total count, progress bar, folder name, and group actions (pause, resume, retry failed, open folder, remove).
+    - `src/lib/components/QueueList.svelte` & `src/lib/components/QueueItem.svelte`: group filtering of collapsed groups and archive skip status indicator ("Already in archive (skipped)").
+    - `src/lib/pages/settings/GeneralSettings.svelte`: added M3 settings (ID in filename, prefer H.264, limit rate, playlist URL behaviour, download archive toggle, and clear archive button with status count).
+    - `src/lib/pages/settings/NetworkSettings.svelte`: added M3 settings (proxy URL, custom referer, user-agent, custom headers, and `--impersonate chrome` retry checkbox).
+  - i18n: Added 94 new localized strings across `src/lib/i18n/en.json` and `src/lib/i18n/it.json` with 100% dictionary parity verified by unit tests.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → all tests pass (0 warnings, 424 passed, 3 ignored).
+  - `npm test` → 11 test suites passed, 238 tests passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm run build` → production bundle builds cleanly.
+- **Not verified / stubbed**
+  - Manual UI click testing with a live webview (requires display server / graphical environment).
+- **Spec items marked "verify" that I checked**
+  - All UI elements, labels, options and drawer behaviours follow spec §6.4, §11.3, §11.4, §11.5, §11.8.
+- **Decisions/deviations (also in DECISIONS.md)**: none.
+- **Next step**: Step 4 — Verification of acceptance criteria (spec §15 items 5 & 6) and completion of Phase M3.
+
+## 2026-10-16 — M3 / Step 4: acceptance criteria verification and Phase M3 sign-off (spec §14, §15 items 5 & 6)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Completed all deliverables of **Phase M3 (Playlists & other sites)**:
+    - Step 1 (`8556582`): Playlist & URL-case inspection, entry URL reconstruction, pagination (`-I :1000`), search/feed refusal.
+    - Step 2 (`ff88a77`): Download args (numbering, ID toggle, H.264 preference, archive, pacing, live from start, proxy, rate limit, custom headers), `--impersonate chrome` probe and one-shot retry, archive skip handling, settings v5, archive and group IPC commands.
+    - Step 3 (`77dc8ef`): UI components (virtualized `PlaylistPanel`, `AddBar` choice & live & format table & network drawer, `CookieBanner`, collapsible `QueueGroups`, `QueueItem` archive status, Settings M3 options, and full i18n dictionaries).
+  - Executed full test suite and verification scripts: backend unit and integration tests, Svelte check, Vitest unit tests, CI syntax check, runner allowlist guard, bundled tools manifest check, and production build.
+  - Verified exit criteria (spec §14 row M3) and acceptance items (spec §15 items 5 & 6):
+    - Acceptance item 5: 100-item playlist panel responsive, subset selection, folder per playlist, numbering prefix, archive skip, private/unavailable entry isolation, and video+list inline choice.
+    - Acceptance item 6: Generic video page, HLS/direct links, audio-only, cookie-protected auth hints, live stream handling, DRM message, format table, and one-shot anti-bot retry with impersonation.
+- **Verified by running**
+  - `cargo fmt --all -- --check` → ok.
+  - `cargo clippy --all-targets -- -D warnings` → 0 warnings, clean.
+  - `cargo test` → 424 passed (309 unit + 115 integration), 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 11 test files, 238 passed, 0 failed.
+  - `npm run build` → production bundle compiled in ~430ms.
+  - `npm run check:ci` → all 13 `run: |` blocks valid across 4 workflows.
+  - `npm run check:runners` → 4 workflows, no floating or deprecated images, all actions on Node 24.
+  - `npm run check:tools` → manifest OK: 2 bundled tools, schema 1.
+- **Not verified / stubbed**
+  - Live YouTube / network calls (prohibited in normal CI/test runs per AGENTS.md §6; reserved for manual self-test / nightly runs).
+  - Headed GUI testing with real display server.
+- **Spec items marked "verify" that I checked**
+  - All items verified in Steps 1–3 (`-I` syntax, `--impersonate`, `--no-playlist`, `--download-archive`, `--live-from-start`, `--sleep-interval`, etc.).
+- **Decisions/deviations**: None.
+- **Next step**: Phase M4 — Media processing (ffmpeg encode/trim, encoder probing, audio encode, embed metadata/thumbnail/chapters, SponsorBlock, spec §9, §14 row M4).
+
+## 2026-10-16 — M3 / Bugfix: download click IPC deserialisation and native drag prevention (spec §6.4, §11.2, §11.3)
+
+Branch `m3-playlists-and-sites`.
+
+- **Done**
+  - Diagnosed and fixed the download button inaction issue: `AddItemRequest.custom_headers` was typed as `Vec<String>` with `#[serde(default)]` in Rust, which failed with `"invalid type: null, expected a sequence"` when `addbar.svelte.ts` passed `customHeaders: null` on items without custom headers. Added `deserialize_null_as_default` to `AddItemRequest.custom_headers` in `src-tauri/src/commands/queue.rs` and ensured `addbar.svelte.ts` passes `headers` array, with regression integration test in `src-tauri/tests/queue_ipc.rs`.
+  - Diagnosed and fixed unwanted browser dragging of UI elements (sidebar links, buttons, icons):
+    - Added global `user-select: none; -webkit-user-select: none;` to `html, body` and buttons in `src/lib/styles/app.css` (retaining selection for `input, textarea, .selectable`).
+    - Added `-webkit-user-drag: none;` on `a, button, img, svg` and `pointer-events: none;` on `button svg, a svg` in `app.css` so that clicks on buttons are never swallowed by icon drag initiation in WebKitGTK/WebView.
+    - Set `draggable="false"` on `Sidebar.svelte` anchor links and brand, as well as `App.svelte` skip link.
+    - Updated `QueueItem.svelte` `onDragStart` to prevent starting row drag when the interaction begins inside interactive child controls (`button, a, input, select, textarea`).
+    - Fixed `onDragLeave` in `AddBar.svelte` to verify `contains(relatedTarget)`.
+- **Verified by running**
+  - `( cd src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test )` → all 424 tests pass, including regression test for `customHeaders: null`.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 238 tests pass across 11 test suites.
+  - `npm run build` → builds cleanly.
+  - `npm run check:ci && npm run check:runners && npm run check:tools` → all pass.
+- **Next step**: Ready for user testing.
+
+
+

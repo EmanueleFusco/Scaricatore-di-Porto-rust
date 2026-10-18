@@ -16,6 +16,7 @@
     formatBytes,
     heightWarning,
     isActive,
+    wasSkippedByArchive,
     itemLabel,
     qualityKey,
     speedMbits,
@@ -77,6 +78,8 @@
       ].filter((part) => part !== null);
       return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
     }
+    // Spec §6.4: finished without downloading because the archive has it.
+    if (wasSkippedByArchive(item)) return tt("queue.item.skippedArchive");
     return size !== null ? `${detail} · ${size}` : detail;
   });
 
@@ -142,6 +145,11 @@
 
   /** Drag and drop to reorder (spec §7.3), pointer-free on touch. */
   function onDragStart(event: DragEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, select, textarea")) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer?.setData("text/plain", item.id);
     if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
   }

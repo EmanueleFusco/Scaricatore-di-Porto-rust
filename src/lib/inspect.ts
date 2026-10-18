@@ -46,14 +46,40 @@ export interface VideoInfo {
 
 export type PlaylistKind = "playlist" | "channel" | "mix" | "other";
 
+/** One playlist entry from `--flat-playlist` (spec §6.2, §6.4). */
+export interface EntryLite {
+  /** 1-based position in the full playlist (`1..=N`). */
+  index: number;
+  id: string;
+  url: string;
+  title: string;
+  duration: number | null;
+  /** `false` for `[Private video]`, `[Deleted video]`, or missing URLs. */
+  available: boolean;
+}
+
 export interface PlaylistStub {
   id: string;
   title: string;
   site: string;
+  webpageUrl: string | null;
   /** Named `playlistKind` because `kind` is the union discriminant. */
   playlistKind: PlaylistKind;
   count: number | null;
+  entries: EntryLite[];
   truncated: boolean;
+}
+
+/** Alias used by the M3 playlist panel (`spec §6.2`). */
+export type PlaylistInfo = PlaylistStub;
+
+/** Optional per-inspection flags sent to `inspect_url` / `inspect_urls` (spec §6.2, §6.4). */
+export interface InspectRequestOptions {
+  itemRange?: [number, number] | null;
+  noPlaylist?: boolean;
+  referer?: string | null;
+  userAgent?: string | null;
+  customHeaders?: string[];
 }
 
 export type Inspected =
@@ -69,6 +95,18 @@ export interface InspectView {
 
 /** Spec §6.2: debounce 500 ms on the URL input, as the original did. */
 export const INSPECT_DEBOUNCE_MS = 500;
+
+/** Default page size for flat playlist inspection (`-I :1000`, spec §6.2). */
+export const PLAYLIST_PAGE_SIZE = 1000;
+
+/** Default cap for YouTube Mix/Radio playlists (`list=RD…`, spec §6.4). */
+export const MIX_DEFAULT_CAP = 50;
+
+/** Channel tab item count above which the UI warns and caps by default (spec §6.4). */
+export const CHANNEL_WARN_THRESHOLD = 200;
+
+/** Default selection cap when a channel tab exceeds `CHANNEL_WARN_THRESHOLD` (spec §6.4). */
+export const CHANNEL_DEFAULT_CAP = 100;
 
 /**
  * How long to wait before inspecting (D76).
@@ -112,6 +150,22 @@ function normaliseFormat(raw: unknown): FormatLite {
   };
 }
 
+function normaliseEntry(raw: unknown, fallbackIndex: number): EntryLite {
+  const entry = (raw ?? {}) as Partial<EntryLite>;
+  const index =
+    typeof entry.index === "number" && Number.isFinite(entry.index) && entry.index >= 1
+      ? Math.floor(entry.index)
+      : fallbackIndex;
+  return {
+    index,
+    id: asString(entry.id),
+    url: asString(entry.url),
+    title: asString(entry.title),
+    duration: asNullableNumber(entry.duration),
+    available: entry.available !== false,
+  };
+}
+
 /** Coerce anything the backend sends into a complete, known-shaped result. */
 export function normaliseInspected(raw: unknown): Inspected {
   const value = (raw ?? {}) as Record<string, unknown>;
@@ -139,15 +193,20 @@ export function normaliseInspected(raw: unknown): Inspected {
   }
 
   if (kind === "playlist") {
+    const entries = Array.isArray(value.entries)
+      ? value.entries.map((item, idx) => normaliseEntry(item, idx + 1))
+      : [];
     return {
       kind: "playlist",
       id: asString(value.id),
       title: asString(value.title),
       site: asString(value.site),
+      webpageUrl: asNullableString(value.webpageUrl),
       playlistKind: PLAYLIST_KINDS.includes(value.playlistKind as PlaylistKind)
         ? (value.playlistKind as PlaylistKind)
         : "other",
       count: asNullableNumber(value.count),
+      entries,
       truncated: value.truncated === true,
     };
   }
@@ -158,6 +217,58 @@ export function normaliseInspected(raw: unknown): Inspected {
     messageKey: asString((value as Partial<BackendErrorInfo>).messageKey) || "error.ytdlp.unknown",
     detail: asNullableString((value as Partial<BackendErrorInfo>).detail),
   };
+}
+
+// ---------------------------------------------------------------------------
+// URL-case classification helpers (spec §6.4), mirroring `services::inspect`
+// ---------------------------------------------------------------------------
+
+/**
+ * `true` when `url` has both a single-video target (`watch?v=…` or `youtu.be/<id>`)
+ * and a `list=…` query parameter (spec §6.4: inline choice *This video only* /
+ * *Whole playlist*).
+ */
+export function isVideoWithListUrl(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  const hasList = lower.includes("?list=") || lower.includes("&list=");
+  if (!hasList) return false;
+  const hasWatchV =
+    lower.includes("watch?v=") ||
+    lower.includes("&v=") ||
+    lower.includes("youtu.be/") ||
+    lower.includes("/shorts/");
+  return hasWatchV;
+}
+
+/** `true` when `url` is a YouTube Mix / Radio (`list=RD…`, spec §6.4). */
+export function isMixUrl(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  return lower.includes("list=rd");
+}
+
+/**
+ * `true` when `url` is a YouTube search/feed/home page (spec §6.4:
+ * show clear unsupported message instead of trying to scrape).
+ */
+export function isSearchOrFeedUrl(url: string): boolean {
+  const trimmed = url.trim();
+  const afterScheme = trimmed.replace(/^https?:\/\//i, "");
+  const slashIdx = afterScheme.indexOf("/");
+  const host = (slashIdx === -1 ? afterScheme : afterScheme.slice(0, slashIdx)).toLowerCase();
+  const rest = slashIdx === -1 ? "/" : afterScheme.slice(slashIdx);
+  const isYoutubeHost =
+    host === "youtube.com" ||
+    host === "www.youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "music.youtube.com";
+  if (!isYoutubeHost) return false;
+  const path = (rest.split(/[?#]/)[0] ?? "/").replace(/\/+$/, "").toLowerCase();
+  return (
+    path === "" ||
+    path === "/results" ||
+    path === "/feed" ||
+    path.startsWith("/feed/")
+  );
 }
 
 // ---------------------------------------------------------------------------

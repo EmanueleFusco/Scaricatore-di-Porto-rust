@@ -5,7 +5,8 @@
    * "unsaved form" state to get wrong.
    */
   import { languageName, type LangPreference } from "$lib/i18n";
-  import { clampCap } from "$lib/settings";
+  import { onMount } from "svelte";
+  import { clampCap, isPlaylistUrlBehavior, type PlaylistUrlBehavior } from "$lib/settings";
   import { settingsStore, activeLang, tt } from "$lib/stores/settings.svelte";
   import type { ThemePreference } from "$lib/theme";
 
@@ -26,6 +27,27 @@
     const value = (event.currentTarget as HTMLSelectElement).value as ThemePreference;
     void settingsStore.update({ theme: value });
   };
+
+  const playlistOptions: { value: PlaylistUrlBehavior; key: string }[] = [
+    { value: "ask", key: "settings.playlistUrl.ask" },
+    { value: "video", key: "settings.playlistUrl.video" },
+    { value: "playlist", key: "settings.playlistUrl.playlist" },
+  ];
+
+  /** How many videos `archive.txt` remembers (spec §6.4, §11.8). */
+  let archiveEntries = $state(0);
+  let archiveCleared = $state(false);
+
+  onMount(() => {
+    void settingsStore.archiveStatus().then((view) => (archiveEntries = view.entries));
+  });
+
+  async function clearArchive(): Promise<void> {
+    const view = await settingsStore.archiveClear();
+    archiveEntries = view.entries;
+    archiveCleared = true;
+    setTimeout(() => (archiveCleared = false), 2500);
+  }
 
   /** What a number field can hand over, clamped (spec §7.2). */
   const cap = (value: number, min: number, max: number, fallback: number): number =>
@@ -121,6 +143,95 @@
   </div>
 </section>
 
+<section class="card settings__group" aria-labelledby="heading-files">
+  <h2 class="settings__group-title" id="heading-files">{tt("settings.section.files")}</h2>
+
+  <!-- Spec §8.2, §11.8: the `[id]` suffix and the H.264 preference. -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.includeIdInFilename}
+      onchange={(event) =>
+        void settingsStore.update({ includeIdInFilename: event.currentTarget.checked })}
+    />
+    {tt("settings.files.includeId")}
+  </label>
+  <p class="field__hint">{tt("settings.files.includeId.hint")}</p>
+
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.preferH264}
+      onchange={(event) => void settingsStore.update({ preferH264: event.currentTarget.checked })}
+    />
+    {tt("settings.files.preferH264")}
+  </label>
+  <p class="field__hint">{tt("settings.files.preferH264.hint")}</p>
+
+  <div class="field">
+    <label class="field__label" for="setting-limit-rate">{tt("settings.files.limitRate")}</label>
+    <input
+      class="input"
+      id="setting-limit-rate"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="5M"
+      value={settingsStore.settings.limitRate ?? ""}
+      onchange={(event) => void settingsStore.update({ limitRate: event.currentTarget.value })}
+    />
+    <p class="field__hint">{tt("settings.files.limitRate.hint")}</p>
+  </div>
+</section>
+
+<section class="card settings__group" aria-labelledby="heading-playlists">
+  <h2 class="settings__group-title" id="heading-playlists">{tt("settings.section.playlists")}</h2>
+
+  <!-- Spec §6.4: what a `watch?v=…&list=…` link does. -->
+  <div class="field">
+    <label class="field__label" for="setting-playlist-url">{tt("settings.playlistUrl")}</label>
+    <select
+      class="select"
+      id="setting-playlist-url"
+      value={settingsStore.settings.playlistUrlBehavior}
+      onchange={(event) => {
+        const value = event.currentTarget.value;
+        if (isPlaylistUrlBehavior(value)) void settingsStore.update({ playlistUrlBehavior: value });
+      }}
+    >
+      {#each playlistOptions as option (option.value)}
+        <option value={option.value}>{tt(option.key)}</option>
+      {/each}
+    </select>
+    <p class="field__hint">{tt("settings.playlistUrl.hint")}</p>
+  </div>
+
+  <!-- Spec §6.4: the download archive, with the way to clear it. -->
+  <label class="settings__check">
+    <input
+      type="checkbox"
+      checked={settingsStore.settings.useDownloadArchive}
+      onchange={(event) =>
+        void settingsStore.update({ useDownloadArchive: event.currentTarget.checked })}
+    />
+    {tt("settings.archive.use")}
+  </label>
+  <p class="field__hint">{tt("settings.archive.hint")}</p>
+  <div class="settings__row">
+    <span class="field__hint" role="status">
+      {archiveCleared ? tt("settings.archive.cleared") : tt("settings.archive.count", { count: archiveEntries })}
+    </span>
+    <button
+      type="button"
+      class="btn"
+      disabled={archiveEntries === 0}
+      onclick={() => void clearArchive()}
+    >
+      {tt("settings.archive.clear")}
+    </button>
+  </div>
+</section>
+
 <section class="card settings__group" aria-labelledby="heading-behaviour">
   <h2 class="settings__group-title" id="heading-behaviour">
     {tt("settings.section.behaviour")}
@@ -175,6 +286,13 @@
     gap: var(--space-2);
     align-items: center;
     font-size: 13px;
+  }
+
+  .settings__row {
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+    flex-wrap: wrap;
   }
 
   .input[type="number"] {

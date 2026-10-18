@@ -110,6 +110,54 @@ pub struct AddItemRequest {
     pub output_dir: Option<String>,
     #[serde(default)]
     pub group_id: Option<String>,
+    /// A sub-folder under the resolved output folder, e.g. the playlist title
+    /// (spec §6.4 "folder per playlist"). Sanitised here, never trusted from the
+    /// frontend: it may hold path separators or reserved Windows names.
+    #[serde(default)]
+    pub output_subdir: Option<String>,
+    /// Optional literal prefix before `%(title).180B` in `-o`, e.g. `"01 - "`
+    /// (spec §6.4, §8.2).
+    #[serde(default)]
+    pub filename_prefix: Option<String>,
+    /// Per-item override for `[%(id)s]` suffix in filenames (spec §8.2, §11.8).
+    #[serde(default)]
+    pub include_id_in_filename: Option<bool>,
+    /// Per-item override for `-S vcodec:h264,res,acodec:m4a` (spec §8.2, §11.8).
+    #[serde(default)]
+    pub prefer_h264: Option<bool>,
+    /// Pass `--download-archive <app-data>/archive.txt` for this item (spec
+    /// §6.2.4, §8.2, §11.4).
+    #[serde(default)]
+    pub use_archive: Option<bool>,
+    /// Optional `(min, max)` sleep interval in seconds for playlists > 20 items
+    /// (spec §6.4, §8.2).
+    #[serde(default)]
+    pub sleep_interval: Option<(u32, u32)>,
+    /// Live stream recording mode (`Some(true)` = `--live-from-start`,
+    /// `Some(false)` = `--no-live-from-start`, `None` = normal VOD, spec §6.4).
+    #[serde(default)]
+    pub live_from_start: Option<bool>,
+    /// Per-link `--referer` override from Add bar "More options" (spec §6.3.4,
+    /// §11.3).
+    #[serde(default)]
+    pub referer: Option<String>,
+    /// Per-link `--user-agent` override from Add bar "More options" (spec
+    /// §6.3.4, §11.3).
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// Extra `Header: Value` lines from Add bar "More options" (spec §6.3.4,
+    /// §11.3).
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    pub custom_headers: Vec<String>,
+}
+
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 /// The quality picker of spec §8.2, as the frontend sends it.
@@ -205,6 +253,7 @@ pub async fn queue_add<R: Runtime>(
     }
     let queue = state.require_queue()?;
     let settings = state.settings();
+    let archive_path = state.tools().archive_path();
 
     let mut requests = Vec::with_capacity(items.len());
     for item in items {
@@ -230,6 +279,15 @@ pub async fn queue_add<R: Runtime>(
                 "no output folder: pick one in Settings, or set a default in your OS",
             )
         })?;
+        let dir = match item
+            .output_subdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => dir.join(crate::services::paths::sanitize_component(name, 100)),
+            None => dir,
+        };
         crate::services::paths::ensure_dir(&dir).map_err(|err| {
             ErrorInfo::new(
                 ErrorCode::Io,
@@ -247,6 +305,16 @@ pub async fn queue_add<R: Runtime>(
         } else {
             Kind::Video
         };
+
+        let mut custom_headers = settings.custom_headers.clone();
+        for header in item.custom_headers {
+            let trimmed = header.trim();
+            if !trimmed.is_empty() && trimmed.contains(':') && !trimmed.contains(['\r', '\n']) {
+                custom_headers.push(trimmed.to_owned());
+            }
+        }
+        let use_archive = item.use_archive.unwrap_or(settings.use_download_archive);
+
         let options = ItemOptions {
             kind,
             // An audio-only item whose quality says otherwise is a bug in the
@@ -262,6 +330,26 @@ pub async fn queue_add<R: Runtime>(
                 settings.cookies_file.as_ref(),
             ),
             runtime_mode: settings.js_runtime_mode,
+            filename_prefix: item.filename_prefix,
+            include_id_in_filename: item
+                .include_id_in_filename
+                .unwrap_or(settings.include_id_in_filename),
+            prefer_h264: item.prefer_h264.unwrap_or(settings.prefer_h264),
+            archive_file: use_archive.then(|| archive_path.clone()),
+            sleep_interval: item.sleep_interval,
+            live_from_start: item.live_from_start,
+            proxy: settings.proxy_url.clone(),
+            limit_rate: settings.limit_rate.clone(),
+            referer: item
+                .referer
+                .filter(|s| !s.trim().is_empty() && !s.contains(['\r', '\n']))
+                .or_else(|| settings.custom_referer.clone()),
+            user_agent: item
+                .user_agent
+                .filter(|s| !s.trim().is_empty() && !s.contains(['\r', '\n']))
+                .or_else(|| settings.custom_user_agent.clone()),
+            custom_headers,
+            impersonate_retry: settings.impersonate_retry,
         };
 
         requests.push(AddRequest {
@@ -344,6 +432,43 @@ pub fn queue_move_to_top(state: State<'_, AppState>, id: String) -> AppResult<bo
 #[tauri::command]
 pub fn queue_clear_finished(state: State<'_, AppState>) -> AppResult<Vec<String>> {
     Ok(state.require_queue()?.clear_finished())
+}
+
+/// Register or update a playlist group (spec §6.4, §7.1, §11.5).
+#[tauri::command]
+pub fn queue_upsert_group(
+    state: State<'_, AppState>,
+    group: crate::services::queue::model::QueueGroup,
+) -> AppResult<()> {
+    state.require_queue()?.upsert_group(group);
+    Ok(())
+}
+
+/// Pause every item in a playlist group (spec §6.4, §11.5).
+#[tauri::command]
+pub fn queue_pause_group(state: State<'_, AppState>, group_id: String) -> AppResult<Vec<String>> {
+    Ok(state.require_queue()?.pause_group(&group_id))
+}
+
+/// Resume every paused/interrupted item in a playlist group (spec §6.4, §11.5).
+#[tauri::command]
+pub fn queue_resume_group(state: State<'_, AppState>, group_id: String) -> AppResult<Vec<String>> {
+    Ok(state.require_queue()?.resume_group(&group_id))
+}
+
+/// Retry every failed item in a playlist group (spec §6.4, §11.5).
+#[tauri::command]
+pub fn queue_retry_group_failed(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<Vec<String>> {
+    Ok(state.require_queue()?.retry_group_failed(&group_id))
+}
+
+/// Remove every item in a playlist group and the group itself (spec §6.4, §11.5).
+#[tauri::command]
+pub fn queue_remove_group(state: State<'_, AppState>, group_id: String) -> AppResult<Vec<String>> {
+    Ok(state.require_queue()?.remove_group(&group_id))
 }
 
 /// The lanes in force, so the Add bar can say what the queue will do

@@ -225,11 +225,11 @@ async fn a_real_inspection_and_download_end_to_end() {
     // 2. Download it at the smallest available height (the zoo is 144p).
     let request = JobRequest {
         url: inspect::SELF_TEST_URL.to_owned(),
-        spec: DownloadSpec {
-            kind: JobKind::Video,
-            quality: FormatChoice::MaxHeight { height: 144 },
-            cookies: CookieSource::None,
-        },
+        spec: DownloadSpec::new(
+            JobKind::Video,
+            FormatChoice::MaxHeight { height: 144 },
+            CookieSource::None,
+        ),
         dirs: JobDirs {
             home: out.clone(),
             temp: out.join(".sdp-tmp-real"),
@@ -269,11 +269,7 @@ async fn a_real_inspection_and_download_end_to_end() {
     // 3. The audio-only path produces the documented .opus.
     let audio = JobRequest {
         url: inspect::SELF_TEST_URL.to_owned(),
-        spec: DownloadSpec {
-            kind: JobKind::Audio,
-            quality: FormatChoice::AudioOnly,
-            cookies: CookieSource::None,
-        },
+        spec: DownloadSpec::new(JobKind::Audio, FormatChoice::AudioOnly, CookieSource::None),
         dirs: JobDirs {
             home: out.clone(),
             temp: out.join(".sdp-tmp-real-audio"),

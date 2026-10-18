@@ -4,6 +4,9 @@ import {
   INSPECT_DEBOUNCE_MS,
   MetadataCache,
   inspectDelay,
+  isMixUrl,
+  isSearchOrFeedUrl,
+  isVideoWithListUrl,
   normaliseInspected,
   secondsToClock,
   type Inspected,
@@ -43,19 +46,43 @@ describe("normaliseInspected", () => {
     expect(inspected.isLive).toBe(false);
   });
 
-  it("keeps a playlist stub and its count", () => {
+  it("keeps a playlist stub, its count, webpageUrl and entries", () => {
     const inspected = normaliseInspected({
       kind: "playlist",
       id: "PL1",
       title: "A playlist",
       site: "Youtube",
+      webpageUrl: "https://www.youtube.com/playlist?list=PL1",
       playlistKind: "playlist",
       count: 42,
+      entries: [
+        {
+          index: 1,
+          id: "v1",
+          url: "https://www.youtube.com/watch?v=v1",
+          title: "First",
+          duration: 120,
+          available: true,
+        },
+        {
+          index: 2,
+          id: "v2",
+          url: "https://www.youtube.com/watch?v=v2",
+          title: "[Private video]",
+          duration: null,
+          available: false,
+        },
+      ],
     });
     expect(inspected.kind).toBe("playlist");
     if (inspected.kind !== "playlist") throw new Error("type");
     expect(inspected.playlistKind).toBe("playlist");
     expect(inspected.count).toBe(42);
+    expect(inspected.webpageUrl).toBe("https://www.youtube.com/playlist?list=PL1");
+    expect(inspected.entries).toHaveLength(2);
+    expect(inspected.entries[0]?.title).toBe("First");
+    expect(inspected.entries[0]?.available).toBe(true);
+    expect(inspected.entries[1]?.available).toBe(false);
   });
 
   it("classifies an unknown playlist kind as other", () => {
@@ -70,6 +97,29 @@ describe("normaliseInspected", () => {
     expect(inspected.code).toBe("AUTH");
     expect(inspected.messageKey).toBe("error.ytdlp.unknown");
     expect(inspected.detail).toBe("sign in");
+  });
+});
+
+describe("URL-case classifiers (spec §6.4)", () => {
+  it("recognises watch?v=...&list=... URLs", () => {
+    expect(isVideoWithListUrl("https://www.youtube.com/watch?v=abc&list=PL123")).toBe(true);
+    expect(isVideoWithListUrl("https://youtu.be/abc?list=PL123")).toBe(true);
+    expect(isVideoWithListUrl("https://www.youtube.com/playlist?list=PL123")).toBe(false);
+    expect(isVideoWithListUrl("https://www.youtube.com/watch?v=abc")).toBe(false);
+  });
+
+  it("recognises YouTube Mix/Radio URLs", () => {
+    expect(isMixUrl("https://www.youtube.com/watch?v=abc&list=RDabc")).toBe(true);
+    expect(isMixUrl("https://www.youtube.com/playlist?list=RDMM")).toBe(true);
+    expect(isMixUrl("https://www.youtube.com/playlist?list=PL123")).toBe(false);
+  });
+
+  it("recognises YouTube search, feed and home pages", () => {
+    expect(isSearchOrFeedUrl("https://www.youtube.com/results?search_query=rust")).toBe(true);
+    expect(isSearchOrFeedUrl("https://www.youtube.com/feed/subscriptions")).toBe(true);
+    expect(isSearchOrFeedUrl("https://www.youtube.com/")).toBe(true);
+    expect(isSearchOrFeedUrl("https://www.youtube.com/@SomeChannel/videos")).toBe(false);
+    expect(isSearchOrFeedUrl("https://vimeo.com/")).toBe(false);
   });
 });
 

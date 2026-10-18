@@ -281,6 +281,27 @@ class QueueStore {
     await this.#invoke("queue_clear_finished");
   }
 
+  /** Create or update a playlist group header (spec §6.4, §11.5). */
+  async upsertGroup(group: QueueGroup): Promise<void> {
+    await this.#invoke("queue_upsert_group", { group });
+  }
+
+  async pauseGroup(groupId: string): Promise<void> {
+    await this.#invoke("queue_pause_group", { groupId });
+  }
+
+  async resumeGroup(groupId: string): Promise<void> {
+    await this.#invoke("queue_resume_group", { groupId });
+  }
+
+  async retryGroupFailed(groupId: string): Promise<void> {
+    await this.#invoke("queue_retry_group_failed", { groupId });
+  }
+
+  async removeGroup(groupId: string): Promise<void> {
+    await this.#invoke("queue_remove_group", { groupId });
+  }
+
   /** Reorder from the visible list: the new order of the ids on screen. */
   async reorder(ids: string[]): Promise<void> {
     if (!isTauriRuntime()) return;

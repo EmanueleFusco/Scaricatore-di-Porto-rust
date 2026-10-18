@@ -71,6 +71,18 @@ describe("normaliseSettings()", () => {
   });
 });
 
+describe("M3 settings", () => {
+  it("defaults the playlist behaviour to ask and the archive off", () => {
+    const out = normaliseSettings({ playlistUrlBehavior: "bogus" as never, customHeaders: [" X: 1 ", "", 3 as never] });
+    expect(out.playlistUrlBehavior).toBe("ask");
+    expect(out.useDownloadArchive).toBe(false);
+    expect(out.includeIdInFilename).toBe(true);
+    expect(out.impersonateRetry).toBe(true);
+    expect(out.customHeaders).toEqual(["X: 1"]);
+    expect(normaliseSettings({ proxyUrl: "  " }).proxyUrl).toBeNull();
+  });
+});
+
 describe("sanitizePlayerClients() (spec §5.3.7, D74)", () => {
   it("normalises a real client list", () => {
     expect(sanitizePlayerClients("  WEB_EMBEDDED,web,Tv ")).toBe("web_embedded,web,tv");

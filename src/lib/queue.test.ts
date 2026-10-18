@@ -15,6 +15,11 @@ import {
   detailsText,
   emptyQueueState,
   fileName,
+  groupPercent,
+  groupStats,
+  itemsOutsideCollapsed,
+  nonEmptyGroups,
+  wasSkippedByArchive,
   formatBytes,
   heightWarning,
   isActive,
@@ -46,7 +51,10 @@ import {
 } from "$lib/queue";
 import {
   choiceOf,
+  explicitChoiceFor,
   newLinks,
+  parseHeaderLines,
+  tableFormats,
   qualityValue,
   rowQualityOptions,
   splitLinks,
@@ -67,6 +75,18 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
       outputDir: "/home/user/Videos",
       cookies: { kind: "none" },
       runtimeMode: "auto",
+      filenamePrefix: null,
+      includeIdInFilename: true,
+      preferH264: false,
+      archiveFile: null,
+      sleepInterval: null,
+      liveFromStart: null,
+      proxy: null,
+      limitRate: null,
+      referer: null,
+      userAgent: null,
+      customHeaders: [],
+      impersonateRetry: true,
     },
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
@@ -648,6 +668,7 @@ function update(overrides: Partial<QueueUpdate> = {}): QueueUpdate {
     items: [],
     removed: [],
     order: null,
+    groups: null,
     summary: summary(),
     toast: null,
     ...overrides,
@@ -710,6 +731,26 @@ describe("folding an event into what the UI shows", () => {
     const before = applyUpdate(emptyQueueState(), update({ seq: 1, toast }));
     const after = applyUpdate(before, update({ seq: 2 }));
     expect(after.toast).toBe(toast);
+  });
+});
+
+describe("groups in events (M3)", () => {
+  it("replaces the groups only when the event carries them", () => {
+    const group = { id: "g1", title: "PL", folder: null, index: 0 };
+    const withGroups = applyUpdate(emptyQueueState(), update({ seq: 1, groups: [group] }));
+    expect(withGroups.groups).toEqual([group]);
+    const unchanged = applyUpdate(withGroups, update({ seq: 2 }));
+    expect(unchanged.groups).toBe(withGroups.groups);
+    expect(applyUpdate(unchanged, update({ seq: 3, groups: [] })).groups).toEqual([]);
+  });
+
+  it("reads M3 item options with safe defaults", () => {
+    const parsed = normaliseItem({ options: { filenamePrefix: "01 - ", sleepInterval: [1, 4], liveFromStart: true } });
+    expect(parsed.options.filenamePrefix).toBe("01 - ");
+    expect(parsed.options.sleepInterval).toEqual([1, 4]);
+    expect(parsed.options.liveFromStart).toBe(true);
+    expect(parsed.options.includeIdInFilename).toBe(true);
+    expect(parsed.options.customHeaders).toEqual([]);
   });
 });
 
@@ -778,5 +819,102 @@ describe("folding the initial read in", () => {
       true,
     );
     expect(after.groups[0].title).toBe("A playlist");
+  });
+});
+
+describe("the custom header lines (M3)", () => {
+  it("keeps well-formed `Name: value` lines and drops the rest", () => {
+    expect(parseHeaderLines("X-One: 1\n  X-Two:  2  \nno colon\n: empty name\nEmpty:\n")).toEqual([
+      "X-One: 1",
+      "X-Two:  2",
+    ]);
+    expect(parseHeaderLines("")).toEqual([]);
+  });
+});
+
+describe("the advanced format table (M3)", () => {
+  const fmt = (formatId: string, over: Record<string, unknown> = {}) => ({
+    formatId,
+    ext: "mp4",
+    height: null,
+    width: null,
+    fps: null,
+    vcodec: null,
+    acodec: null,
+    filesize: null,
+    protocol: "https",
+    note: null,
+    ...over,
+  });
+
+  it("drops storyboards and lists video tallest first, then audio", () => {
+    const rows = tableFormats([
+      fmt("sb0", { ext: "mhtml", protocol: "mhtml" }),
+      fmt("251", { ext: "webm", vcodec: "none", acodec: "opus", filesize: 10 }),
+      fmt("136", { height: 720, vcodec: "avc1", acodec: "none" }),
+      fmt("137", { height: 1080, vcodec: "avc1", acodec: "none" }),
+      fmt("140", { ext: "m4a", vcodec: "none", acodec: "mp4a", filesize: 20 }),
+    ]);
+    expect(rows.map((row) => row.formatId)).toEqual(["137", "136", "140", "251"]);
+  });
+
+  it("tells whether a stream already has sound", () => {
+    expect(explicitChoiceFor(fmt("18", { acodec: "mp4a" }))).toEqual({
+      kind: "explicit",
+      formatId: "18",
+      hasAudio: true,
+    });
+    expect(explicitChoiceFor(fmt("137", { acodec: "none" }))).toMatchObject({ hasAudio: false });
+  });
+});
+
+describe("playlist groups (M3)", () => {
+  const inGroup = (id: string, state: ItemState, extra: Partial<QueueItem> = {}) =>
+    item({ id, groupId: "g1", state, ...extra });
+
+  it("counts a group's items by what they are doing", () => {
+    const stats = groupStats("g1", [
+      inGroup("a", "done", { file: "/out/PL/001 - a.mkv" }),
+      inGroup("b", "downloading"),
+      inGroup("c", "failed"),
+      inGroup("d", "paused"),
+      inGroup("e", "queued"),
+      item({ id: "x", groupId: "other", state: "done" }),
+    ]);
+    expect(stats).toEqual({
+      total: 5,
+      done: 1,
+      failed: 1,
+      active: 2,
+      paused: 1,
+      firstFile: "/out/PL/001 - a.mkv",
+    });
+    expect(groupPercent(stats)).toBe(20);
+    expect(groupPercent(groupStats("none", []))).toBe(0);
+  });
+
+  it("lists only the groups that still have items, in creation order", () => {
+    const groups = [
+      { id: "g2", title: "Second", folder: null, index: 1 },
+      { id: "g1", title: "First", folder: null, index: 0 },
+      { id: "gone", title: "Empty", folder: null, index: 2 },
+    ];
+    const items = [inGroup("a", "queued"), item({ id: "b", groupId: "g2" })];
+    expect(nonEmptyGroups(groups, items).map((g) => g.id)).toEqual(["g1", "g2"]);
+  });
+
+  it("hides the items of a collapsed group and keeps the order of the rest", () => {
+    const items = [inGroup("a", "queued"), item({ id: "b" }), item({ id: "c", groupId: "g2" })];
+    expect(itemsOutsideCollapsed(items, new Set()).map((i) => i.id)).toEqual(["a", "b", "c"]);
+    expect(itemsOutsideCollapsed(items, new Set(["g1"])).map((i) => i.id)).toEqual(["b", "c"]);
+  });
+
+  it("recognises an item the archive skipped", () => {
+    const skipped = inGroup("a", "done", {
+      progress: { ...item().progress, label: "skippedArchive", percent: 100 },
+    });
+    expect(wasSkippedByArchive(skipped)).toBe(true);
+    expect(wasSkippedByArchive(inGroup("b", "done"))).toBe(false);
+    expect(wasSkippedByArchive({ ...skipped, state: "failed" })).toBe(false);
   });
 });

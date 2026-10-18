@@ -64,7 +64,7 @@
 </script>
 
 <div class="shell">
-  <a class="skip-link" href="#main">{tt("a11y.skipToContent")}</a>
+  <a class="skip-link" href="#main" draggable="false">{tt("a11y.skipToContent")}</a>
   <Sidebar />
   <div class="shell__body">
     <Toast />

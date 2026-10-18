@@ -43,26 +43,14 @@ pub enum QualityRequest {
 impl QualityRequest {
     fn into_spec(self, cookies: CookieSource) -> DownloadSpec {
         match self {
-            Self::Best => DownloadSpec {
-                kind: JobKind::Video,
-                quality: FormatChoice::Best,
-                cookies,
-            },
+            Self::Best => DownloadSpec::new(JobKind::Video, FormatChoice::Best, cookies),
             Self::Exact { height } => {
                 // Sanity bound: a height of 0 or 100000 is a UI bug, and the
                 // selector it would build is nonsense.
                 let height = height.clamp(144, 4320);
-                DownloadSpec {
-                    kind: JobKind::Video,
-                    quality: FormatChoice::Exact { height },
-                    cookies,
-                }
+                DownloadSpec::new(JobKind::Video, FormatChoice::Exact { height }, cookies)
             }
-            Self::AudioOnly => DownloadSpec {
-                kind: JobKind::Audio,
-                quality: FormatChoice::AudioOnly,
-                cookies,
-            },
+            Self::AudioOnly => DownloadSpec::new(JobKind::Audio, FormatChoice::AudioOnly, cookies),
         }
     }
 }
@@ -208,6 +196,19 @@ pub async fn download_start<R: tauri::Runtime>(
                 elapsed_ms: Some(elapsed_ms),
                 requested_height,
                 actual_height,
+                error: None,
+            },
+            JobOutcome::SkippedArchive {
+                runtime,
+                elapsed_ms,
+            } => JobDoneEvent {
+                job_id: started_id.clone(),
+                status: "done",
+                file: None,
+                runtime: Some(runtime.as_str().to_owned()),
+                elapsed_ms: Some(elapsed_ms),
+                requested_height: None,
+                actual_height: None,
                 error: None,
             },
             JobOutcome::Failed(error) => JobDoneEvent {

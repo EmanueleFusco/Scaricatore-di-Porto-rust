@@ -10,8 +10,11 @@
   (a single link is the standard download, priority over what is already
   waiting) and **Aggiungi alla coda** lines them up behind the others.
 
-  "More options" and the transcript options of spec §11.3 arrive with M3/M4:
-  they need the options that do not exist yet.
+  M3 (spec §6.4, §11.3, §11.4) adds, per link: the inline *This video only* /
+  *Whole playlist* choice for `watch?v=…&list=…`, the playlist selection panel,
+  the live-stream *From now* / *From start* choice, the advanced format table,
+  a "More options" box (referer, user agent, headers) and the "Use cookies"
+  banner on an authentication failure. The transcript options arrive with M4.
 -->
 <script lang="ts">
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
@@ -20,12 +23,23 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import CookieBanner from "$lib/components/CookieBanner.svelte";
+  import PlaylistPanel from "$lib/components/PlaylistPanel.svelte";
   import { secondsToClock } from "$lib/inspect";
-  import { QUALITY_PRESETS, choiceOf, rowQualityOptions, splitLinks, qualityValue } from "$lib/addbar";
+  import {
+    QUALITY_PRESETS,
+    choiceOf,
+    explicitChoiceFor,
+    parseHeaderLines,
+    qualityValue,
+    rowQualityOptions,
+    splitLinks,
+    tableFormats,
+  } from "$lib/addbar";
   import { addBarStore, type AddRow } from "$lib/stores/addbar.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
-  import { qualityLabel, type QualityChoice } from "$lib/queue";
+  import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
 
   /** Which of the two actions a click asked for. */
   type AddMode = "download" | "queue";
@@ -156,7 +170,12 @@
     addBarStore.dragging = true;
   }
 
-  function onDragLeave(): void {
+  function onDragLeave(event: DragEvent): void {
+    const current = event.currentTarget as HTMLElement | null;
+    const related = event.relatedTarget as Node | null;
+    if (current !== null && related !== null && current.contains(related)) {
+      return;
+    }
     addBarStore.dragging = false;
   }
 
@@ -301,6 +320,12 @@
                   · <span class="add__live">{tt("queue.badge.live")}</span>
                 {/if}
               </span>
+            {:else if row.state === "choice"}
+              <span class="add__row-title">{row.url}</span>
+            {:else if row.state === "playlist"}
+              <span class="add__row-title">
+                {row.inspected?.kind === "playlist" ? row.inspected.title : row.url}
+              </span>
             {:else if row.state === "skipped"}
               <span class="add__row-title add__row-title--warn">{row.url}</span>
             {:else}
@@ -344,6 +369,164 @@
               {tt("queue.add.remove")}
             </button>
           </div>
+
+          {#if row.state === "choice"}
+            <div class="add__choice" role="group" aria-label={tt("queue.add.choice.title")}>
+              <p class="field__hint">{tt("queue.add.choice.title")}</p>
+              <div class="add__actions">
+                <button
+                  type="button"
+                  class="btn btn--small btn--primary"
+                  onclick={() => void addBarStore.choosePlaylistMode(row.key, "video")}
+                >
+                  {tt("queue.add.choice.video")}
+                </button>
+                <button
+                  type="button"
+                  class="btn btn--small"
+                  onclick={() => void addBarStore.choosePlaylistMode(row.key, "playlist")}
+                >
+                  {tt("queue.add.choice.playlist")}
+                </button>
+              </div>
+              <label class="add__check">
+                <input type="checkbox" bind:checked={addBarStore.rememberChoice} />
+                {tt("queue.add.choice.remember")}
+              </label>
+            </div>
+          {/if}
+
+          {#if row.state === "playlist" && row.inspected?.kind === "playlist"}
+            <div class="add__block">
+              <PlaylistPanel {row} playlist={row.inspected} />
+            </div>
+          {/if}
+
+          {#if row.state === "error" && row.inspected?.kind === "error" && row.inspected.code === "AUTH"}
+            <CookieBanner onApplied={() => void addBarStore.retryRow(row.key)} />
+          {/if}
+
+          {#if row.state === "ready" && video !== null}
+            {#if video.isLive}
+              <fieldset class="add__block add__live-mode">
+                <legend class="field__label">{tt("queue.add.live.title")}</legend>
+                <label class="add__check">
+                  <input
+                    type="radio"
+                    name={`live-${row.key}`}
+                    checked={!row.liveFromStart}
+                    onchange={() => addBarStore.setLiveFromStart(row.key, false)}
+                  />
+                  {tt("queue.add.live.now")}
+                </label>
+                <label class="add__check">
+                  <input
+                    type="radio"
+                    name={`live-${row.key}`}
+                    checked={row.liveFromStart}
+                    onchange={() => addBarStore.setLiveFromStart(row.key, true)}
+                  />
+                  {tt("queue.add.live.start")}
+                </label>
+              </fieldset>
+            {/if}
+
+            {#if video.formats.length > 0}
+              <details class="add__block">
+                <summary>{tt("queue.add.formats.title")}</summary>
+                <div class="add__table-wrap">
+                  <table class="add__table">
+                    <thead>
+                      <tr>
+                        <th scope="col">{tt("queue.add.formats.id")}</th>
+                        <th scope="col">{tt("queue.add.formats.ext")}</th>
+                        <th scope="col">{tt("queue.add.formats.resolution")}</th>
+                        <th scope="col">{tt("queue.add.formats.codecs")}</th>
+                        <th scope="col">{tt("queue.add.formats.size")}</th>
+                        <th scope="col"><span class="sr-only">{tt("queue.add.formats.pick")}</span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each tableFormats(video.formats) as format (format.formatId)}
+                        <tr>
+                          <td>{format.formatId}</td>
+                          <td>{format.ext}</td>
+                          <td>
+                            {format.height !== null ? `${format.height}p` : "—"}{format.fps !== null && format.fps > 30 ? ` ${Math.round(format.fps)}` : ""}
+                          </td>
+                          <td>{[format.vcodec, format.acodec].filter((c) => c !== null && c !== "none").join(" + ") || "—"}</td>
+                          <td>{format.filesize !== null ? formatBytes(format.filesize) : "—"}</td>
+                          <td>
+                            <button
+                              type="button"
+                              class="btn btn--small"
+                              onclick={() => addBarStore.setQuality(row.key, explicitChoiceFor(format))}
+                            >
+                              {tt("queue.add.formats.pick")}
+                            </button>
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+                <p class="field__hint">{tt("queue.add.formats.hint")}</p>
+              </details>
+            {/if}
+          {/if}
+
+          {#if row.state === "ready" || row.state === "error" || row.state === "skipped"}
+            <details class="add__block">
+              <summary>{tt("queue.add.more.title")}</summary>
+              <div class="add__more">
+                <div class="field">
+                  <label class="field__label" for={`more-ref-${row.key}`}>{tt("queue.add.more.referer")}</label>
+                  <input
+                    class="input"
+                    id={`more-ref-${row.key}`}
+                    type="url"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value={row.referer}
+                    oninput={(event) =>
+                      addBarStore.setNetworkOptions(row.key, { referer: event.currentTarget.value })}
+                  />
+                </div>
+                <div class="field">
+                  <label class="field__label" for={`more-ua-${row.key}`}>{tt("queue.add.more.userAgent")}</label>
+                  <input
+                    class="input"
+                    id={`more-ua-${row.key}`}
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value={row.userAgent}
+                    oninput={(event) =>
+                      addBarStore.setNetworkOptions(row.key, { userAgent: event.currentTarget.value })}
+                  />
+                </div>
+                <div class="field">
+                  <label class="field__label" for={`more-hdr-${row.key}`}>{tt("queue.add.more.headers")}</label>
+                  <textarea
+                    class="input add__input"
+                    id={`more-hdr-${row.key}`}
+                    rows="2"
+                    spellcheck="false"
+                    placeholder="Header-Name: value"
+                    value={row.customHeaders}
+                    oninput={(event) =>
+                      addBarStore.setNetworkOptions(row.key, { customHeaders: event.currentTarget.value })}
+                  ></textarea>
+                  <p class="field__hint">
+                    {ttCount("queue.add.more.headers.count", parseHeaderLines(row.customHeaders).length)}
+                  </p>
+                </div>
+                <button type="button" class="btn btn--small" onclick={() => void addBarStore.retryRow(row.key)}>
+                  {tt("queue.add.retry")}
+                </button>
+              </div>
+            </details>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -447,7 +630,7 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    max-height: 260px;
+    max-height: min(70vh, 720px);
     overflow-y: auto;
   }
 
@@ -590,5 +773,62 @@
   .add__error {
     color: var(--danger);
     font-size: 12px;
+  }
+
+  .add__choice,
+  .add__block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .add__live-mode {
+    margin: 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .add__check {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    font-size: 13px;
+  }
+
+  .add__more {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+
+  .add__table-wrap {
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  .add__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .add__table th,
+  .add__table td {
+    padding: var(--space-1) var(--space-2);
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 </style>
