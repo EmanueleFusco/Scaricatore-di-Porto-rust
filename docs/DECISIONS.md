@@ -3280,10 +3280,10 @@ Spec §5.4, §10.2, §11.6, `whisper.models.json`.
    - macOS (arm64, x86_64): Metal enabled (`GGML_METAL=ON`).
    Asset release naming adheres to `sdp-whisper-{target}`.
 2. **Model catalogue (`whisper.models.json`) pinned via Hugging Face Git LFS query**:
-   Contains 11 Whisper ggml models (Tiny, Base, Small, Medium, Large-v3, Large-v3-Turbo with quantized variants) and Silero VAD (`silero-v5.1.2`, 5,463,552 bytes, sha256 `6e033f947704df34baabfb3a1f879fa1e2b6186b5936aa7d6206d2146e5bf13b`).
+   Contains 11 Whisper ggml models (Tiny, Base, Small, Medium, Large-v3, Large-v3-Turbo with quantized variants) and Silero VAD (`silero-v5.1.2` from `ggml-org/whisper-vad`, `ggml-silero-v5.1.2.bin`, 885,098 bytes, sha256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`).
    Every entry has exact byte size and sha256 checksum. `scripts/fetch_models_manifest.mjs` provides offline/online validation (`npm run check:models`).
 3. **Automatic VAD co-download**:
-   As specified in §10.2 ("Silero VAD model fetched together with the first model"), `download_model` checks if `ggml-silero.bin` exists; if not, it transparently downloads and verifies the VAD model first before initiating the target Whisper model download.
+   As specified in §10.2 ("Silero VAD model fetched together with the first model"), `download_model` checks if `ggml-silero-v5.1.2.bin` exists; if not, it transparently downloads and verifies the VAD model first before initiating the target Whisper model download.
 4. **Resumable HTTP Range download and disk space check**:
    Downloader writes to `<model>.part` using HTTP `Range: bytes=N-`, calculates in-progress received bytes, guards against low disk space prior to start, and deletes corrupted `.part` files on sha256 mismatch.
 5. **State and IPC**:
@@ -3306,15 +3306,27 @@ Spec §10.2, §3, §11.5, §14 row M5, §15 item 9.
 4. **Stderr progress parsing & stdout live preview**:
    - Parses stderr progress callbacks: `whisper_print_progress_callback: progress = X%` and maps them cleanly into item stage progress `transcribing (X%)`.
    - Streams live segment text from whisper stdout to item state and UI preview.
-5. **Automatic GPU failure retry with `-ng`**:
-   - If `sdp-whisper` terminates with an error and was launched without `-ng` (GPU enabled), the pipeline automatically retries once on CPU by appending `-ng`.
-   - Emits a warning notification informing the user that GPU transcription failed and CPU fallback was engaged.
+5. **Automatic retry fallback with `-ng`**:
+   - If `sdp-whisper` terminates with an error and was launched without `-ng`, the pipeline automatically retries once on CPU by appending `-ng`.
+   - Emits a warning notification informing the user that transcription failed and CPU fallback was engaged.
 6. **Hallucination detection loop guard**:
-   - Detects repetitive segment loops (>= 5 identical consecutive segments) emitted by Whisper.
-   - Trims repeating tails and emits a warning toast to notify the user.
+   - Detects repetitive segment loops (>= 5 identical consecutive segments) or suspicious silence markers emitted by Whisper (spec §10.2 item 7).
+   - Emits a warning toast to notify the user ("try VAD, a larger model, or set the language") without modifying the transcript text.
 7. **Cancellation & process tree cleanup**:
    - Graceful cancellation via `CancellationToken` terminates the process tree (whisper or ffmpeg) and removes temporary WAV and partial transcript files.
 8. **Queue engine integration**:
    - Added dedicated transcription concurrency semaphore (`max_parallel_transcriptions`).
    - Supports transcription after media download, standalone "Transcribe a local file…" action in the Add bar, and contextual "Transcribe…" action on completed queue items.
+
+### D121 — Errata for D119 and D120: Silero VAD metadata, fallback retry, and hallucination guard (B5)
+
+Review finding B5 identified discrepancies between code/manifest reality and descriptions in D119/D120:
+
+1. **Silero VAD metadata (D119 item 2 & 3)**:
+   The Silero VAD asset in `whisper.models.json` is `ggml-silero-v5.1.2.bin` (885,098 bytes, SHA-256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`) sourced from `ggml-org/whisper-vad`. D119 previously cited an outdated size and hash from `snakers4/silero-vad` and referenced `ggml-silero.bin`.
+2. **CPU fallback on non-zero exit (D120 item 5)**:
+   `whisper.rs` retries with `-ng` upon non-zero exit if `-ng` was not passed. It does not inspect stderr for GPU-specific error strings.
+3. **Hallucination guard behavior (D120 item 6)**:
+   Per spec §10.2 item 7 ("after a run, detect obvious loops (the same segment repeated >= 5 times) or suspicious silence-only output and warn the user"), `detect_hallucination` inspects the transcript and returns a `HallucinationWarning` to display a toast notification. It does not alter, trim, or mutate the written transcript text.
+
 

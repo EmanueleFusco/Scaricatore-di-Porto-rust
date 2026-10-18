@@ -721,3 +721,63 @@ async fn queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp() {
         remaining_shared
     );
 }
+
+#[test]
+fn docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let progress =
+        fs::read_to_string(repo_root.join("docs/PROGRESS.md")).expect("read PROGRESS.md");
+    let decisions =
+        fs::read_to_string(repo_root.join("docs/DECISIONS.md")).expect("read DECISIONS.md");
+
+    // 1. Hallucination guard: must not falsely claim trimming of repetitions (spec §10.2 item 7 is detection & toast warning only)
+    assert!(
+        !progress.contains("segments), trims repetitions"),
+        "PROGRESS.md falsely claims that hallucination guard trims repetitions"
+    );
+    assert!(
+        !decisions.contains("Trims repeating tails"),
+        "DECISIONS.md falsely claims that hallucination guard trims repeating tails"
+    );
+
+    // 2. GPU error fallback: must not falsely claim GPU error detection
+    assert!(
+        !progress.contains("detects GPU errors on non-`-ng` runs"),
+        "PROGRESS.md falsely claims automatic GPU error detection"
+    );
+
+    // 3. Silero VAD metadata: must not cite snakers4/silero-vad or wrong byte size / sha256 in D119
+    assert!(
+        !progress.contains("and snakers4/silero-vad models"),
+        "PROGRESS.md falsely claims VAD model comes from snakers4/silero-vad"
+    );
+    assert!(
+        !decisions.contains("and Silero VAD (`silero-v5.1.2`, 5,463,552 bytes"),
+        "DECISIONS.md falsely claims Silero VAD size is 5,463,552 bytes"
+    );
+    assert!(
+        !decisions.contains("6e033f947704df34baabfb3a1f879fa1e2b6186b5936aa7d6206d2146e5bf13b"),
+        "DECISIONS.md falsely claims Silero VAD sha256 is 6e033f94..."
+    );
+    assert!(
+        !decisions.contains("checks if ggml-silero.bin exists"),
+        "DECISIONS.md D119 falsely claims checking for ggml-silero.bin"
+    );
+
+    // Positive checks: DECISIONS.md and whisper.models.json agree
+    let models_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo_root.join("whisper.models.json"))
+            .expect("read whisper.models.json"),
+    )
+    .expect("parse whisper.models.json");
+    let vad_size = models_json["vad"]["sizeBytes"].as_u64().unwrap();
+    let vad_sha = models_json["vad"]["sha256"].as_str().unwrap();
+    assert_eq!(vad_size, 885098);
+    assert_eq!(
+        vad_sha,
+        "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+    );
+    assert!(decisions.contains("885,098 bytes"));
+    assert!(decisions.contains("29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"));
+    assert!(decisions.contains("ggml-org/whisper-vad"));
+}

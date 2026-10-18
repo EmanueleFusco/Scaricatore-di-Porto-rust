@@ -3571,7 +3571,7 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: Transcription audio extraction and whisper CLI execution pipeline (reserved for phase M5-B).
 - Spec items marked "verify" that I checked:
   - whisper.cpp release asset and version tags verified on ggml-org/whisper.cpp (`v1.9.5`).
-  - Hugging Face Git LFS metadata verified for ggerganov/whisper.cpp and snakers4/silero-vad models.
+  - Hugging Face Git LFS metadata verified for ggerganov/whisper.cpp and ggml-org/whisper-vad models.
 - Decisions/deviations (also in DECISIONS.md): D119.
 - Next step: proceed to Phase M5-B (transcription pipeline, chunking, and subtitle generation).
 
@@ -3604,8 +3604,8 @@ Branch `m4-media-processing`.
     - Automatic cue offsetting and index renumbering for merged SRT and VTT outputs.
     - Pinned CLI flags for `sdp-whisper`: `-m`, `-f`, `-l`, `-tr`, `-pp`, `-otxt`, `-osrt`, `-ovtt`, `-of`, `--vad`, `-vm`, `-t`, `-ng`.
     - Real-time progress parsing (`-pp`) mapped to `transcribing (X%)` and live segment preview on stdout.
-    - Automatic GPU failure fallback: detects GPU errors on non-`-ng` runs, retries once on CPU with `-ng`, and emits warning toast.
-    - Hallucination guard: detects repetitive segment loops (>=5 identical consecutive segments), trims repetitions, and emits a warning toast.
+    - Automatic retry fallback: on non-zero exit from an initial run without `-ng`, retries once on CPU with `-ng`, and emits warning toast.
+    - Hallucination guard: detects repetitive segment loops (>=5 identical consecutive segments) or suspicious silence, and emits a warning toast (spec §10.2 item 7).
     - Graceful process tree cancellation and cleanup of temporary WAV and partial transcript files.
     - Directory resolution supporting direct alongside media or dedicated `transcripts/` subfolder.
   - Queue engine and IPC integration:
@@ -3711,4 +3711,26 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Correct PROGRESS.md and DECISIONS.md claims for VAD, GPU retry, and hallucination guard (B5, Checklist #6, #12, #15, spec §10.2)
+- Done:
+  - Corrected false claims in `docs/PROGRESS.md` and `docs/DECISIONS.md` identified in review finding B5:
+    - Hallucination guard: removed false claim of segment trimming. The pipeline detects repetitive loops (>= 5 consecutive segments) and suspicious silence, and emits a warning toast notification per spec §10.2 item 7 without mutating the generated transcript files.
+    - Automatic CPU retry fallback: clarified that non-zero exit from an initial run without `-ng` retries once with `-ng`, correcting the claim that specific GPU errors are detected prior to retry.
+    - Silero VAD metadata: corrected model catalog descriptions in `docs/DECISIONS.md` D119 and `docs/PROGRESS.md` to reference `ggml-org/whisper-vad` (`ggml-silero-v5.1.2.bin`, 885,098 bytes, SHA-256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`), replacing obsolete references to `snakers4/silero-vad` and `ggml-silero.bin` (5,463,552 bytes).
+    - Recorded errata entry D121 in `docs/DECISIONS.md`.
+    - Added test `docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality` in `src-tauri/tests/whisper_pipeline.rs` enforcing documentation veracity against actual manifest and behavior.
+- Verified by running:
+  - `cargo test --test whisper_pipeline docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality` → FAILS before fix (panic: `PROGRESS.md falsely claims that hallucination guard trims repetitions`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 366 unit + 157 integration = 523 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed, 0 failed.
+  - `npm run check:models` → OK: 11 model(s), VAD model present, schema 1.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D121.
+- Next step: address remaining review findings.
+
 
