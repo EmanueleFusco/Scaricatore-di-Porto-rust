@@ -91,6 +91,8 @@
    */
   onMount(() => {
     void toolsStore.probeEncoders();
+    void toolsStore.refresh();
+    void modelsStore.init();
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview()
@@ -776,6 +778,46 @@
                             <option value="tiny-q5_1">Tiny (tiny-q5_1)</option>
                           {/if}
                         </select>
+                        {#if modelsStore.view.models.length > 0}
+                          {@const selectedModel = modelsStore.view.models.find((m) => m.id === (row.whisperModel ?? settingsStore.settings.activeWhisperModel ?? "large-v3-turbo-q5_0"))}
+                          {#if selectedModel && selectedModel.state.kind !== "installed"}
+                            <button
+                              type="button"
+                              class="btn btn--small"
+                              style="margin-top: 4px;"
+                              disabled={modelsStore.busy || (modelsStore.downloadingModelId !== null && modelsStore.downloadingModelId !== selectedModel.id)}
+                              onclick={() => void modelsStore.download(selectedModel.id)}
+                            >
+                              {#if modelsStore.downloadingModelId === selectedModel.id}
+                                {modelsStore.downloadPercent !== null
+                                  ? tt("models.action.downloading", { percent: modelsStore.downloadPercent })
+                                  : tt("models.action.downloadingUnknown")}
+                              {:else}
+                                {tt("job.whisperModel.download")}
+                              {/if}
+                            </button>
+                          {/if}
+                        {/if}
+                        {#if toolsStore.view.tools.length > 0}
+                          {@const whisperInstalled = toolsStore.view.tools.some((t) => t.name === "sdp-whisper" && t.path !== null)}
+                          {#if !whisperInstalled}
+                            <button
+                              type="button"
+                              class="btn btn--small"
+                              style="margin-top: 4px;"
+                              disabled={toolsStore.installingTool !== null}
+                              onclick={() => void toolsStore.install("sdp-whisper")}
+                            >
+                              {#if toolsStore.installingTool === "sdp-whisper"}
+                                {toolsStore.installPercent !== null
+                                  ? tt("tools.action.installing", { percent: toolsStore.installPercent })
+                                  : tt("tools.action.installingUnknown")}
+                              {:else}
+                                {tt("job.whisper.install")}
+                              {/if}
+                            </button>
+                          {/if}
+                        {/if}
                       </div>
 
                       <div class="field">

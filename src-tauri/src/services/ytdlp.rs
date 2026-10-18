@@ -1100,6 +1100,10 @@ pub enum YtdlpErrorCode {
     /// (spec §5.3.2: "ask once, remember the answer" — the UI offers the
     /// install).
     DenoMissing,
+    /// sdp-whisper sidecar binary is not installed (spec §10.2, §5.4).
+    WhisperMissing,
+    /// The requested Whisper model is not downloaded/installed on disk (spec §10.2).
+    WhisperModelMissing,
     Unknown,
 }
 
@@ -1120,6 +1124,8 @@ impl YtdlpErrorCode {
             Self::Network => "NETWORK",
             Self::Extract => "EXTRACT",
             Self::DenoMissing => "DENO_MISSING",
+            Self::WhisperMissing => "WHISPER_MISSING",
+            Self::WhisperModelMissing => "WHISPER_MODEL_MISSING",
             Self::Unknown => "UNKNOWN",
         }
     }
@@ -1147,6 +1153,8 @@ impl YtdlpErrorCode {
             "NETWORK" => Self::Network,
             "EXTRACT" => Self::Extract,
             "DENO_MISSING" => Self::DenoMissing,
+            "WHISPER_MISSING" => Self::WhisperMissing,
+            "WHISPER_MODEL_MISSING" => Self::WhisperModelMissing,
             _ => Self::Unknown,
         }
     }
@@ -1168,6 +1176,8 @@ impl YtdlpErrorCode {
             Self::Network => "error.ytdlp.network",
             Self::Extract => "error.ytdlp.extract",
             Self::DenoMissing => "error.ytdlp.denoMissing",
+            Self::WhisperMissing => "error.ytdlp.whisperMissing",
+            Self::WhisperModelMissing => "error.ytdlp.whisperModelMissing",
             Self::Unknown => "error.ytdlp.unknown",
         }
     }
@@ -2211,7 +2221,7 @@ mod tests {
     }
 
     /// Every error code, so a new one has to be added here and looked at.
-    const CODES: [YtdlpErrorCode; 15] = [
+    const CODES: [YtdlpErrorCode; 17] = [
         YtdlpErrorCode::FfmpegMissing,
         YtdlpErrorCode::YtChallenge,
         YtdlpErrorCode::Auth,
@@ -2226,6 +2236,8 @@ mod tests {
         YtdlpErrorCode::Network,
         YtdlpErrorCode::Extract,
         YtdlpErrorCode::DenoMissing,
+        YtdlpErrorCode::WhisperMissing,
+        YtdlpErrorCode::WhisperModelMissing,
         YtdlpErrorCode::Unknown,
     ];
 

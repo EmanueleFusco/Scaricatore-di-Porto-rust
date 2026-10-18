@@ -399,7 +399,7 @@ async fn transcribe_chunking_with_silencedetect_and_merges() {
 // ---------------------------------------------------------------------------
 
 struct QueueFakeTools {
-    whisper: PathBuf,
+    whisper: Option<PathBuf>,
     ffmpeg: PathBuf,
     models_dir: PathBuf,
     default_model: String,
@@ -416,7 +416,7 @@ impl ToolProvider for QueueFakeTools {
             ytdlp: self.ffmpeg.clone(),
             ffmpeg: Some(self.ffmpeg.clone()),
             ffprobe: Some(self.ffmpeg.clone()),
-            whisper: Some(self.whisper.clone()),
+            whisper: self.whisper.clone(),
             models_dir: Some(self.models_dir.clone()),
             whisper_threads: 2,
             skip_silence_vad: true,
@@ -448,7 +448,7 @@ async fn queue_engine_transcribes_local_media_end_to_end() {
 
     let queue_path = fix.dir.path().join("queue.json");
     let tools = Arc::new(QueueFakeTools {
-        whisper: fix.fake_whisper.clone(),
+        whisper: Some(fix.fake_whisper.clone()),
         ffmpeg: fix.fake_ffmpeg.clone(),
         models_dir: fix.models_dir.clone(),
         default_model: "large-v3-turbo-q5_0".to_string(),
@@ -672,7 +672,7 @@ async fn queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp() {
 
     let queue_path = fix.dir.path().join("queue_job_temp.json");
     let tools = Arc::new(QueueFakeTools {
-        whisper: fix.fake_whisper.clone(),
+        whisper: Some(fix.fake_whisper.clone()),
         ffmpeg: fix.fake_ffmpeg.clone(),
         models_dir: fix.models_dir.clone(),
         default_model: "large-v3-turbo-q5_0".to_string(),
@@ -875,5 +875,210 @@ async fn detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer(
     assert!(
         intervals.iter().any(|i| (i.start_sec - 1770.0).abs() < 0.1),
         "silence interval around 30m boundary at t=1770.0s was lost"
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_fails_with_whisper_model_missing_when_model_not_installed() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("uninstalled_model.mp4");
+
+    let queue_path = fix.dir.path().join("queue_missing_model.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Missing Model".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("small-q5_1".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                let error = item.error.as_ref().expect("item error must be present");
+                assert_eq!(
+                    error.code, "WHISPER_MODEL_MISSING",
+                    "missing model error code must be WHISPER_MODEL_MISSING"
+                );
+                assert_eq!(
+                    error.message_key, "error.ytdlp.whisperModelMissing",
+                    "missing model message_key must be error.ytdlp.whisperModelMissing"
+                );
+                assert_eq!(
+                    error.detail.as_deref(),
+                    Some("small-q5_1"),
+                    "missing model detail should contain the model ID"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper model is not installed"
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_fails_with_whisper_missing_when_sidecar_not_found() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("missing_sidecar.mp4");
+
+    let queue_path = fix.dir.path().join("queue_missing_sidecar.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: None,
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Missing Sidecar".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                let error = item.error.as_ref().expect("item error must be present");
+                assert_eq!(
+                    error.code, "WHISPER_MISSING",
+                    "missing sidecar error code must be WHISPER_MISSING"
+                );
+                assert_eq!(
+                    error.message_key, "error.ytdlp.whisperMissing",
+                    "missing sidecar message_key must be error.ytdlp.whisperMissing"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper sidecar is not installed"
     );
 }

@@ -851,6 +851,22 @@ fn push_toast(inner: &Arc<Inner>, toast: QueueToast) {
     inner.dirty.notify_waiters();
 }
 
+fn transcription_error_outcome(err: crate::error::AppError) -> JobOutcome {
+    let err_msg = err.to_string();
+    match err {
+        crate::error::AppError::WhisperMissing => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::WhisperMissing, err_msg))
+        }
+        crate::error::AppError::WhisperModelMissing(model) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::WhisperModelMissing, model))
+        }
+        _ => JobOutcome::Failed(YtdlpError::new(
+            YtdlpErrorCode::Unknown,
+            format!("Transcription failed: {err_msg}"),
+        )),
+    }
+}
+
 fn note_removed(inner: &Arc<Inner>, id: &str) {
     {
         let mut pending = lock(&inner.pending_removed);
@@ -1392,14 +1408,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                             item.push_log(&err_msg);
                                         }
                                     }
-                                    finish_item(
-                                        &inner,
-                                        &id,
-                                        JobOutcome::Failed(YtdlpError::new(
-                                            YtdlpErrorCode::Unknown,
-                                            format!("Transcription failed: {err_msg}"),
-                                        )),
-                                    );
+                                    finish_item(&inner, &id, transcription_error_outcome(err));
                                     return;
                                 }
                             }
@@ -1493,14 +1502,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                     item.push_log(&err_msg);
                                 }
                             }
-                            finish_item(
-                                &inner,
-                                &id,
-                                JobOutcome::Failed(YtdlpError::new(
-                                    YtdlpErrorCode::Unknown,
-                                    format!("Transcription failed: {err_msg}"),
-                                )),
-                            );
+                            finish_item(&inner, &id, transcription_error_outcome(err));
                             return;
                         }
                     }
@@ -1715,10 +1717,7 @@ async fn run_transcribe_stage(
 
     // 4. Resolve whisper & ffmpeg tools
     let Some(whisper_path) = environment.whisper.as_ref() else {
-        return Err(crate::error::AppError::Process(
-            "sdp-whisper sidecar not found (spec §5.4). Please install or provision it."
-                .to_string(),
-        ));
+        return Err(crate::error::AppError::WhisperMissing);
     };
     let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
         return Err(crate::error::AppError::Process(
@@ -1760,9 +1759,9 @@ async fn run_transcribe_stage(
     };
 
     let Some(model_path) = model_path else {
-        return Err(crate::error::AppError::Process(format!(
-            "Whisper model '{model_id}' is not installed. Please download it from Settings → Transcription & Models."
-        )));
+        return Err(crate::error::AppError::WhisperModelMissing(
+            model_id.to_string(),
+        ));
     };
 
     let vad_model_path = if environment.skip_silence_vad {

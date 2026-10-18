@@ -1416,6 +1416,8 @@ mod tests {
             YtdlpErrorCode::FfmpegMissing,
             YtdlpErrorCode::YtChallenge,
             YtdlpErrorCode::DenoMissing,
+            YtdlpErrorCode::WhisperMissing,
+            YtdlpErrorCode::WhisperModelMissing,
             YtdlpErrorCode::Unknown,
         ] {
             assert!(

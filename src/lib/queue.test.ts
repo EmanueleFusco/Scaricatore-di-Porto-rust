@@ -255,6 +255,27 @@ describe("normalising the backend payloads", () => {
     expect(parsed.logTail).toEqual(["line one"]);
   });
 
+  it("preserves typed WHISPER_MISSING and WHISPER_MODEL_MISSING errors", () => {
+    const whisperMissingItem = normaliseItem({
+      id: "q_whisper",
+      state: "failed",
+      url: "https://a.example/1",
+      error: { code: "WHISPER_MISSING", messageKey: "error.ytdlp.whisperMissing", detail: "sdp-whisper not found" },
+    });
+    expect(whisperMissingItem.error?.code).toBe("WHISPER_MISSING");
+    expect(whisperMissingItem.error?.messageKey).toBe("error.ytdlp.whisperMissing");
+
+    const modelMissingItem = normaliseItem({
+      id: "q_model",
+      state: "failed",
+      url: "https://a.example/2",
+      error: { code: "WHISPER_MODEL_MISSING", messageKey: "error.ytdlp.whisperModelMissing", detail: "small-q5_1" },
+    });
+    expect(modelMissingItem.error?.code).toBe("WHISPER_MODEL_MISSING");
+    expect(modelMissingItem.error?.messageKey).toBe("error.ytdlp.whisperModelMissing");
+    expect(modelMissingItem.error?.detail).toBe("small-q5_1");
+  });
+
   it("gives the summary the documented zeros rather than undefined", () => {
     const summary = normaliseSummary({ running: 2 });
     expect(summary.running).toBe(2);

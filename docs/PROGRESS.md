@@ -3886,3 +3886,30 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Typed errors and inline download offers for missing Whisper sidecar and models (M6, Checklist #12, spec §10.2)
+- Done:
+  - Fixed M6:
+    - Added typed error variants `WhisperMissing` (`WHISPER_MISSING`, `error.ytdlp.whisperMissing`) and `WhisperModelMissing` (`WHISPER_MODEL_MISSING`, `error.ytdlp.whisperModelMissing`) to `YtdlpErrorCode` in `src-tauri/src/services/ytdlp.rs`.
+    - Added typed error variants `WhisperMissing` and `WhisperModelMissing(String)` to `AppError` and `ErrorCode` in `src-tauri/src/error.rs`.
+    - Updated `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` to return `AppError::WhisperMissing` and `AppError::WhisperModelMissing(model_id)` instead of generic `AppError::Process`.
+    - Added `transcription_error_outcome` in `engine.rs` to map transcribe stage errors into typed `YtdlpError` with code `WHISPER_MISSING` and `WHISPER_MODEL_MISSING` in `finish_item`.
+    - Added non-transient retry assertions in `model.rs` and `ytdlp.rs` tests.
+    - Added i18n keys for `error.ytdlp.whisperMissing`, `error.ytdlp.whisperModelMissing`, `error.whisperMissing`, `error.whisperModelMissing`, `job.whisper.*`, `job.whisperModel.*`, and `models.action.downloading*` in `en.json` and `it.json`.
+    - Implemented `whisperOffer` and `whisperModelOffer` banners in `src/lib/components/QueueItem.svelte` analogous to `denoOffer`, providing inline buttons to install `sdp-whisper` and download the missing model.
+    - Added inline model download and whisper install offer buttons in `src/lib/components/AddBar.svelte` when transcription is toggled with an uninstalled model or missing sidecar.
+    - Added reproduction integration tests `queue_engine_fails_with_whisper_model_missing_when_model_not_installed` and `queue_engine_fails_with_whisper_missing_when_sidecar_not_found` in `src-tauri/tests/whisper_pipeline.rs`.
+    - Added unit tests in `src/lib/queue.test.ts` for typed whisper error preservation.
+- Verified by running:
+  - `cargo test --test whisper_pipeline queue_engine_fails_with_whisper_model_missing_when_model_not_installed` → FAILS before fix (panic: `left: "UNKNOWN", right: "WHISPER_MODEL_MISSING"`), PASSES after fix.
+  - `cargo test --test whisper_pipeline queue_engine_fails_with_whisper_missing_when_sidecar_not_found` → FAILS before fix (panic: `left: "UNKNOWN", right: "WHISPER_MISSING"`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 161 integration = 537 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 282 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
