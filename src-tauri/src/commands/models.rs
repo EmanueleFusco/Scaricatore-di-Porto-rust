@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::error::{AppError, AppResult, ErrorInfo};
 use crate::services::download::Transport;
 use crate::services::models::{
-    self, ModelCatalogue, ModelEntry, ModelsView, delete_model, import_model,
+    self, ModelCatalogue, ModelEntry, ModelsView, cancel_model_download, delete_model, import_model,
 };
 use crate::state::{AppState, IntoAppResult, Settings};
 
@@ -77,6 +77,11 @@ pub async fn models_download(
                 let _ = app_handle.emit("models:completed", mid_for_done);
             }
             Err(err) => {
+                let err_str = err.to_string();
+                if err_str.contains("the download was cancelled") {
+                    let _ = app_handle.emit("models:cancelled", mid_for_done);
+                    return;
+                }
                 #[derive(Serialize, Clone)]
                 #[serde(rename_all = "camelCase")]
                 struct ModelErrorPayload {
@@ -97,10 +102,20 @@ pub async fn models_download(
     Ok(())
 }
 
-/// Cancel an in-flight download of a model.
+/// Pause an in-flight download of a model (keeps .part on disk).
+#[tauri::command]
+pub fn models_pause_download(state: State<'_, AppState>, model_id: String) -> AppResult<bool> {
+    Ok(state.models_manager().pause(&model_id))
+}
+
+/// Cancel an in-flight or paused download of a model (removes .part on disk).
 #[tauri::command]
 pub fn models_cancel_download(state: State<'_, AppState>, model_id: String) -> AppResult<bool> {
-    Ok(state.models_manager().cancel(&model_id))
+    let catalogue = ModelCatalogue::embedded().app_result()?;
+    let models_dir = state.models_dir();
+    let was_running = state.models_manager().cancel(&model_id);
+    let _ = cancel_model_download(&models_dir, &catalogue, &model_id);
+    Ok(was_running)
 }
 
 /// Delete an installed model from disk.

@@ -44,6 +44,7 @@ class ModelsStore {
 
   #unlistenProgress: UnlistenFn | null = null;
   #unlistenCompleted: UnlistenFn | null = null;
+  #unlistenCancelled: UnlistenFn | null = null;
   #unlistenError: UnlistenFn | null = null;
 
   async init(): Promise<void> {
@@ -95,6 +96,16 @@ class ModelsStore {
       },
     );
 
+    this.#unlistenCancelled = await listen<string>(
+      "models:cancelled",
+      async () => {
+        this.downloadingModelId = null;
+        this.downloadPercent = null;
+        this.downloadPhase = null;
+        await this.refresh();
+      },
+    );
+
     this.#unlistenError = await listen<{ modelId: string; error: { messageKey?: string; detail?: string } }>(
       "models:error",
       (event) => {
@@ -117,6 +128,17 @@ class ModelsStore {
         return;
       }
       this.view = await invoke<ModelsView>("models_list");
+      if (this.downloadingModelId === null) {
+        const active = this.view.models.find((m) => m.state.kind === "downloading");
+        if (active && active.state.kind === "downloading") {
+          this.downloadingModelId = active.id;
+          if (active.state.totalBytes && active.state.totalBytes > 0) {
+            this.downloadPercent = Math.round(
+              (active.state.receivedBytes / active.state.totalBytes) * 100,
+            );
+          }
+        }
+      }
       this.clearError();
     } catch (err) {
       this.#fail(err);
@@ -139,6 +161,20 @@ class ModelsStore {
       this.#fail(err);
     } finally {
       this.busy = false;
+    }
+  }
+
+  async pauseDownload(modelId: string): Promise<void> {
+    try {
+      if (isTauriRuntime()) {
+        await invoke("models_pause_download", { modelId });
+      }
+      this.downloadingModelId = null;
+      this.downloadPercent = null;
+      this.downloadPhase = null;
+      await this.refresh();
+    } catch (err) {
+      this.#fail(err);
     }
   }
 
@@ -234,6 +270,10 @@ class ModelsStore {
     if (this.#unlistenCompleted) {
       this.#unlistenCompleted();
       this.#unlistenCompleted = null;
+    }
+    if (this.#unlistenCancelled) {
+      this.#unlistenCancelled();
+      this.#unlistenCancelled = null;
     }
     if (this.#unlistenError) {
       this.#unlistenError();

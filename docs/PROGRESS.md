@@ -3733,4 +3733,41 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D121.
 - Next step: address remaining review findings.
 
+## 2026-10-18 — M5 / Fix leftover .part files reporting and pause/resume model state (B6, Checklist #4, #7, spec §10.2, §11.6)
+- Done:
+  - Fixed B6: leftover `.part` files on disk are no longer reported as actively `Downloading` by `inspect_models`:
+    - Added `ModelInstallState::Paused { received_bytes: u64, total_bytes: Option<u64> }` to `src-tauri/src/services/models.rs` and matching TypeScript type `ModelInstallState` in `src/lib/models.ts`.
+    - In `inspect_models`, only return `ModelInstallState::Downloading` when `downloading_models.contains_key(&model.id)`. When an idle `.part` file exists on disk and is not actively downloading, return `ModelInstallState::Paused { received_bytes, total_bytes }`.
+    - Updated `ModelDownloadManager` in `src-tauri/src/services/models.rs`:
+      - Populated initial progress in `download_model` on start so active downloads are registered immediately in `in_flight_progress`.
+      - Added `pause` method on `ModelDownloadManager` to abort in-flight downloads while keeping `.part` files intact.
+      - Added `cancel_model_download` helper to delete partial `.part` files upon cancellation.
+    - Updated IPC commands in `src-tauri/src/commands/models.rs` and registered `commands::models::models_pause_download` in `src-tauri/src/lib.rs`:
+      - Added `models_pause_download` to pause an in-flight download keeping `.part`.
+      - Updated `models_cancel_download` to cancel in-flight downloads and delete any lingering `.part` file for the model.
+      - Silenced intentional cancellation error toast emission in `models_download` background loop by emitting `models:cancelled` event instead of `models:error`.
+    - Updated UI in `src/lib/pages/settings/TranscriptionSettings.svelte` and `src/lib/stores/models.svelte.ts`:
+      - Handled both active `downloading` and `paused` states in the models table.
+      - Displayed partial progress in size column (`{received} / {total}`) and paused percentage bar when paused.
+      - Added Pause (`PauseIcon`) and Cancel (`XIcon`) buttons during active download, and Resume (`PlayIcon`) and Cancel (`XIcon`) buttons when paused.
+      - Restored `downloadingModelId` and progress when reopening Settings while a download is running.
+      - Added i18n keys for `transcription.models.pauseButton`, `resumeButton`, and `statePaused` in Italian and English.
+    - Added tests:
+      - Unit test `inspect_models_does_not_report_idle_part_file_as_downloading` in `src-tauri/src/services/models.rs`.
+      - Unit test `cancel_model_download_removes_part_file` in `src-tauri/src/services/models.rs`.
+      - Frontend test `supports paused ModelInstallState variant` in `src/lib/models.test.ts`.
+- Verified by running:
+  - `cargo test inspect_models_does_not_report_idle_part_file_as_downloading` → FAILS before fix (panic: `idle .part file without in-flight download must not be reported as Downloading`), PASSES after fix.
+  - `cargo test cancel_model_download_removes_part_file` → PASSES.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 157 integration = 525 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 268 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+
 

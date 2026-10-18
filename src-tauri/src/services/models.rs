@@ -224,6 +224,10 @@ pub enum ModelInstallState {
         received_bytes: u64,
         total_bytes: Option<u64>,
     },
+    Paused {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
     Installed {
         size_bytes: u64,
     },
@@ -366,7 +370,7 @@ pub fn inspect_models(
                 ModelInstallState::Installed { size_bytes: size }
             } else if part_path.is_file() {
                 let part_size = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-                ModelInstallState::Downloading {
+                ModelInstallState::Paused {
                     received_bytes: part_size,
                     total_bytes: Some(model.size_bytes),
                 }
@@ -431,7 +435,7 @@ impl ModelDownloadManager {
             .unwrap_or(false)
     }
 
-    pub fn cancel(&self, id: &str) -> bool {
+    pub fn pause(&self, id: &str) -> bool {
         let mut tokens = match self.tokens.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
@@ -445,6 +449,10 @@ impl ModelDownloadManager {
         } else {
             false
         }
+    }
+
+    pub fn cancel(&self, id: &str) -> bool {
+        self.pause(id)
     }
 
     /// Download model (and VAD model if missing) with Range resume, sha256 check, and disk space guard.
@@ -490,6 +498,20 @@ impl ModelDownloadManager {
                 Err(p) => p.into_inner(),
             };
             tokens.insert(model_id.to_owned(), token.clone());
+        }
+
+        let initial_received = {
+            let part = models_dir.join(format!("{}.part", model.file));
+            fs::metadata(&part).map(|m| m.len()).unwrap_or(0)
+        };
+        if let Ok(mut prog) = self.in_flight_progress.lock() {
+            prog.insert(
+                model_id.to_owned(),
+                DownloadProgress {
+                    received: initial_received,
+                    total: Some(model.size_bytes),
+                },
+            );
         }
 
         let progress_map = Arc::clone(&self.in_flight_progress);
@@ -637,6 +659,36 @@ pub fn delete_model(
         fs::remove_file(dest)?;
     }
     Ok(())
+}
+
+/// Cancel download and delete any partial `.part` file from disk (spec §10.2, §11.6).
+pub fn cancel_model_download(
+    models_dir: &Path,
+    catalogue: &ModelCatalogue,
+    model_id: &str,
+) -> Result<bool, AppError> {
+    let model = catalogue
+        .find(model_id)
+        .ok_or_else(|| AppError::ModelNotFound(model_id.to_owned()))?;
+
+    if !crate::services::manifest::is_safe_asset_name(&model.file) {
+        return Err(AppError::Unsupported(format!(
+            "Unsafe model file name: {}",
+            model.file
+        )));
+    }
+    assert!(
+        crate::services::manifest::is_safe_asset_name(&model.file),
+        "model file name must be safe: {}",
+        model.file
+    );
+    let part = models_dir.join(format!("{}.part", model.file));
+    if part.is_file() {
+        fs::remove_file(part)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Computes SHA-256 of any local file.
@@ -939,5 +991,53 @@ mod tests {
         let mut vad_bad = catalogue.vad.clone();
         vad_bad.file = "../outside.bin".to_owned();
         assert!(!is_vad_installed(&models_dir, &vad_bad));
+    }
+
+    #[test]
+    fn inspect_models_does_not_report_idle_part_file_as_downloading() {
+        let dir = tempdir().unwrap();
+        let models_dir = dir.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        let catalogue = ModelCatalogue::embedded().unwrap();
+        let tiny = &catalogue.models[0];
+        let part_path = models_dir.join(format!("{}.part", tiny.file));
+        fs::write(&part_path, vec![0u8; 1024]).unwrap();
+
+        let in_flight = std::collections::HashMap::new();
+        let view = inspect_models(&models_dir, &catalogue, None, &in_flight);
+        let item = view.models.iter().find(|m| m.id == tiny.id).unwrap();
+
+        assert_eq!(
+            item.state,
+            ModelInstallState::Paused {
+                received_bytes: 1024,
+                total_bytes: Some(tiny.size_bytes),
+            }
+        );
+    }
+
+    #[test]
+    fn cancel_model_download_removes_part_file() {
+        let dir = tempdir().unwrap();
+        let models_dir = dir.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        let catalogue = ModelCatalogue::embedded().unwrap();
+        let tiny = &catalogue.models[0];
+        let part_path = models_dir.join(format!("{}.part", tiny.file));
+        fs::write(&part_path, vec![0u8; 1024]).unwrap();
+        assert!(part_path.is_file());
+
+        let removed = cancel_model_download(&models_dir, &catalogue, &tiny.id).unwrap();
+        assert!(removed);
+        assert!(!part_path.exists());
+
+        let view = inspect_models(
+            &models_dir,
+            &catalogue,
+            None,
+            &std::collections::HashMap::new(),
+        );
+        let item = view.models.iter().find(|m| m.id == tiny.id).unwrap();
+        assert_eq!(item.state, ModelInstallState::NotInstalled);
     }
 }

@@ -11,6 +11,8 @@
   import CheckIcon from "lucide-svelte/icons/check";
   import DownloadIcon from "lucide-svelte/icons/download";
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
+  import PauseIcon from "lucide-svelte/icons/pause";
+  import PlayIcon from "lucide-svelte/icons/play";
   import RefreshCwIcon from "lucide-svelte/icons/refresh-cw";
   import Trash2Icon from "lucide-svelte/icons/trash-2";
   import UploadIcon from "lucide-svelte/icons/upload";
@@ -298,9 +300,23 @@
         </thead>
         <tbody>
           {#each displayedModels as model (model.id)}
-            {@const isDownloadingThis = modelsStore.downloadingModelId === model.id}
+            {@const isDownloadingThis =
+              modelsStore.downloadingModelId === model.id ||
+              (modelsStore.downloadingModelId === null && model.state.kind === "downloading")}
+            {@const isPaused = !isDownloadingThis && model.state.kind === "paused"}
             {@const isInstalled = model.state.kind === "installed"}
             {@const isActive = modelsStore.view.activeModel === model.id}
+            {@const currentPercent = isDownloadingThis
+              ? modelsStore.downloadingModelId === model.id && modelsStore.downloadPercent !== null
+                ? modelsStore.downloadPercent
+                : model.state.kind === "downloading" && model.state.totalBytes
+                  ? Math.round((model.state.receivedBytes / model.state.totalBytes) * 100)
+                  : null
+              : null}
+            {@const pausedPercent =
+              isPaused && model.state.kind === "paused" && model.state.totalBytes
+                ? Math.round((model.state.receivedBytes / model.state.totalBytes) * 100)
+                : null}
 
             <tr class:row--active={isActive} class:row--recommended={model.recommended}>
               <!-- Active Radio -->
@@ -341,6 +357,8 @@
               <td class="col-size">
                 {#if isInstalled && model.state.kind === "installed"}
                   <span>{formatBytes(model.state.sizeBytes)}</span>
+                {:else if isPaused && model.state.kind === "paused"}
+                  <span>{formatBytes(model.state.receivedBytes)} / {formatBytes(model.sizeBytes)}</span>
                 {:else}
                   <span class="text-muted">{formatBytes(model.sizeBytes)}</span>
                 {/if}
@@ -363,7 +381,7 @@
                     <div class="downloading-widget__progress">
                       <div
                         class="downloading-widget__bar"
-                        style="width: {modelsStore.downloadPercent ?? 100}%"
+                        style="width: {currentPercent ?? 100}%"
                       ></div>
                     </div>
                     <div class="downloading-widget__meta">
@@ -371,17 +389,62 @@
                         {#if modelsStore.downloadPhase === "vad"}
                           {tt("transcription.models.downloadingVad")}
                         {:else}
-                          {modelsStore.downloadPercent ? `${modelsStore.downloadPercent}%` : "..."}
+                          {currentPercent !== null ? `${currentPercent}%` : "..."}
                         {/if}
                       </span>
-                      <button
-                        type="button"
-                        class="btn-icon"
-                        title={tt("common.cancel")}
-                        onclick={() => void modelsStore.cancelDownload(model.id)}
-                      >
-                        <XIcon size={14} aria-hidden="true" />
-                      </button>
+                      <div class="downloading-widget__actions">
+                        <button
+                          type="button"
+                          class="btn-icon"
+                          title={tt("transcription.models.pauseButton")}
+                          onclick={() => void modelsStore.pauseDownload(model.id)}
+                        >
+                          <PauseIcon size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-icon btn-icon--danger"
+                          title={tt("common.cancel")}
+                          onclick={() => void modelsStore.cancelDownload(model.id)}
+                        >
+                          <XIcon size={14} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                {:else if isPaused}
+                  <div class="downloading-widget downloading-widget--paused">
+                    <div class="downloading-widget__progress">
+                      <div
+                        class="downloading-widget__bar downloading-widget__bar--paused"
+                        style="width: {pausedPercent ?? 0}%"
+                      ></div>
+                    </div>
+                    <div class="downloading-widget__meta">
+                      <span>
+                        {tt("transcription.models.statePaused")}{pausedPercent !== null
+                          ? ` (${pausedPercent}%)`
+                          : ""}
+                      </span>
+                      <div class="downloading-widget__actions">
+                        <button
+                          type="button"
+                          class="btn-icon btn-icon--accent"
+                          title={tt("transcription.models.resumeButton")}
+                          disabled={modelsStore.busy || modelsStore.downloadingModelId !== null}
+                          onclick={() => startDownload(model)}
+                        >
+                          <PlayIcon size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-icon btn-icon--danger"
+                          title={tt("common.cancel")}
+                          onclick={() => void modelsStore.cancelDownload(model.id)}
+                        >
+                          <XIcon size={14} aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 {:else if isInstalled}
@@ -678,6 +741,20 @@
     align-items: center;
     font-size: 11px;
     color: var(--text-muted);
+  }
+
+  .downloading-widget__bar--paused {
+    background: var(--text-muted);
+  }
+
+  .downloading-widget__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .btn-icon--accent:hover {
+    color: var(--accent);
   }
 
   .installed-actions {

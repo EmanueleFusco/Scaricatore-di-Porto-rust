@@ -144,6 +144,7 @@ pub fn run() {
             commands::system::encoders_probe,
             commands::models::models_list,
             commands::models::models_download,
+            commands::models::models_pause_download,
             commands::models::models_cancel_download,
             commands::models::models_delete,
             commands::models::models_import,

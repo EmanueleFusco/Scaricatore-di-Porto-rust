@@ -82,4 +82,16 @@ describe("models helpers", () => {
     const all = filterModels(MOCK_MODELS, true);
     expect(all.map((m) => m.id)).toEqual(["tiny-q5_1", "large-v3-turbo-q5_0", "large-v3"]);
   });
+
+  it("supports paused ModelInstallState variant", () => {
+    const pausedModel: ModelViewItem = {
+      ...MOCK_MODELS[0],
+      state: { kind: "paused", receivedBytes: 1024, totalBytes: 32560352 },
+    };
+    expect(pausedModel.state.kind).toBe("paused");
+    if (pausedModel.state.kind === "paused") {
+      expect(pausedModel.state.receivedBytes).toBe(1024);
+      expect(pausedModel.state.totalBytes).toBe(32560352);
+    }
+  });
 });

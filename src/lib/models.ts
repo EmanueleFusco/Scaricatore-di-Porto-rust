@@ -5,6 +5,7 @@
 export type ModelInstallState =
   | { kind: "notInstalled" }
   | { kind: "downloading"; receivedBytes: number; totalBytes: number | null }
+  | { kind: "paused"; receivedBytes: number; totalBytes: number | null }
   | { kind: "installed"; sizeBytes: number };
 
 export interface ModelViewItem {
