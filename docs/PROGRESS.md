@@ -4053,4 +4053,23 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-19 — M5 / Fix CMake GGML_NATIVE=ON for Windows ARM64 MSVC in whisper sidecar CI (spec §5.4, §1.1)
+- Done:
+  - Fixed CMake configuration failure in `.github/workflows/whisper-sidecar.yml` for Windows ARM64 (`windows-11-arm` with MSVC `cl.exe`).
+  - In whisper.cpp (v1.9.5) `ggml/src/ggml-cpu/CMakeLists.txt:118`, MSVC on ARM requires `GGML_NATIVE=ON` because MSVC lacks architecture feature dispatch flags available in Clang/GCC. Changed `-DGGML_NATIVE=OFF` to `-DGGML_NATIVE=ON` in the `Build whisper-cli (Windows ARM64)` workflow step.
+  - Added reproduction test `configures GGML_NATIVE=ON for Windows ARM64 MSVC build step` in `scripts/ci-steps.test.mjs`.
+  - Added D123 in `docs/DECISIONS.md`.
+- Verified by running:
+  - `npx vitest run scripts/ci-steps.test.mjs` → FAILS before fix (`AssertionError: expected 'name: Build whisper-cli (Windows ARM6...' to contain '-DGGML_NATIVE=ON'`), PASSES after fix (16/16 passed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 382 unit + 167 integration = 549 passed, 0 failed, 3 ignored.
+  - `npm test` → 13 test files, 285 passed, 0 failed.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: Live GitHub Actions execution of whisper-sidecar.yml on Windows ARM64 (pending push to GitHub).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D123.
+- Next step: push commit to origin/main and re-run the Whisper Sidecar workflow on GitHub Actions.
+
+
 

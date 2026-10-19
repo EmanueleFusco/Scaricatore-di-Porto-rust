@@ -296,6 +296,15 @@ describe("the Whisper sidecar CI workflow (.github/workflows/whisper-sidecar.yml
     expect(yaml).toContain("gh release create");
   });
 
+  it("configures GGML_NATIVE=ON for Windows ARM64 MSVC build step", () => {
+    const yaml = readFileSync(WORKFLOW_PATH, "utf8");
+    const winArmMatch = yaml.match(
+      /name:\s*Build whisper-cli \(Windows ARM64\)[\s\S]*?(?=\n\s*-\s*name:|\n\s{2,4}[a-zA-Z0-9_-]+:|$)/,
+    );
+    expect(winArmMatch).not.toBeNull();
+    expect(winArmMatch[0]).toContain("-DGGML_NATIVE=ON");
+  });
+
   describe.skipIf(process.platform === "win32")(
     'the CI step "Collect and compute SHA256SUMS"',
     () => {

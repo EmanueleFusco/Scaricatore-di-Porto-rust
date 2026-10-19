@@ -3345,5 +3345,18 @@ Spec §5.4, §1.1. Review M1.
 3. **Ubuntu 24.04 as CI runner standard**:
    Spec §5.4 originally suggested building the Linux sidecar binary on Ubuntu 22.04 ("oldest supported distro"). However, GitHub Actions has announced the deprecation and phased brownouts of `ubuntu-22.04` (actions/runner-images#14254). Per D55 and `scripts/check-ci-runners.mjs`, all repository workflows use `ubuntu-24.04` as the fixed Linux runner. The sidecar build in `whisper-sidecar.yml` uses `runs-on: ubuntu-24.04` with static linking (`-static-libgcc -static-libstdc++`) as standard.
 
+### D123 — Whisper sidecar CI: GGML_NATIVE=ON for Windows ARM64 MSVC build (spec §5.4, §1.1)
+
+In `whisper.cpp` (v1.9.5), `ggml/src/ggml-cpu/CMakeLists.txt:118` enforces:
+```cmake
+if (MSVC)
+  message(FATAL_ERROR "MSVC on ARM requires GGML_NATIVE=ON, use clang for GGML_CPU_ARM_ARCH / GGML_CPU_ALL_VARIANTS")
+endif()
+```
+MSVC `cl.exe` targeting ARM64 does not support the runtime CPU architecture feature dispatch that Clang/GCC use when `GGML_NATIVE=OFF`. Building with `-DGGML_NATIVE=OFF` on the `windows-11-arm` GitHub Actions runner causes CMake configuration to fail immediately.
+
+In `.github/workflows/whisper-sidecar.yml`, the `Build whisper-cli (Windows ARM64)` step now uses `-DGGML_NATIVE=ON`. Windows ARM64 is a Tier 2 target (spec §1.1, CI-only / best-effort). This allows MSVC to compile `whisper-cli.exe` targeting ARM64 natively on the runner.
+
+
 
 
