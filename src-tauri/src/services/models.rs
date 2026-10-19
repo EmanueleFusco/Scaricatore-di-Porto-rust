@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
 use crate::services::download::{self, DownloadProgress, DownloadRequest, Transport};
+use crate::services::ytdlp::ProgressThrottle;
 
 /// Pinned Whisper model catalogue JSON embedded into the binary.
 pub const MODELS_CATALOGUE_JSON: &str = include_str!("../../../whisper.models.json");
@@ -279,6 +281,84 @@ pub struct ModelProgressEvent {
     pub total_bytes: Option<u64>,
     pub percent: Option<f32>,
     pub phase: String, // "vad" or "model"
+}
+
+/// Throttle for model download progress events (spec §7.6, §10.2).
+///
+/// Coalesces rapid TCP chunk events to ~10/s (100ms window), but always emits
+/// 0%, 100%, and phase changes ("vad" -> "model").
+#[derive(Debug)]
+pub struct ModelProgressThrottle {
+    throttle: ProgressThrottle,
+    last_phase: Option<String>,
+    has_emitted_zero: bool,
+    has_emitted_hundred: bool,
+}
+
+impl ModelProgressThrottle {
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            throttle: ProgressThrottle::new(min_interval),
+            last_phase: None,
+            has_emitted_zero: false,
+            has_emitted_hundred: false,
+        }
+    }
+
+    pub fn should_emit(&mut self, event: &ModelProgressEvent, now: Instant) -> bool {
+        let phase_changed = self.last_phase.as_deref() != Some(&event.phase);
+        if phase_changed {
+            self.last_phase = Some(event.phase.clone());
+            let is_zero = event.percent.is_some_and(|p| p <= 0.0) || event.received_bytes == 0;
+            let is_hundred = event.percent.is_some_and(|p| p >= 100.0)
+                || event
+                    .total_bytes
+                    .is_some_and(|tot| tot > 0 && event.received_bytes >= tot);
+            self.has_emitted_zero = is_zero;
+            self.has_emitted_hundred = is_hundred;
+            self.throttle.mark_emitted(now);
+            return true;
+        }
+
+        let is_zero = event.percent.is_some_and(|p| p <= 0.0) || event.received_bytes == 0;
+        if is_zero && !self.has_emitted_zero {
+            self.has_emitted_zero = true;
+            self.throttle.mark_emitted(now);
+            return true;
+        }
+
+        let is_hundred = event.percent.is_some_and(|p| p >= 100.0)
+            || event
+                .total_bytes
+                .is_some_and(|tot| tot > 0 && event.received_bytes >= tot);
+        if is_hundred && !self.has_emitted_hundred {
+            self.has_emitted_hundred = true;
+            self.throttle.mark_emitted(now);
+            return true;
+        }
+
+        self.throttle.should_emit(now)
+    }
+}
+
+/// Wraps a model progress sink with a throttle (e.g. 100ms interval).
+pub fn throttled_model_progress_sink<F>(
+    min_interval: Duration,
+    sink: F,
+) -> impl FnMut(ModelProgressEvent) + Send + Sync + 'static
+where
+    F: Fn(ModelProgressEvent) + Send + Sync + 'static,
+{
+    let throttle = Mutex::new(ModelProgressThrottle::new(min_interval));
+    move |event| {
+        let should_emit = match throttle.lock() {
+            Ok(mut g) => g.should_emit(&event, Instant::now()),
+            Err(p) => p.into_inner().should_emit(&event, Instant::now()),
+        };
+        if should_emit {
+            sink(event);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,5 +1121,108 @@ mod tests {
         );
         let item = view.models.iter().find(|m| m.id == tiny.id).unwrap();
         assert_eq!(item.state, ModelInstallState::NotInstalled);
+    }
+
+    #[test]
+    fn model_progress_throttle_coalesces_and_preserves_boundaries() {
+        let mut throttle = ModelProgressThrottle::new(Duration::from_millis(100));
+        let t0 = Instant::now();
+
+        // 1. Initial 0% event for VAD phase: always emitted
+        let ev0 = ModelProgressEvent {
+            id: "vad-model".to_string(),
+            received_bytes: 0,
+            total_bytes: Some(1000),
+            percent: Some(0.0),
+            phase: "vad".to_string(),
+        };
+        assert!(
+            throttle.should_emit(&ev0, t0),
+            "initial phase change + 0% must emit"
+        );
+
+        // 2. Intermediate update 30ms later: suppressed
+        let ev1 = ModelProgressEvent {
+            id: "vad-model".to_string(),
+            received_bytes: 300,
+            total_bytes: Some(1000),
+            percent: Some(30.0),
+            phase: "vad".to_string(),
+        };
+        assert!(
+            !throttle.should_emit(&ev1, t0 + Duration::from_millis(30)),
+            "rapid chunk must be throttled"
+        );
+
+        // 3. Intermediate update 100ms later: emitted
+        let ev2 = ModelProgressEvent {
+            id: "vad-model".to_string(),
+            received_bytes: 600,
+            total_bytes: Some(1000),
+            percent: Some(60.0),
+            phase: "vad".to_string(),
+        };
+        assert!(
+            throttle.should_emit(&ev2, t0 + Duration::from_millis(100)),
+            "update at throttle interval must emit"
+        );
+
+        // 4. Final 100% event 105ms later (only 5ms after ev2): always emitted
+        let ev3 = ModelProgressEvent {
+            id: "vad-model".to_string(),
+            received_bytes: 1000,
+            total_bytes: Some(1000),
+            percent: Some(100.0),
+            phase: "vad".to_string(),
+        };
+        assert!(
+            throttle.should_emit(&ev3, t0 + Duration::from_millis(105)),
+            "100% completion must always emit"
+        );
+
+        // 5. Subsequent duplicate 100% 110ms later: not spammed
+        assert!(
+            !throttle.should_emit(&ev3, t0 + Duration::from_millis(110)),
+            "duplicate 100% must not spam"
+        );
+
+        // 6. Phase change from "vad" to "model" 112ms later: always emitted
+        let ev_m0 = ModelProgressEvent {
+            id: "tiny-q5_1".to_string(),
+            received_bytes: 0,
+            total_bytes: Some(10000),
+            percent: Some(0.0),
+            phase: "model".to_string(),
+        };
+        assert!(
+            throttle.should_emit(&ev_m0, t0 + Duration::from_millis(112)),
+            "phase change to model must always emit"
+        );
+
+        // 7. Intermediate chunk 115ms later: throttled
+        let ev_m1 = ModelProgressEvent {
+            id: "tiny-q5_1".to_string(),
+            received_bytes: 100,
+            total_bytes: Some(10000),
+            percent: Some(1.0),
+            phase: "model".to_string(),
+        };
+        assert!(
+            !throttle.should_emit(&ev_m1, t0 + Duration::from_millis(115)),
+            "rapid model chunk must be throttled"
+        );
+
+        // 8. Model 100% completion 120ms later: always emitted
+        let ev_m_done = ModelProgressEvent {
+            id: "tiny-q5_1".to_string(),
+            received_bytes: 10000,
+            total_bytes: Some(10000),
+            percent: Some(100.0),
+            phase: "model".to_string(),
+        };
+        assert!(
+            throttle.should_emit(&ev_m_done, t0 + Duration::from_millis(120)),
+            "model 100% completion must always emit"
+        );
     }
 }

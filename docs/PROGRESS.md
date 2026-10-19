@@ -3994,5 +3994,22 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
-
-
+## 2026-10-19 — M5 / Throttle models:progress IPC events with ProgressThrottle (m1, Checklist #7, #16)
+- Done:
+  - Fixed m1:
+    - Added `ModelProgressThrottle` and `throttled_model_progress_sink` in `src-tauri/src/services/models.rs`, wrapping `ProgressThrottle::new(Duration::from_millis(100))` to coalesce rapid TCP chunk progress events while always emitting initial 0%, final 100%, and phase changes ("vad" -> "model").
+    - Updated `src-tauri/src/commands/models.rs:models_download` to wrap the `models:progress` event emission with `models::throttled_model_progress_sink(Duration::from_millis(100), ...)` instead of emitting unthrottled on every read chunk.
+    - Updated `models_download` to be generic over `R: Runtime` and allow `Transport::LoopbackHttp` under `#[cfg(test)]`.
+    - Added unit test `model_progress_throttle_coalesces_and_preserves_boundaries` in `services::models::tests` verifying boundary preservation and 100ms interval throttling.
+    - Added reproduction test `models_download_throttles_rapid_chunk_progress_events` in `commands::models::tests` verifying that rapid chunks arriving across 50ms coalesce from 26 events down to <= 3 events.
+- Verified by running:
+  - `cargo test --lib commands::models::tests::models_download_throttles_rapid_chunk_progress_events` → FAILS before fix (`panicked at: models:progress emitted unthrottled on every TCP read chunk: got 26 events for 25 rapid chunks (expected <= 3)`), PASSES after fix.
+  - `cargo test --lib services::models::tests::model_progress_throttle_coalesces_and_preserves_boundaries` → PASSES.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 381 unit + 167 integration = 548 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
