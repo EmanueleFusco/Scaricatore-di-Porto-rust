@@ -532,6 +532,10 @@ async fn queue_engine_transcribes_local_media_end_to_end() {
                         path.display()
                     );
                 }
+                assert_eq!(
+                    item.transcript_preview, None,
+                    "transcript_preview must be cleared when item finishes"
+                );
                 break;
             } else if item.state == ItemState::Failed {
                 panic!("item failed: {:?}, log: {:?}", item.error, item.log_tail);

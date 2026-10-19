@@ -19,6 +19,7 @@
     isActive,
     wasSkippedByArchive,
     itemLabel,
+    progressLine,
     qualityKey,
     speedMbits,
     stageDetail,
@@ -73,12 +74,16 @@
       });
     }
     if (statusKind === "progress") {
-      const parts = [
+      return progressLine(
         stage !== null ? tt(stage.key, stage.params) : null,
         speed !== null ? tt("queue.speed", { value: speed }) : null,
         eta !== null ? tt("queue.eta", { value: eta }) : null,
-      ].filter((part) => part !== null);
-      return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
+        {
+          isTranscribing: item.state === "transcribing",
+          transcriptPreview: item.transcriptPreview,
+          waitingDataText: tt("queue.status.waitingData"),
+        },
+      );
     }
     // Spec §6.4: finished without downloading because the archive has it.
     if (wasSkippedByArchive(item)) return tt("queue.item.skippedArchive");
@@ -287,13 +292,6 @@
   >
     {statusText}
   </p>
-
-  {#if item.transcriptPreview}
-    <p class="item__preview" title={item.transcriptPreview}>
-      <span class="item__preview-badge">{tt("transcribe.livePreview")}:</span>
-      {item.transcriptPreview}
-    </p>
-  {/if}
 
   {#if denoOffer}
     <div class="item__offer" role="status">
@@ -761,24 +759,6 @@
     height: 28px;
     padding: 0 var(--space-2);
     font-size: 12px;
-  }
-
-  .item__preview {
-    margin: 0;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .item__preview-badge {
-    color: var(--text-muted);
-    font-weight: 500;
   }
 
   .item__transcripts {

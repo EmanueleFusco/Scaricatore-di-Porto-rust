@@ -477,6 +477,7 @@ impl QueueEngine {
             item.retry_at = None;
             item.error = None;
             item.finished_at = None;
+            item.transcript_preview = None;
             item.updated_at = now_unix();
             if reset_budget {
                 item.auto_retries = 0;
@@ -528,6 +529,7 @@ impl QueueEngine {
                         item.state = ItemState::Cancelled;
                         item.control = ControlSignal::None;
                         item.error = None;
+                        item.transcript_preview = None;
                         item.progress = ItemProgress::empty();
                         item.finished_at = Some(now_unix());
                         item.updated_at = now_unix();
@@ -544,6 +546,7 @@ impl QueueEngine {
                             item.paused_from = Some(item.state);
                             item.state = ItemState::Paused;
                             item.control = ControlSignal::None;
+                            item.transcript_preview = None;
                             item.progress.speed_bps = None;
                             item.progress.eta_sec = None;
                             item.updated_at = now_unix();
@@ -1415,6 +1418,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                         let mut state = lock(&inner.state);
                                         if let Some(item) = state.item_mut(&id) {
                                             item.transcript_files = res.paths.all();
+                                            item.transcript_preview = None;
                                             if res.used_cpu_fallback {
                                                 item.push_log("Whisper GPU execution failed; fell back to CPU (-ng).");
                                             }
@@ -1513,6 +1517,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                 let mut state = lock(&inner.state);
                                 if let Some(item) = state.item_mut(&id) {
                                     item.transcript_files = res.paths.all();
+                                    item.transcript_preview = None;
                                     if res.used_cpu_fallback {
                                         item.push_log(
                                             "Whisper GPU execution failed; fell back to CPU (-ng).",
@@ -1983,6 +1988,7 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
         let Some(index) = state.index_of(id) else {
             return;
         };
+        state.items[index].transcript_preview = None;
         let control = state.items[index].control;
 
         match control {
@@ -2856,5 +2862,46 @@ mod tests {
         );
 
         engine.shutdown();
+    }
+
+    #[test]
+    fn finish_item_clears_transcript_preview() {
+        let dir = TempDir::new().expect("temp dir");
+        let engine = engine(&dir);
+        let id = engine
+            .add(vec![request("https://a.example/1", dir.path())], false)
+            .added[0]
+            .clone();
+
+        {
+            let mut state = lock(&engine.inner.state);
+            let item = state.item_mut(&id).expect("the item is there");
+            item.state = ItemState::Transcribing;
+            item.transcript_preview = Some("live segment preview".to_string());
+        }
+
+        finish_item(
+            &engine.inner,
+            &id,
+            JobOutcome::Done {
+                file: dir.path().join("out.mp4"),
+                runtime: crate::services::jsruntime::RuntimeKind::QuickJs,
+                elapsed_ms: 100,
+                requested_height: None,
+                actual_height: None,
+            },
+        );
+
+        let snapshot = engine.snapshot();
+        let item = snapshot
+            .items
+            .iter()
+            .find(|i| i.id == id)
+            .expect("item exists");
+        assert_eq!(item.state, ItemState::Done);
+        assert_eq!(
+            item.transcript_preview, None,
+            "transcript_preview must be cleared when item finishes"
+        );
     }
 }

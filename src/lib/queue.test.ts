@@ -33,6 +33,7 @@ import {
   normaliseSummary,
   normaliseUpdate,
   progressLabelKey,
+  progressLine,
   qualityKey,
   qualityLabel,
   secondsToClock,
@@ -507,6 +508,46 @@ describe("the text the cards show", () => {
     );
     expect(text.split("\n")).toEqual(["Network problem", "raw detail", "last line"]);
     expect(detailsText(item(), null)).toBe("");
+  });
+
+  it("folds transcript preview into progress line while transcribing", () => {
+    // While transcribing, if transcriptPreview is present, it folds into the single status line
+    expect(
+      progressLine("Transcribing…", null, null, {
+        isTranscribing: true,
+        transcriptPreview: "Hello world live segment",
+      }),
+    ).toBe("Transcribing… · Hello world live segment");
+
+    // When transcribing but no stage text, shows preview
+    expect(
+      progressLine(null, null, null, {
+        isTranscribing: true,
+        transcriptPreview: "Hello world live segment",
+      }),
+    ).toBe("Hello world live segment");
+
+    // When transcribing but no preview yet, shows stage text
+    expect(
+      progressLine("Transcribing…", null, null, {
+        isTranscribing: true,
+        transcriptPreview: null,
+      }),
+    ).toBe("Transcribing…");
+
+    // When not transcribing, does not fold transcript preview
+    expect(
+      progressLine("Downloading…", "5.0 MB/s", "00:10", {
+        isTranscribing: false,
+        transcriptPreview: "stale preview",
+      }),
+    ).toBe("Downloading… · 5.0 MB/s · 00:10");
+
+    // When empty, falls back to waitingDataText or empty string
+    expect(progressLine(null, null, null, { waitingDataText: "Waiting for data…" })).toBe(
+      "Waiting for data…",
+    );
+    expect(progressLine(null, null, null)).toBe("");
   });
 });
 

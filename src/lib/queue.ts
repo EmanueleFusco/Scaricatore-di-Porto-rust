@@ -845,6 +845,32 @@ export function stageDetail(item: QueueItem): Label | null {
 }
 
 /**
+ * Assemble the single progress line for a running queue item (spec §11.5, §11.7).
+ *
+ * Cards keep a constant height across their lifecycle. While transcribing,
+ * a live segment preview folds into this single-line slot instead of adding
+ * a secondary row that would break the virtualizer's row height.
+ */
+export function progressLine(
+  stageText: string | null,
+  speedText: string | null,
+  etaText: string | null,
+  options?: {
+    isTranscribing?: boolean;
+    transcriptPreview?: string | null;
+    waitingDataText?: string;
+  },
+): string {
+  if (options?.isTranscribing && options?.transcriptPreview) {
+    return stageText !== null
+      ? `${stageText} · ${options.transcriptPreview}`
+      : options.transcriptPreview;
+  }
+  const parts = [stageText, speedText, etaText].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : (options?.waitingDataText ?? "");
+}
+
+/**
  * What a card's status line says (spec §11.5): one line for every state.
  *
  * Pinned as a function because the line is always rendered — the card is not

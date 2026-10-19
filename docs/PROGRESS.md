@@ -4013,3 +4013,26 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Fold transcript preview into single-line status slot and clear on finish (m2, Spec §11.7)
+- Done:
+  - Fixed m2:
+    - Added `progressLine` helper in `src/lib/queue.ts` which folds `transcriptPreview` into the single `.item__status` line (`${stageStr} · ${transcriptPreview}`) while `isTranscribing` is true, ensuring unexpanded cards maintain a strictly constant row height for the virtualizer.
+    - Updated `src/lib/components/QueueItem.svelte` to use `progressLine` in `statusText`, removed conditional `{#if item.transcriptPreview}<p class="item__preview">...</p>{/if}`, and removed unused `.item__preview` and `.item__preview-badge` styles.
+    - Updated `src-tauri/src/services/queue/engine.rs` to reset `item.transcript_preview = None` in `finish_item` (on done, skipped, failed, or cancelled), on transcribe stage success, in `retry_or_resume_locked`, and in `signal` (cancel/pause).
+    - Added unit test `services::queue::engine::tests::finish_item_clears_transcript_preview` in `engine.rs`.
+    - Added assertion in `src-tauri/tests/whisper_pipeline.rs:queue_engine_transcribes_local_media_end_to_end` asserting `item.transcript_preview` is `None` on finished item.
+    - Added unit tests for `progressLine` in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `cargo test --lib services::queue::engine::tests::finish_item_clears_transcript_preview` → FAILS before fix (`panicked at: transcript_preview must be cleared when item finishes: left: Some("live segment preview"), right: None`), PASSES after fix.
+  - `cargo test --test whisper_pipeline queue_engine_transcribes_local_media_end_to_end` → FAILS before fix (`panicked at: transcript_preview must be cleared when item finishes: left: Some("This is a fake transcription."), right: None`), PASSES after fix.
+  - `npm test` → 13 test files, 283 passed, 0 failed.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 382 unit + 167 integration = 549 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
