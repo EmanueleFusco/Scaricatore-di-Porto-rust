@@ -1265,3 +1265,200 @@ async fn prepare_16khz_wav_probes_duration_from_ffprobe_when_none() {
     assert!(res.is_ok(), "prepare_16khz_wav should succeed: {res:?}");
     assert!(out_wav.is_file(), "output wav should be created");
 }
+
+struct MutableWhisperTools {
+    whisper: Arc<std::sync::Mutex<Option<PathBuf>>>,
+    ffmpeg: PathBuf,
+    models_dir: PathBuf,
+    default_model: String,
+    private_temp: Option<PathBuf>,
+}
+
+impl ToolProvider for MutableWhisperTools {
+    fn environment(
+        &self,
+        options: ItemOptions,
+    ) -> BoxFuture<Result<JobEnvironment, scaricatore_di_porto_lib::error::ErrorInfo>> {
+        fs::create_dir_all(&options.output_dir).ok();
+        let whisper = self.whisper.lock().unwrap().clone();
+        let env = JobEnvironment {
+            ytdlp: self.ffmpeg.clone(),
+            ffmpeg: Some(self.ffmpeg.clone()),
+            ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
+            whisper,
+            models_dir: Some(self.models_dir.clone()),
+            whisper_threads: 2,
+            skip_silence_vad: true,
+            default_whisper_model: Some(self.default_model.clone()),
+            default_transcript_language: Some("it".to_string()),
+            runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
+                mode: JsRuntimeMode::QuickJsOnly,
+                qjs: None,
+                deno: None,
+                ytdlp_version: "2026.01.01".to_string(),
+            },
+            private_temp: self.private_temp.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(self.models_dir.join("mem.json"))),
+            youtube_clients: None,
+        };
+        Box::pin(std::future::ready(Ok(env)))
+    }
+}
+
+#[tokio::test]
+async fn queue_engine_updates_item_file_after_encoding_before_transcribe_stage() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("raw_video.webm");
+
+    let queue_path = fix.dir.path().join("queue_encode_transcribe_fail.json");
+    let whisper_holder = Arc::new(std::sync::Mutex::new(None));
+    let tools = Arc::new(MutableWhisperTools {
+        whisper: Arc::clone(&whisper_holder),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Raw Video".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: true,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: false,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    let mut finished_encoded_file = None;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                // Original file was deleted by run_encode because keep_original = false
+                assert!(
+                    !local_file.exists(),
+                    "pre-encode original file should be deleted when keep_original = false"
+                );
+
+                let current_file = item
+                    .file
+                    .as_ref()
+                    .expect("item.file must be Some after encoding succeeds");
+
+                assert_ne!(
+                    current_file, &local_file,
+                    "item.file must not point to deleted pre-encode file: {:?}",
+                    current_file
+                );
+                assert!(
+                    current_file.is_file(),
+                    "item.file ({}) must exist on disk as the finished encoded output",
+                    current_file.display()
+                );
+                assert!(
+                    item.size_bytes.is_some(),
+                    "item.size_bytes must be set for the encoded media file"
+                );
+                finished_encoded_file = Some(current_file.clone());
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper sidecar is missing"
+    );
+
+    let encoded_file = finished_encoded_file.expect("encoded file must be known");
+
+    // Now provide whisper sidecar and retry: item should resume directly on transcribe
+    // stage without re-encoding, and finish with Done.
+    *whisper_holder.lock().unwrap() = Some(fix.fake_whisper.clone());
+    let retry_outcome = engine.retry(&item_id);
+    assert_eq!(
+        retry_outcome,
+        scaricatore_di_porto_lib::services::queue::engine::Outcome::Ok
+    );
+
+    let mut retried_done = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                retried_done = true;
+                assert_eq!(item.file, Some(encoded_file.clone()));
+                assert_eq!(item.transcript_files.len(), 3);
+                for path in &item.transcript_files {
+                    assert!(
+                        path.is_file(),
+                        "transcript file must exist: {}",
+                        path.display()
+                    );
+                }
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("retried item failed unexpectedly: {:?}", item.error);
+            }
+        }
+    }
+    assert!(
+        retried_done,
+        "retried queue item should finish successfully"
+    );
+}

@@ -1019,9 +1019,14 @@ fn until(at: u64, now: u64) -> Duration {
 /// The lane a queued item will enter when [`start_item`] runs.
 fn initial_lane_of(item: &QueueItem) -> Lane {
     let is_existing_media = item.file.as_ref().map(|f| f.is_file()).unwrap_or(false);
-    if is_existing_media && item.options.transcribe && !item.options.needs_encode() {
+    let already_encoded =
+        is_existing_media && item.options.needs_encode() && item.size_bytes.is_some();
+    if is_existing_media
+        && item.options.transcribe
+        && (!item.options.needs_encode() || already_encoded)
+    {
         Lane::Transcribe
-    } else if is_existing_media && item.options.needs_encode() {
+    } else if is_existing_media && item.options.needs_encode() && !already_encoded {
         Lane::Encode
     } else {
         Lane::Download
@@ -1169,7 +1174,14 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 (item.options.clone(), item.duration_sec)
             };
 
-            if options.needs_encode() {
+            let already_encoded = {
+                let state = lock(&inner.state);
+                state
+                    .item(&id)
+                    .is_some_and(|item| item.options.needs_encode() && item.size_bytes.is_some())
+            };
+
+            if options.needs_encode() && !already_encoded {
                 let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
                     finish_item(
                         &inner,
@@ -1374,6 +1386,18 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             push_toast(&inner, QueueToast::new("toast.hardwareEncoderFallback"));
                         }
                         let media_file = output_file;
+                        let size_bytes = std::fs::metadata(&media_file).ok().map(|m| m.len());
+                        {
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                item.file = Some(media_file.clone());
+                                item.size_bytes = size_bytes;
+                                item.updated_at = now_unix();
+                            }
+                        }
+                        self_persist(&inner);
+                        mark_dirty(&inner, &id, false);
+
                         if options.transcribe {
                             match run_transcribe_stage(
                                 &inner,

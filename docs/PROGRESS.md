@@ -3954,4 +3954,23 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-19 — M5 / Update item.file and size_bytes after encoding before transcribe stage (M9, spec §7.3, §9.1, §10.2)
+- Done:
+  - Fixed M9:
+    - Updated `EncodeOutcome::Success` in `src-tauri/src/services/queue/engine.rs` to set `item.file = Some(media_file.clone())` and `item.size_bytes = std::fs::metadata(&media_file).ok().map(|m| m.len())`, followed by immediate `self_persist(&inner)` and `mark_dirty(&inner, &id, false)`, before calling `run_transcribe_stage`.
+    - Added `already_encoded` check in `run_item` (`item.options.needs_encode() && item.size_bytes.is_some()`) so resumed/retried items that already finished encoding skip re-encoding and go straight to transcription.
+    - Updated `initial_lane_of` in `engine.rs` to plan already-encoded items with `options.transcribe` on `Lane::Transcribe` instead of `Lane::Encode`.
+    - Added reproduction integration test `queue_engine_updates_item_file_after_encoding_before_transcribe_stage` in `src-tauri/tests/whisper_pipeline.rs` verifying that on transcription failure after encode `item.file` points to the encoded output file instead of the deleted original, and that retrying resumes transcription from the encoded file without re-encoding.
+- Verified by running:
+  - `cargo test --test whisper_pipeline queue_engine_updates_item_file_after_encoding_before_transcribe_stage` → FAILS before fix (`assertion left != right failed: item.file must not point to deleted pre-encode file: left: "/tmp/.tmpTLEX19/raw_video.webm", right: "/tmp/.tmpTLEX19/raw_video.webm"`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 164 integration = 543 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+
 
