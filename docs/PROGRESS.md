@@ -3972,5 +3972,27 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-19 — M5 / Account for existing .part in ModelDownloadManager disk space check and retry with backoff in download (M10, Checklist #4, spec §5.2, §10.2)
+- Done:
+  - Fixed M10:
+    - In `src-tauri/src/services/models.rs:480-492`, subtracted existing `.part` bytes (`fs::metadata(&part).map(|m| m.len()).unwrap_or(0)`) from `model.size_bytes` and `catalogue.vad.size_bytes` when calculating required disk space, preventing false `DiskFull` rejections when resuming interrupted model downloads.
+    - Reused `model_existing` as `initial_received` in `models.rs`.
+    - In `src-tauri/src/services/download.rs`, added `wait_backoff` helper implementing exponential backoff (`250ms * 2^(attempt-1)`) with immediate cancellation support via `tokio::select!`.
+    - Applied exponential backoff retry on transient connection errors in `builder.send().await`, 5xx HTTP server response statuses, and mid-stream disconnection chunk read errors.
+    - Added reproduction integration test `download_model_accounts_for_existing_part_file_in_disk_space_check` in `src-tauri/tests/models.rs`.
+    - Added reproduction integration tests `server_5xx_error_is_retried_with_backoff_and_succeeds` and `transient_stream_disconnect_retries_with_backoff` in `src-tauri/tests/download.rs`.
+- Verified by running:
+  - `cargo test --test models download_model_accounts_for_existing_part_file_in_disk_space_check` → FAILS before fix (`panicked at: disk check demanded full 16796225536 bytes despite 20971520 bytes in .part (available: 16780492800)`), PASSES after fix.
+  - `cargo test --test download -- server_5xx` → FAILS before fix (`panicked at: retry on 5xx must succeed: Process("GET http://... answered HTTP 500")`), PASSES after fix.
+  - `cargo test --test download -- retries_with_backoff` → FAILS before fix (`panicked at: transient stream retry must backoff before sending next request, got 855.846µs`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 167 integration = 546 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
 
 

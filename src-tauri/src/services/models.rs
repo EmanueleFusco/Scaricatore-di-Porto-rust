@@ -480,9 +480,14 @@ impl ModelDownloadManager {
         let vad_needed = if is_vad_installed(models_dir, &catalogue.vad) {
             0
         } else {
-            catalogue.vad.size_bytes
+            let vad_part = models_dir.join(format!("{}.part", catalogue.vad.file));
+            let vad_existing = fs::metadata(&vad_part).map(|m| m.len()).unwrap_or(0);
+            catalogue.vad.size_bytes.saturating_sub(vad_existing)
         };
-        let total_needed = model.size_bytes + vad_needed + 10 * 1024 * 1024; // 10 MB safety margin
+        let model_part = models_dir.join(format!("{}.part", model.file));
+        let model_existing = fs::metadata(&model_part).map(|m| m.len()).unwrap_or(0);
+        let model_needed = model.size_bytes.saturating_sub(model_existing);
+        let total_needed = model_needed + vad_needed + 10 * 1024 * 1024; // 10 MB safety margin
 
         if free_space > 0 && free_space < total_needed {
             return Err(AppError::DiskFull {
@@ -500,10 +505,7 @@ impl ModelDownloadManager {
             tokens.insert(model_id.to_owned(), token.clone());
         }
 
-        let initial_received = {
-            let part = models_dir.join(format!("{}.part", model.file));
-            fs::metadata(&part).map(|m| m.len()).unwrap_or(0)
-        };
+        let initial_received = model_existing;
         if let Ok(mut prog) = self.in_flight_progress.lock() {
             prog.insert(
                 model_id.to_owned(),

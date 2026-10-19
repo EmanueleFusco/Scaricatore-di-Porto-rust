@@ -578,3 +578,77 @@ async fn models_delete_cancels_in_flight_download_and_prevents_recreating_file()
         "model file must not exist after cancellation and delete"
     );
 }
+
+#[tokio::test]
+async fn download_model_accounts_for_existing_part_file_in_disk_space_check() {
+    let dir = TempDir::new().expect("temp dir");
+    let models_dir = dir.path().join("models");
+    fs::create_dir_all(&models_dir).unwrap();
+
+    let free_space = models::free_disk_space(&models_dir).unwrap_or(0);
+    assert!(
+        free_space > 25 * 1024 * 1024,
+        "need at least 25 MB free space on test volume"
+    );
+
+    let safety_margin = 10 * 1024 * 1024;
+    let part_bytes = 20 * 1024 * 1024;
+    // Set model size so that:
+    // Without subtracting .part:
+    //   total_needed = model_size + safety_margin = free_space + 15 MB > free_space (DiskFull).
+    // With subtracting .part:
+    //   total_needed = (model_size - part_bytes) + safety_margin = free_space - 5 MB < free_space (OK).
+    let model_size = free_space + safety_margin - 5 * 1024 * 1024;
+
+    let part_path = models_dir.join("ggml-resumed.bin.part");
+    let file = fs::File::create(&part_path).unwrap();
+    file.set_len(part_bytes).unwrap();
+
+    let custom_catalogue = ModelCatalogue {
+        schema_version: 1,
+        vad: VadModelEntry {
+            id: "silero-v5.1.2".to_owned(),
+            label: "Silero VAD".to_owned(),
+            file: "ggml-silero.bin".to_owned(),
+            url: "".to_owned(),
+            size_bytes: 10,
+            sha256: "dummy".to_owned(),
+        },
+        models: vec![ModelEntry {
+            id: "resumed-model".to_owned(),
+            label: "Resumed Model".to_owned(),
+            file: "ggml-resumed.bin".to_owned(),
+            url: "".to_owned(),
+            size_bytes: model_size,
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            ram_estimate: "~100 MB".to_owned(),
+            tier: "q5_0".to_owned(),
+            indicative_wer: None,
+            multilingual: true,
+            notes: None,
+            recommended: false,
+            advanced: false,
+        }],
+    };
+
+    // Mark VAD as already installed so vad_needed is 0
+    fs::write(models_dir.join(&custom_catalogue.vad.file), b"vad").unwrap();
+
+    let manager = ModelDownloadManager::new();
+    let res = manager
+        .download_model(
+            &models_dir,
+            &custom_catalogue,
+            "resumed-model",
+            Some("http://127.0.0.1:9"), // dummy mirror
+            Transport::loopback_http(),
+            |_| {},
+        )
+        .await;
+
+    if let Err(scaricatore_di_porto_lib::error::AppError::DiskFull { needed, available }) = res {
+        panic!(
+            "disk check demanded full {needed} bytes despite {part_bytes} bytes in .part (available: {available})"
+        );
+    }
+}
