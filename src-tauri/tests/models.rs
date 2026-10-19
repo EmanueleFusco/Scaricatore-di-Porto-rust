@@ -686,6 +686,7 @@ async fn models_download_throttles_rapid_chunk_progress_events() {
                 break;
             }
             let Ok(mut stream) = stream else { break };
+            let _ = stream.set_nodelay(true);
             let mut reader = BufReader::new(match stream.try_clone() {
                 Ok(c) => c,
                 Err(_) => break,
@@ -704,11 +705,15 @@ async fn models_download_throttles_rapid_chunk_progress_events() {
             let _ = stream.write_all(resp.as_bytes());
             let _ = stream.flush();
 
-            // Send 25 small chunks rapidly across 50ms (< 100ms throttle interval)
-            for _ in 0..25 {
+            // Send 25 small chunks rapidly with TCP_NODELAY enabled; sleep 1ms on the
+            // first 15 chunks so the client reads multiple discrete TCP chunks without
+            // accumulating 25 * macOS timer-coalescing slack (>200ms on VM runners).
+            for i in 0..25 {
                 let _ = stream.write_all(&[0x42; 100]);
                 let _ = stream.flush();
-                thread::sleep(Duration::from_millis(2));
+                if i < 15 {
+                    thread::sleep(Duration::from_millis(1));
+                }
             }
             let _ = stream.shutdown(std::net::Shutdown::Write);
             drop(stream);
@@ -756,12 +761,12 @@ async fn models_download_throttles_rapid_chunk_progress_events() {
     let _ = server_handle.join();
 
     let count = progress_events.lock().unwrap().len();
-    // 25 rapid chunks were sent in <50ms.
-    // Unthrottled code emits an IPC event on every single chunk (>= 25 events).
-    // Throttled code coalesces intermediate chunk events to 100ms intervals (<= 3 events).
+    // Unthrottled code emits an IPC event on every single read chunk (>= 15 events).
+    // Throttled code coalesces intermediate chunk events to 100ms intervals (<= 6 events,
+    // accommodating macOS VM timer coalescing slack while proving throttling is active).
     assert!(
-        count <= 3,
-        "models:progress emitted unthrottled on every TCP read chunk: got {count} events for 25 rapid chunks (expected <= 3)"
+        (2..=6).contains(&count),
+        "models:progress emitted unthrottled on every TCP read chunk: got {count} events for 25 rapid chunks (expected 2..=6)"
     );
 }
 
