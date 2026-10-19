@@ -40,7 +40,8 @@
   let copied = $state(false);
 
   const hasFile = $derived(item.file !== null);
-  const actions = $derived(actionsFor(item.state, hasFile));
+  const isRemoteUrl = $derived(!item.url.startsWith("local://"));
+  const actions = $derived(actionsFor(item.state, hasFile, isRemoteUrl));
   const warning = $derived(heightWarning(item));
   const speed = $derived(speedMbits(item.progress.speedBps));
   const eta = $derived(secondsToClock(item.progress.etaSec));

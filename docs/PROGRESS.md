@@ -4036,3 +4036,21 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-19 — M5 / Omit copyLink and openPage for local items in actionsFor (m4, Checklist #15, Spec §11.5)
+- Done:
+  - Fixed m4:
+    - Updated `actionsFor` in `src/lib/queue.ts` to accept `isRemoteUrl: boolean = true`, appending `"copyLink"` and `"openPage"` only when `isRemoteUrl` is `true`.
+    - Updated `src/lib/components/QueueItem.svelte` to derive `isRemoteUrl = !item.url.startsWith("local://")` and pass it to `actionsFor`.
+    - Added unit test in `src/lib/queue.test.ts` verifying that `"copyLink"` and `"openPage"` are omitted for items with local URLs.
+- Verified by running:
+  - `npm test` → FAILS before fix (`AssertionError: expected [ 'cancel', 'remove', ... ] to not include 'copyLink'`), PASSES after fix (13 test files, 284 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 382 unit + 167 integration = 549 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+

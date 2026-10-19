@@ -671,7 +671,11 @@ export type ItemAction =
  * actually resume, and Retry for the parked failures a user can re-run — never
  * for a done item, which has nothing to retry.
  */
-export function actionsFor(state: ItemState, hasFile: boolean): ItemAction[] {
+export function actionsFor(
+  state: ItemState,
+  hasFile: boolean,
+  isRemoteUrl: boolean = true,
+): ItemAction[] {
   const actions: ItemAction[] = [];
   if (isActive(state)) {
     actions.push("pause", "cancel");
@@ -689,7 +693,9 @@ export function actionsFor(state: ItemState, hasFile: boolean): ItemAction[] {
   } else if (hasFile) {
     actions.push("open", "reveal");
   }
-  actions.push("copyLink", "openPage");
+  if (isRemoteUrl) {
+    actions.push("copyLink", "openPage");
+  }
   return actions;
 }
 

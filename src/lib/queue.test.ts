@@ -199,11 +199,19 @@ describe("the actions a state offers", () => {
     expect(actionsFor("done", true)).toContain("reveal");
   });
 
-  it("always offers copy link and open page", () => {
+  it("always offers copy link and open page for remote items", () => {
     for (const state of ["queued", "downloading", "done", "failed"] as ItemState[]) {
       const actions = actionsFor(state, false);
       expect(actions).toContain("copyLink");
       expect(actions).toContain("openPage");
+    }
+  });
+
+  it("omits copy link and open page for local items", () => {
+    for (const state of ["queued", "transcribing", "done", "failed"] as ItemState[]) {
+      const actions = actionsFor(state, false, false);
+      expect(actions).not.toContain("copyLink");
+      expect(actions).not.toContain("openPage");
     }
   });
 });
