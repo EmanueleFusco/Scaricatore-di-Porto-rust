@@ -4071,5 +4071,31 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D123.
 - Next step: push commit to origin/main and re-run the Whisper Sidecar workflow on GitHub Actions.
 
+## 2026-10-19 — M5 / Fix Windows mock_builder comctl32 crash and NTFS part file test jitter (B8, B9, Spec §10.2, §15)
+- Done:
+  - Fixed B8:
+    - Removed `mod tests` with `tauri::test::mock_builder()` from `src-tauri/src/commands/models.rs`, preventing comctl32 v6 symbols from being pulled into the `--lib` unit test runner (`scaricatore_di_porto_lib-*.exe`) where Common Controls v6 manifest is absent on Windows.
+    - Replaced `#[cfg(test)]` transport selection in `commands::models::models_download` with dynamic check: selects `Transport::LoopbackHttp` when `mirror_url` points to loopback (`127.0.0.1`, `localhost`, `[::1]`), and `Transport::HttpsOnly` otherwise.
+    - Moved `models_download_throttles_rapid_chunk_progress_events` to integration test target `src-tauri/tests/models.rs` (where `cargo:rustc-link-arg-tests` embeds `windows-app-manifest.xml`).
+    - Added architectural regression test `src_unit_tests_do_not_call_tauri_mock_builder` in `tests/models.rs` to assert that no module in `src/` ever calls `mock_builder()`.
+  - Fixed B9:
+    - In `src-tauri/tests/models.rs:download_model_accounts_for_existing_part_file_in_disk_space_check`, pre-created and sized the 200 MiB `.part` file *before* querying `models::free_disk_space(&models_dir)`, so NTFS file allocation is accounted for in `free_space`.
+    - Adjusted model size calculation (`model_size = free_space + safety_margin + 40 MiB`), providing 140 MiB headroom with `.part` deduction (`free_space - 140 MiB < free_space`) to be resilient against runner background disk write jitter, while strictly failing without `.part` deduction (`free_space + 60 MiB > free_space`).
+  - Added D124 in `docs/DECISIONS.md`.
+- Verified by running:
+  - `cargo test --test models src_unit_tests_do_not_call_tauri_mock_builder` → FAILS before fix (`panicked at tests/models.rs: mock_builder() must NOT be called in unit tests under src/... Offenders: [".../src/commands/models.rs"]`), PASSES after fix.
+  - `cargo test --test models download_model_accounts_for_existing_part_file_in_disk_space_check` → PASSES.
+  - `cargo test --test models models_download_throttles_rapid_chunk_progress_events` → PASSES.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 381 unit + 169 integration = 550 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 285 passed, 0 failed.
+- Not verified / stubbed: Live Windows runner execution on GitHub Actions (pending push).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D124.
+- Next step: push commit to origin/main and verify Windows CI runners in process-tests.yml.
+
+
 
 

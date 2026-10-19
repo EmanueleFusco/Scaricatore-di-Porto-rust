@@ -3357,6 +3357,17 @@ MSVC `cl.exe` targeting ARM64 does not support the runtime CPU architecture feat
 
 In `.github/workflows/whisper-sidecar.yml`, the `Build whisper-cli (Windows ARM64)` step now uses `-DGGML_NATIVE=ON`. Windows ARM64 is a Tier 2 target (spec §1.1, CI-only / best-effort). This allows MSVC to compile `whisper-cli.exe` targeting ARM64 natively on the runner.
 
+### D124 — Restriction of mock_builder() to integration tests and NTFS-safe free space testing (spec §10.2, §15)
+
+1. **`mock_builder()` restricted to integration tests (`tests/*.rs`)**:
+   In Cargo, `cargo:rustc-link-arg-tests` in `src-tauri/build.rs` embeds `windows-app-manifest.xml` (Common Controls v6) only into integration test binaries under `tests/*.rs`. The `--lib` unit test runner (`src/lib.rs`, `scaricatore_di_porto_lib-*.exe`) does not receive `rustc-link-arg-tests` and cannot use global `rustc-link-arg` without corrupting the cdylib target or duplicating resources (see `build.rs:15-20` and D16). Calling `tauri::test::mock_builder()` in any module inside `src/` pulls in `comctl32.dll` v6 symbols without the manifest, causing `scaricatore_di_porto_lib-*.exe` to crash before `main` on Windows with `0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)`.
+   Therefore, all tests calling `tauri::test::mock_builder()` must live in integration test binaries (`tests/*.rs`). `models_download_throttles_rapid_chunk_progress_events` was moved to `tests/models.rs`. An architectural test `src_unit_tests_do_not_call_tauri_mock_builder` verifies that `src/` never calls `mock_builder()`.
+   `commands::models::models_download` selects `Transport::LoopbackHttp` whenever `mirror_url` targets a loopback interface (`http://127.0.0.1:`, `http://localhost:`, `http://[::1]:`), allowing integration tests to exercise `models_download` without `#[cfg(test)]`.
+
+2. **NTFS-safe `.part` file free space accounting in tests**:
+   In `tests/models.rs:download_model_accounts_for_existing_part_file_in_disk_space_check`, querying `free_disk_space` before creating the `.part` file causes false `DiskFull` failures on Windows NTFS, because `File::set_len` physically reserves/allocates clusters and immediately decreases `GetDiskFreeSpaceExW` by the file size. Creating and sizing the 200 MiB `.part` file *before* querying `free_disk_space` ensures the initial allocation is already accounted for in `free_space`, and using a 140 MiB safety headroom (`model_size = free_space + safety_margin + 40 MiB`) protects against runner background disk jitter (OS paging, Defender, logs).
+
+
 
 
 

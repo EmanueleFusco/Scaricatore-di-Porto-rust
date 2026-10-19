@@ -65,10 +65,16 @@ pub async fn models_download<R: Runtime>(
             },
         );
 
-        #[cfg(test)]
-        let transport = Transport::LoopbackHttp;
-        #[cfg(not(test))]
-        let transport = Transport::HttpsOnly;
+        let transport = match mirror_url.as_deref() {
+            Some(u)
+                if u.starts_with("http://127.0.0.1:")
+                    || u.starts_with("http://localhost:")
+                    || u.starts_with("http://[::1]:") =>
+            {
+                Transport::LoopbackHttp
+            }
+            _ => Transport::HttpsOnly,
+        };
 
         match manager
             .download_model(
@@ -187,120 +193,4 @@ pub fn models_open_folder(state: State<'_, AppState>) -> AppResult<()> {
     fs::create_dir_all(&dir).app_result()?;
     tauri_plugin_opener::open_path(dir.to_string_lossy().as_ref(), None::<&str>)
         .map_err(|err| AppError::Io(std::io::Error::other(err.to_string())).to_error_info())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-    use std::sync::Mutex;
-    use std::sync::mpsc;
-    use std::time::Duration;
-    use tauri::{Listener, Manager};
-    use tempfile::tempdir;
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn models_download_throttles_rapid_chunk_progress_events() {
-        let dir = tempdir().unwrap();
-        let state = AppState::from_path(dir.path().join("settings.json")).unwrap();
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        app.manage(state);
-
-        // Pre-create VAD file so models_download proceeds directly to downloading the model
-        let catalogue = ModelCatalogue::embedded().unwrap();
-        let models_dir = app.state::<AppState>().models_dir();
-        fs::create_dir_all(&models_dir).unwrap();
-        fs::write(models_dir.join(&catalogue.vad.file), b"vad-dummy").unwrap();
-
-        // Start a mock TCP server sending 25 rapid chunks of 100 bytes each
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_clone = Arc::clone(&stop);
-
-        let server_handle = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-                let Ok(mut stream) = stream else { break };
-                let mut reader = BufReader::new(match stream.try_clone() {
-                    Ok(c) => c,
-                    Err(_) => break,
-                });
-                loop {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Err(_) | Ok(0) => break,
-                        Ok(_) => {}
-                    }
-                    if line.trim().is_empty() {
-                        break;
-                    }
-                }
-                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2500\r\nConnection: close\r\n\r\n";
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-
-                // Send 25 small chunks rapidly across 50ms (< 100ms throttle interval)
-                for _ in 0..25 {
-                    let _ = stream.write_all(&[0x42; 100]);
-                    let _ = stream.flush();
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                let _ = stream.shutdown(std::net::Shutdown::Write);
-                drop(stream);
-            }
-        });
-
-        // Set mirror url to local test server
-        let mut settings = app.state::<AppState>().settings();
-        settings.whisper_models_mirror_url = Some(format!("http://127.0.0.1:{port}"));
-        app.state::<AppState>().save_settings(settings).unwrap();
-
-        let progress_events = Arc::new(Mutex::new(Vec::new()));
-        let p_events = Arc::clone(&progress_events);
-        app.listen("models:progress", move |event| {
-            p_events.lock().unwrap().push(event.payload().to_string());
-        });
-
-        let (done_tx, done_rx) = mpsc::channel();
-        let d_tx1 = done_tx.clone();
-        app.listen("models:completed", move |_| {
-            let _ = d_tx1.send(());
-        });
-        let d_tx2 = done_tx.clone();
-        app.listen("models:error", move |_| {
-            let _ = d_tx2.send(());
-        });
-
-        models_download(
-            app.handle().clone(),
-            app.state::<AppState>(),
-            "tiny-q5_1".to_string(),
-        )
-        .await
-        .unwrap();
-
-        done_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("download task must finish or error");
-
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
-        let _ = server_handle.join();
-
-        let count = progress_events.lock().unwrap().len();
-        // 25 rapid chunks were sent in <50ms.
-        // Unthrottled code emits an IPC event on every single chunk (>= 25 events).
-        // Throttled code coalesces intermediate chunk events to 100ms intervals (<= 3 events).
-        assert!(
-            count <= 3,
-            "models:progress emitted unthrottled on every TCP read chunk: got {count} events for 25 rapid chunks (expected <= 3)"
-        );
-    }
 }

@@ -585,24 +585,26 @@ async fn download_model_accounts_for_existing_part_file_in_disk_space_check() {
     let models_dir = dir.path().join("models");
     fs::create_dir_all(&models_dir).unwrap();
 
-    let free_space = models::free_disk_space(&models_dir).unwrap_or(0);
-    assert!(
-        free_space > 25 * 1024 * 1024,
-        "need at least 25 MB free space on test volume"
-    );
-
     let safety_margin = 10 * 1024 * 1024;
-    let part_bytes = 20 * 1024 * 1024;
-    // Set model size so that:
-    // Without subtracting .part:
-    //   total_needed = model_size + safety_margin = free_space + 15 MB > free_space (DiskFull).
-    // With subtracting .part:
-    //   total_needed = (model_size - part_bytes) + safety_margin = free_space - 5 MB < free_space (OK).
-    let model_size = free_space + safety_margin - 5 * 1024 * 1024;
+    let part_bytes = 200 * 1024 * 1024; // 200 MiB
 
+    // Create and size the .part file FIRST so Windows NTFS deducts its space before we measure free_space!
     let part_path = models_dir.join("ggml-resumed.bin.part");
     let file = fs::File::create(&part_path).unwrap();
     file.set_len(part_bytes).unwrap();
+    drop(file);
+
+    let free_space = models::free_disk_space(&models_dir).unwrap_or(0);
+    assert!(
+        free_space > 250 * 1024 * 1024,
+        "need at least 250 MB free space on test volume"
+    );
+
+    // Without subtracting .part:
+    //   total_needed = model_size + safety_margin = free_space + 60 MiB > free_space (DiskFull).
+    // With subtracting .part:
+    //   total_needed = (model_size - 200 MiB) + 10 MiB = free_space - 140 MiB < free_space (140 MiB headroom for OS jitter).
+    let model_size = free_space + safety_margin + 40 * 1024 * 1024;
 
     let custom_catalogue = ModelCatalogue {
         schema_version: 1,
@@ -651,4 +653,148 @@ async fn download_model_accounts_for_existing_part_file_in_disk_space_check() {
             "disk check demanded full {needed} bytes despite {part_bytes} bytes in .part (available: {available})"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_download_throttles_rapid_chunk_progress_events() {
+    let dir = TempDir::new().expect("temp dir");
+    let state =
+        scaricatore_di_porto_lib::state::AppState::from_path(dir.path().join("settings.json"))
+            .expect("state");
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    tauri::Manager::manage(&app, state);
+
+    // Pre-create VAD file so models_download proceeds directly to downloading the model
+    let catalogue = ModelCatalogue::embedded().unwrap();
+    let models_dir =
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app).models_dir();
+    fs::create_dir_all(&models_dir).unwrap();
+    fs::write(models_dir.join(&catalogue.vad.file), b"vad-dummy").unwrap();
+
+    // Start a mock TCP server sending 25 rapid chunks of 100 bytes each
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+
+    let server_handle = thread::spawn(move || {
+        for stream in listener.incoming() {
+            if stop_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(c) => c,
+                Err(_) => break,
+            });
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Err(_) | Ok(0) => break,
+                    Ok(_) => {}
+                }
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2500\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+
+            // Send 25 small chunks rapidly across 50ms (< 100ms throttle interval)
+            for _ in 0..25 {
+                let _ = stream.write_all(&[0x42; 100]);
+                let _ = stream.flush();
+                thread::sleep(Duration::from_millis(2));
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            drop(stream);
+        }
+    });
+
+    // Set mirror url to local test server
+    let mut settings =
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app).settings();
+    settings.whisper_models_mirror_url = Some(format!("http://127.0.0.1:{port}"));
+    tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app)
+        .save_settings(settings)
+        .unwrap();
+
+    let progress_events = Arc::new(Mutex::new(Vec::new()));
+    let p_events = Arc::clone(&progress_events);
+    tauri::Listener::listen(&app, "models:progress", move |event| {
+        p_events.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let d_tx1 = done_tx.clone();
+    tauri::Listener::listen(&app, "models:completed", move |_| {
+        let _ = d_tx1.send(());
+    });
+    let d_tx2 = done_tx.clone();
+    tauri::Listener::listen(&app, "models:error", move |_| {
+        let _ = d_tx2.send(());
+    });
+
+    scaricatore_di_porto_lib::commands::models::models_download(
+        tauri::Manager::app_handle(&app).clone(),
+        tauri::Manager::state::<scaricatore_di_porto_lib::state::AppState>(&app),
+        "tiny-q5_1".to_string(),
+    )
+    .await
+    .unwrap();
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("download task must finish or error");
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = TcpStream::connect(("127.0.0.1", port));
+    let _ = server_handle.join();
+
+    let count = progress_events.lock().unwrap().len();
+    // 25 rapid chunks were sent in <50ms.
+    // Unthrottled code emits an IPC event on every single chunk (>= 25 events).
+    // Throttled code coalesces intermediate chunk events to 100ms intervals (<= 3 events).
+    assert!(
+        count <= 3,
+        "models:progress emitted unthrottled on every TCP read chunk: got {count} events for 25 rapid chunks (expected <= 3)"
+    );
+}
+
+#[test]
+fn src_unit_tests_do_not_call_tauri_mock_builder() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = manifest_dir.join("src");
+    let mut offenders = Vec::new();
+
+    fn visit_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dir(&path, offenders);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let content = fs::read_to_string(&path).unwrap_or_default();
+                if content.contains("mock_builder(") {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+    }
+
+    visit_dir(&src_dir, &mut offenders);
+    assert!(
+        offenders.is_empty(),
+        "mock_builder() must NOT be called in unit tests under src/ because \
+         cargo:rustc-link-arg-tests (/MANIFEST:EMBED) only applies to integration \
+         tests in tests/*. Calling mock_builder() in src/ causes scaricatore_di_porto_lib-*.exe \
+         to crash with 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) on Windows. Offenders: {offenders:?}"
+    );
 }
