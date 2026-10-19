@@ -106,6 +106,12 @@ impl ToolProvider for FakeTools {
             // Presence is all the pipeline checks.
             ffmpeg: Some(self.ytdlp.clone()),
             ffprobe: None,
+            whisper: None,
+            models_dir: None,
+            whisper_threads: 0,
+            skip_silence_vad: true,
+            default_whisper_model: None,
+            default_transcript_language: None,
             runtimes: Runtimes {
                 mode: JsRuntimeMode::QuickJsOnly,
                 qjs: Some(ResolvedRuntime {
@@ -195,6 +201,7 @@ impl Fixture {
                 ..ItemOptions::default()
             },
             group_id: None,
+            file: None,
         }
     }
 
@@ -1470,6 +1477,7 @@ fn the_options_are_frozen_into_the_item_so_later_settings_cannot_change_them() {
             duration_sec: None,
             options,
             group_id: None,
+            file: None,
         }],
         false,
     );

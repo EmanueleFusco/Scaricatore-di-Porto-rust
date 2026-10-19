@@ -75,6 +75,12 @@ impl<R: Runtime> ToolProvider for AppToolProvider<R> {
                 ytdlp: tools.ytdlp.path,
                 ffmpeg: tools.ffmpeg,
                 ffprobe: tools.ffprobe,
+                whisper: tools.whisper,
+                models_dir: Some(state.models_dir()),
+                whisper_threads: settings.whisper_threads,
+                skip_silence_vad: settings.skip_silence_vad,
+                default_whisper_model: settings.active_whisper_model.clone(),
+                default_transcript_language: Some(settings.default_transcript_language.clone()),
                 runtimes: tools.runtimes,
                 memory: state.runtime_memory().clone(),
                 private_temp: tools.private_temp,
@@ -174,6 +180,16 @@ pub struct AddItemRequest {
     pub sponsorblock_mode: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub sponsorblock_categories: Vec<String>,
+    #[serde(default)]
+    pub transcribe: Option<bool>,
+    #[serde(default)]
+    pub whisper_model: Option<String>,
+    #[serde(default)]
+    pub transcript_language: Option<String>,
+    #[serde(default)]
+    pub translate_to_english: Option<bool>,
+    #[serde(default)]
+    pub transcripts_subfolder: Option<bool>,
 }
 
 fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -430,6 +446,19 @@ pub async fn queue_add<R: Runtime>(
             embed_chapters: item.embed_chapters.unwrap_or(settings.embed_chapters),
             sponsorblock_mode,
             sponsorblock_categories,
+            transcribe: item.transcribe.unwrap_or(false),
+            whisper_model: item
+                .whisper_model
+                .or_else(|| settings.active_whisper_model.clone()),
+            transcript_language: item
+                .transcript_language
+                .or_else(|| Some(settings.default_transcript_language.clone())),
+            translate_to_english: item
+                .translate_to_english
+                .or(Some(settings.whisper_translate_to_english)),
+            transcripts_subfolder: item
+                .transcripts_subfolder
+                .or(Some(settings.transcripts_subfolder)),
         };
 
         requests.push(AddRequest {
@@ -439,6 +468,7 @@ pub async fn queue_add<R: Runtime>(
             duration_sec: item.duration_sec,
             options,
             group_id: item.group_id,
+            file: None,
         });
     }
 
@@ -622,6 +652,139 @@ pub fn app_set_language(state: State<'_, AppState>, lang: String) -> AppResult<(
         .ui_lang()
         .set(crate::services::notify::Lang::from_tag(&lang));
     Ok(())
+}
+
+/// Transcribe an existing queue item with a finished media file (spec §10.2, §11.5).
+#[tauri::command]
+pub fn queue_transcribe_item(
+    state: State<'_, AppState>,
+    id: String,
+    whisper_model: Option<String>,
+    transcript_language: Option<String>,
+    translate_to_english: Option<bool>,
+    transcripts_subfolder: Option<bool>,
+) -> AppResult<bool> {
+    let outcome = state.require_queue()?.transcribe_item(
+        &id,
+        whisper_model,
+        transcript_language,
+        translate_to_english,
+        transcripts_subfolder,
+    );
+    Ok(outcome == Outcome::Ok)
+}
+
+/// Add a local media file to the queue for Whisper transcription (spec §10.2, §11.5).
+#[tauri::command]
+pub async fn queue_add_local_file(
+    state: State<'_, AppState>,
+    path: String,
+    whisper_model: Option<String>,
+    transcript_language: Option<String>,
+    translate_to_english: Option<bool>,
+    transcripts_subfolder: Option<bool>,
+) -> AppResult<String> {
+    let file_path = PathBuf::from(&path);
+    if !file_path.is_file() {
+        return Err(ErrorInfo::new(
+            ErrorCode::Io,
+            format!("The media file does not exist: {path}"),
+        ));
+    }
+
+    let settings = state.settings();
+    let title = file_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Local Media".to_string());
+
+    let output_dir = file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .or_else(|| settings.default_output_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let ffmpeg =
+        crate::commands::env::resolve_cached(&state, &settings, crate::services::tools::FFMPEG)
+            .await;
+    let ffprobe = crate::commands::env::resolve_cached(&state, &settings, "ffprobe").await;
+    let duration_sec = if let Some(ffmpeg) = ffmpeg.as_ref() {
+        if let Some(ffprobe_path) = crate::services::ffmpeg::find_ffprobe(
+            &ffmpeg.path,
+            ffprobe.as_ref().map(|t| t.path.as_path()),
+        ) {
+            crate::services::ffmpeg::probe_file_duration(
+                &ffprobe_path,
+                &file_path,
+                state.tools().temp_dir(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .map(|dur| dur.round() as u64)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let item_options = ItemOptions {
+        kind: Kind::Video,
+        quality: QualityChoice::Best,
+        output_dir,
+        cookies: CookieChoice::None,
+        runtime_mode: settings.js_runtime_mode,
+        filename_prefix: None,
+        include_id_in_filename: false,
+        prefer_h264: false,
+        archive_file: None,
+        sleep_interval: None,
+        live_from_start: None,
+        proxy: None,
+        limit_rate: None,
+        referer: None,
+        user_agent: None,
+        custom_headers: Vec::new(),
+        impersonate_retry: false,
+        encode: false,
+        video_codec: None,
+        audio_codec: None,
+        trim_start: None,
+        trim_end: None,
+        keep_original: true,
+        auto_play: false,
+        embed_metadata: false,
+        embed_thumbnail: false,
+        embed_chapters: false,
+        sponsorblock_mode: None,
+        sponsorblock_categories: Vec::new(),
+        transcribe: true,
+        whisper_model: whisper_model.or_else(|| settings.active_whisper_model.clone()),
+        transcript_language: transcript_language
+            .or_else(|| Some(settings.default_transcript_language.clone())),
+        translate_to_english: translate_to_english.or(Some(settings.whisper_translate_to_english)),
+        transcripts_subfolder: transcripts_subfolder.or(Some(settings.transcripts_subfolder)),
+    };
+
+    let req = AddRequest {
+        url: format!("local://{}", file_path.to_string_lossy()),
+        title: Some(title),
+        site: Some("local".to_string()),
+        duration_sec,
+        options: item_options,
+        group_id: None,
+        file: Some(file_path),
+    };
+
+    let queue = state.require_queue()?;
+    let outcome = queue.add(vec![req], true);
+    match outcome.added.into_iter().next() {
+        Some(item_id) => Ok(item_id),
+        None => Err(ErrorInfo::new(
+            ErrorCode::Unsupported,
+            "Failed to add local file to queue",
+        )),
+    }
 }
 
 /// A `ToolProvider` over the live app state, for `setup`.

@@ -9,12 +9,14 @@
    */
   import GeneralSettings from "$lib/pages/settings/GeneralSettings.svelte";
   import NetworkSettings from "$lib/pages/settings/NetworkSettings.svelte";
+  import TranscriptionSettings from "$lib/pages/settings/TranscriptionSettings.svelte";
   import ToolsPage from "$lib/pages/ToolsPage.svelte";
   import { router } from "$lib/router.svelte";
   import { tt } from "$lib/stores/settings.svelte";
 
   const tabs = [
     { href: "/settings", key: "settings.tab.general", exact: true },
+    { href: "/settings/transcription", key: "settings.tab.transcription", exact: false },
     { href: "/settings/tools", key: "settings.tab.tools", exact: false },
     { href: "/settings/network", key: "settings.tab.network", exact: false },
   ];
@@ -44,6 +46,8 @@
 
   {#if router.isActive("/settings/tools")}
     <ToolsPage />
+  {:else if router.isActive("/settings/transcription")}
+    <TranscriptionSettings />
   {:else if router.isActive("/settings/network")}
     <NetworkSettings />
   {:else}

@@ -48,6 +48,12 @@ pub struct JobEnvironment {
     /// result (spec §5.2.1, §9).
     pub ffmpeg: Option<PathBuf>,
     pub ffprobe: Option<PathBuf>,
+    pub whisper: Option<PathBuf>,
+    pub models_dir: Option<PathBuf>,
+    pub whisper_threads: u32,
+    pub skip_silence_vad: bool,
+    pub default_whisper_model: Option<String>,
+    pub default_transcript_language: Option<String>,
     pub runtimes: Runtimes,
     pub memory: Arc<jsruntime::RuntimeMemoryStore>,
     /// Spec §4.9: private TMP dir for the child processes.

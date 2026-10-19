@@ -1,0 +1,1468 @@
+//! Integration tests for the Whisper transcription pipeline (spec §10.2, §14 row M5, §15 item 9):
+//! - 16 kHz mono WAV preparation with disk space check
+//! - Chunking above 2 hours at silence points with timestamp offsets
+//! - Progress parsing (-pp) and live segment preview
+//! - GPU failure retry with -ng CPU fallback
+//! - Hallucination guard (repeated loops / suspicious silence detection)
+//! - Tree cancellation and partial file cleanup
+//! - Queue engine integration for local file transcription and post-download transcription
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use scaricatore_di_porto_lib::services::job::JobEnvironment;
+use scaricatore_di_porto_lib::services::jsruntime::{JsRuntimeMode, RuntimeMemoryStore};
+use scaricatore_di_porto_lib::services::queue::engine::{
+    AddRequest, BoxFuture, EngineConfig, IdleNotifier, QueueEngine, ToolProvider,
+};
+use scaricatore_di_porto_lib::services::queue::model::{
+    CookieChoice, ItemOptions, ItemState, Kind, QualityChoice, QueueSummary,
+};
+use scaricatore_di_porto_lib::services::transcribe::whisper::{
+    HallucinationWarning, TranscribeProgressSink, TranscribeRequest, detect_audio_silence,
+    run_transcribe,
+};
+use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
+
+/// Locates the `fake_tool` example built by `cargo test`.
+fn fake_tool_source() -> PathBuf {
+    let profile_dir = std::env::current_exe()
+        .expect("the test binary has a path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test binary lives in <profile>/deps/")
+        .to_path_buf();
+    let mut path = profile_dir.join("examples").join("fake_tool");
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+    assert!(
+        path.is_file(),
+        "the fake_tool example was not built next to the tests (looked for {}).\n\
+         Run the suite as `cargo test`.",
+        path.display()
+    );
+    path
+}
+
+struct Fixture {
+    dir: TempDir,
+    fake_whisper: PathBuf,
+    fake_ffmpeg: PathBuf,
+    #[allow(dead_code)]
+    fake_ffprobe: PathBuf,
+    models_dir: PathBuf,
+    model_path: PathBuf,
+    vad_path: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        let bin_dir = dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let fake_whisper = bin_dir.join(if cfg!(windows) {
+            "sdp-whisper.exe"
+        } else {
+            "sdp-whisper"
+        });
+        fs::copy(fake_tool_source(), &fake_whisper).expect("copy fake_tool as sdp-whisper");
+
+        let fake_ffmpeg = bin_dir.join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
+        fs::copy(fake_tool_source(), &fake_ffmpeg).expect("copy fake_tool as ffmpeg");
+
+        let fake_ffprobe = bin_dir.join(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        fs::copy(fake_tool_source(), &fake_ffprobe).expect("copy fake_tool as ffprobe");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [&fake_whisper, &fake_ffmpeg, &fake_ffprobe] {
+                let mut perms = fs::metadata(p).expect("metadata").permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(p, perms).expect("chmod +x");
+            }
+        }
+
+        let models_dir = dir.path().join("models");
+        fs::create_dir_all(&models_dir).expect("create models dir");
+        let model_path = models_dir.join("ggml-large-v3-turbo-q5_0.bin");
+        fs::write(&model_path, b"FAKE_WHISPER_MODEL_BIN").expect("write dummy model");
+
+        let vad_path = models_dir.join("ggml-silero-v5.1.2.bin");
+        fs::write(&vad_path, b"FAKE_VAD_MODEL_BIN").expect("write dummy vad model");
+
+        Self {
+            dir,
+            fake_whisper,
+            fake_ffmpeg,
+            fake_ffprobe,
+            models_dir,
+            model_path,
+            vad_path,
+        }
+    }
+
+    fn create_dummy_media(&self, filename: &str) -> PathBuf {
+        let p = self.dir.path().join(filename);
+        fs::write(&p, b"RIFF....WAVEfmt ....data....").expect("write dummy media");
+        p
+    }
+
+    fn exe_dir(&self) -> PathBuf {
+        self.fake_whisper.parent().unwrap().to_path_buf()
+    }
+}
+
+#[tokio::test]
+async fn transcribe_pipeline_progress_and_live_preview_and_outputs() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_video.mp4");
+
+    let progress_events = Arc::new(Mutex::new(Vec::<(f64, Option<String>)>::new()));
+    let sink: TranscribeProgressSink = {
+        let events = Arc::clone(&progress_events);
+        Arc::new(move |pct, preview| {
+            events
+                .lock()
+                .unwrap()
+                .push((pct, preview.map(str::to_string)));
+        })
+    };
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: Some(fix.vad_path.clone()),
+        input_media: media.clone(),
+        language: Some("it".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: true,
+        whisper_threads: 4,
+        transcripts_subfolder: false,
+        duration_sec: Some(60.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), Some(sink))
+        .await
+        .expect("transcription should succeed");
+
+    assert!(!outcome.used_cpu_fallback);
+    assert_eq!(outcome.hallucination_warning, None);
+
+    // Verify transcript files were produced
+    assert!(outcome.paths.txt.is_file());
+    assert!(outcome.paths.srt.is_file());
+    assert!(outcome.paths.vtt.is_file());
+
+    let txt = fs::read_to_string(&outcome.paths.txt).expect("read txt");
+    assert!(txt.contains("Hello world"));
+    assert!(txt.contains("This is a fake transcription."));
+
+    let srt = fs::read_to_string(&outcome.paths.srt).expect("read srt");
+    assert!(srt.contains("00:00:00,000 --> 00:00:02,500"));
+
+    let vtt = fs::read_to_string(&outcome.paths.vtt).expect("read vtt");
+    assert!(vtt.starts_with("WEBVTT"));
+
+    // Verify progress events were parsed and live previews captured
+    let recorded = progress_events.lock().unwrap().clone();
+    assert!(!recorded.is_empty(), "progress events should be recorded");
+    let has_100 = recorded.iter().any(|(pct, _)| *pct >= 99.0);
+    assert!(has_100, "progress should reach 100%");
+
+    let has_preview = recorded
+        .iter()
+        .any(|(_, preview)| preview.as_deref().unwrap_or("").contains("Hello world"));
+    assert!(has_preview, "live segment preview should be captured");
+}
+
+#[tokio::test]
+async fn transcribe_gpu_failure_retries_with_ng() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("gpu_fail_sample.mp4");
+
+    // Signal fake_whisper to simulate GPU failure on the first run without -ng
+    fs::write(fix.exe_dir().join("fail_whisper_gpu.txt"), b"1").expect("write fail gpu flag");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("auto".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .expect("transcription should succeed on retry with -ng");
+
+    assert!(
+        outcome.used_cpu_fallback,
+        "CPU fallback (-ng) should be recorded after GPU failure"
+    );
+    assert!(outcome.paths.txt.is_file());
+}
+
+#[tokio::test]
+async fn transcribe_non_gpu_failure_does_not_retry_with_ng() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("non_gpu_fail_sample.mp4");
+
+    // Signal fake_whisper to simulate a total / non-GPU failure
+    fs::write(fix.exe_dir().join("fail_whisper_all.txt"), b"1").expect("write fail all flag");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("auto".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let result = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        result.is_err(),
+        "transcription must fail on total whisper failure"
+    );
+
+    // On Linux/CPU builds, non-GPU failure must NOT trigger a second invocation with -ng
+    let calls_path = fix.exe_dir().join("fake-whisper.calls");
+    let calls: u32 = fs::read_to_string(&calls_path)
+        .expect("fake-whisper.calls must exist")
+        .trim()
+        .parse()
+        .expect("parse calls");
+    assert_eq!(
+        calls, 1,
+        "sdp-whisper must be spawned only once on non-GPU failure, but was retried with -ng"
+    );
+
+    let log = fs::read_to_string(fix.exe_dir().join("fake-whisper.log")).unwrap_or_default();
+    assert!(
+        !log.contains("-ng"),
+        "-ng must not be passed when retrying CPU-only / non-GPU failures: {log}"
+    );
+}
+
+#[tokio::test]
+async fn transcribe_hallucination_guard_detects_loops() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("hallucinating_sample.mp4");
+
+    // Signal fake_whisper to emit repeated segment loops
+    fs::write(fix.exe_dir().join("hallucinate.txt"), b"1").expect("write hallucinate flag");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("en".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .expect("transcription finishes even with warning");
+
+    match outcome.hallucination_warning {
+        Some(HallucinationWarning::RepeatedLoop { count, .. }) => {
+            assert!(count >= 5, "repeat count should be at least 5");
+        }
+        other => panic!("expected RepeatedLoop warning, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn transcribe_cancellation_kills_process_and_cleans_partials() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sleep_sample.mp4");
+
+    // Tell fake_whisper to sleep for 10 seconds
+    fs::write(fix.exe_dir().join("fake_whisper_sleep.txt"), b"10000").expect("write sleep flag");
+
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+
+    let tmp = fix.dir.path().join("tmp_cancel");
+    fs::create_dir_all(&tmp).expect("create cancel tmp");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: None,
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(tmp.clone()),
+    };
+
+    let handle = tokio::spawn(async move { run_transcribe(req, token_clone, None).await });
+
+    // Let process start, then cancel
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    token.cancel();
+
+    let res = handle.await.expect("join handle");
+    assert!(res.is_err(), "cancelled transcription should return error");
+
+    // Verify temp directory contains no lingering .wav or partial files
+    let remaining: Vec<_> = fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "all partial/temp files should be cleaned up on cancel: {:?}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn transcribe_chunking_with_silencedetect_and_merges() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("long_podcast.mp4");
+
+    // Duration is > 2 hours (7400 seconds) -> triggers chunking
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("it".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: true,
+        duration_sec: Some(7400.0),
+        temp_dir: Some(fix.dir.path().join("tmp_chunk")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .expect("chunked transcription should succeed");
+
+    assert!(outcome.paths.txt.is_file());
+    assert!(outcome.paths.srt.is_file());
+    assert!(outcome.paths.vtt.is_file());
+
+    // In a subfolder: transcripts/long_podcast.srt
+    assert!(outcome.paths.srt.to_string_lossy().contains("transcripts"));
+
+    let srt = fs::read_to_string(&outcome.paths.srt).expect("read srt");
+    assert!(srt.contains("00:00:00,000 -->"));
+}
+
+// ---------------------------------------------------------------------------
+// Queue Engine Integration
+// ---------------------------------------------------------------------------
+
+struct QueueFakeTools {
+    whisper: Option<PathBuf>,
+    ffmpeg: PathBuf,
+    models_dir: PathBuf,
+    default_model: String,
+    private_temp: Option<PathBuf>,
+}
+
+impl ToolProvider for QueueFakeTools {
+    fn environment(
+        &self,
+        options: ItemOptions,
+    ) -> BoxFuture<Result<JobEnvironment, scaricatore_di_porto_lib::error::ErrorInfo>> {
+        fs::create_dir_all(&options.output_dir).ok();
+        let env = JobEnvironment {
+            ytdlp: self.ffmpeg.clone(),
+            ffmpeg: Some(self.ffmpeg.clone()),
+            ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
+            whisper: self.whisper.clone(),
+            models_dir: Some(self.models_dir.clone()),
+            whisper_threads: 2,
+            skip_silence_vad: true,
+            default_whisper_model: Some(self.default_model.clone()),
+            default_transcript_language: Some("it".to_string()),
+            runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
+                mode: JsRuntimeMode::QuickJsOnly,
+                qjs: None,
+                deno: None,
+                ytdlp_version: "2026.01.01".to_string(),
+            },
+            private_temp: self.private_temp.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(self.models_dir.join("mem.json"))),
+            youtube_clients: None,
+        };
+        Box::pin(std::future::ready(Ok(env)))
+    }
+}
+
+struct DummyNotifier;
+impl IdleNotifier for DummyNotifier {
+    fn notify(&self, _summary: &QueueSummary) {}
+}
+
+#[tokio::test]
+async fn queue_engine_transcribes_local_media_end_to_end() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("local_lecture.mp4");
+
+    let queue_path = fix.dir.path().join("queue.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path.clone(),
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Local Lecture".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(45),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    // Wait for queue item to process
+    let mut finished = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                assert_eq!(item.transcript_files.len(), 3);
+                for path in &item.transcript_files {
+                    assert!(
+                        path.is_file(),
+                        "transcript file should exist: {}",
+                        path.display()
+                    );
+                }
+                assert_eq!(
+                    item.transcript_preview, None,
+                    "transcript_preview must be cleared when item finishes"
+                );
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("item failed: {:?}, log: {:?}", item.error, item.log_tail);
+            }
+        }
+    }
+
+    assert!(
+        finished,
+        "queue item should complete transcription successfully"
+    );
+}
+
+#[tokio::test]
+async fn transcribe_does_not_overwrite_existing_transcript_files() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("lecture.mp4");
+    let existing_srt = fix.dir.path().join("lecture.srt");
+    fs::write(
+        &existing_srt,
+        "1\n00:00:00,000 --> 00:00:01,000\nUSER EDITED\n\n",
+    )
+    .unwrap();
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: Some("en".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 1,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(fix.dir.path().join("tmp")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&existing_srt).unwrap(),
+        "1\n00:00:00,000 --> 00:00:01,000\nUSER EDITED\n\n",
+        "existing .srt must never be silently overwritten"
+    );
+    assert_ne!(outcome.paths.srt, existing_srt);
+    assert!(outcome.paths.srt.is_file());
+    assert!(outcome.paths.txt.is_file());
+    assert!(outcome.paths.vtt.is_file());
+}
+
+#[tokio::test]
+async fn transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("error_sample.mp4");
+    let tmp = fix.dir.path().join("tmp_error");
+    fs::create_dir_all(&tmp).expect("create error tmp");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.dir.path().join("nonexistent_whisper_binary"),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: None,
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(30.0),
+        temp_dir: Some(tmp.clone()),
+    };
+
+    let res = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        res.is_err(),
+        "should fail when whisper executable is nonexistent"
+    );
+
+    let remaining: Vec<_> = fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "temporary prep wav must not leak on whisper spawn error, found: {:?}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("error_long_podcast.mp4");
+    let tmp = fix.dir.path().join("tmp_chunk_error");
+    fs::create_dir_all(&tmp).expect("create chunk error tmp");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.dir.path().join("nonexistent_whisper_binary"),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media,
+        language: None,
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: Some(7400.0),
+        temp_dir: Some(tmp.clone()),
+    };
+
+    let res = run_transcribe(req, CancellationToken::new(), None).await;
+    assert!(
+        res.is_err(),
+        "should fail when whisper executable is nonexistent"
+    );
+
+    let remaining: Vec<_> = fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "temporary wav and chunk files must not leak on whisper spawn error in chunked mode, found: {:?}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("local_lecture_job_temp.mp4");
+    let shared_cache_tmp = fix.dir.path().join("shared_app_cache_tmp");
+    fs::create_dir_all(&shared_cache_tmp).expect("create shared cache tmp");
+
+    let queue_path = fix.dir.path().join("queue_job_temp.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: Some(shared_cache_tmp.clone()),
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let out_dir = fix.dir.path().join("out_job_temp");
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Local Lecture Job Temp".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: out_dir.clone(),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    let mut finished = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("item failed: {:?}, log: {:?}", item.error, item.log_tail);
+            }
+        }
+    }
+    assert!(
+        finished,
+        "queue item should complete transcription successfully"
+    );
+
+    // Shared app cache tmp should not have received transcription temp files
+    let remaining_shared: Vec<_> = fs::read_dir(&shared_cache_tmp)
+        .expect("read shared tmp dir")
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        remaining_shared.is_empty(),
+        "shared private_temp must not be used for transcription files: {:?}",
+        remaining_shared
+    );
+}
+
+#[test]
+fn docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let progress =
+        fs::read_to_string(repo_root.join("docs/PROGRESS.md")).expect("read PROGRESS.md");
+    let decisions =
+        fs::read_to_string(repo_root.join("docs/DECISIONS.md")).expect("read DECISIONS.md");
+
+    // 1. Hallucination guard: must not falsely claim trimming of repetitions (spec §10.2 item 7 is detection & toast warning only)
+    assert!(
+        !progress.contains("segments), trims repetitions"),
+        "PROGRESS.md falsely claims that hallucination guard trims repetitions"
+    );
+    assert!(
+        !decisions.contains("Trims repeating tails"),
+        "DECISIONS.md falsely claims that hallucination guard trims repeating tails"
+    );
+
+    // 2. GPU error fallback: must not falsely claim GPU error detection
+    assert!(
+        !progress.contains("detects GPU errors on non-`-ng` runs"),
+        "PROGRESS.md falsely claims automatic GPU error detection"
+    );
+
+    // 3. Silero VAD metadata: must not cite snakers4/silero-vad or wrong byte size / sha256 in D119
+    assert!(
+        !progress.contains("and snakers4/silero-vad models"),
+        "PROGRESS.md falsely claims VAD model comes from snakers4/silero-vad"
+    );
+    assert!(
+        !decisions.contains("and Silero VAD (`silero-v5.1.2`, 5,463,552 bytes"),
+        "DECISIONS.md falsely claims Silero VAD size is 5,463,552 bytes"
+    );
+    assert!(
+        !decisions.contains("6e033f947704df34baabfb3a1f879fa1e2b6186b5936aa7d6206d2146e5bf13b"),
+        "DECISIONS.md falsely claims Silero VAD sha256 is 6e033f94..."
+    );
+    assert!(
+        !decisions.contains("checks if ggml-silero.bin exists"),
+        "DECISIONS.md D119 falsely claims checking for ggml-silero.bin"
+    );
+
+    // Positive checks: DECISIONS.md and whisper.models.json agree
+    let models_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo_root.join("whisper.models.json"))
+            .expect("read whisper.models.json"),
+    )
+    .expect("parse whisper.models.json");
+    let vad_size = models_json["vad"]["sizeBytes"].as_u64().unwrap();
+    let vad_sha = models_json["vad"]["sha256"].as_str().unwrap();
+    assert_eq!(vad_size, 885098);
+    assert_eq!(
+        vad_sha,
+        "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+    );
+    assert!(decisions.contains("885,098 bytes"));
+    assert!(decisions.contains("29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"));
+    assert!(decisions.contains("ggml-org/whisper-vad"));
+}
+
+#[tokio::test]
+async fn detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer() {
+    let fix = Fixture::new();
+    let bin_dir = fix.fake_ffmpeg.parent().expect("fake_ffmpeg dir");
+
+    // Generate 250 silence intervals (500 lines on stderr)
+    // with intervals spanning from t = 10.0s to beyond t = 4900.0s.
+    let mut fake_silence = String::new();
+    for i in 0..250 {
+        let start = 10.0 + (i as f64) * 20.0;
+        let end = start + 2.5;
+        fake_silence.push_str(&format!(
+            "[silencedetect @ 0x5555] silence_start: {start:.1}\n\
+             [silencedetect @ 0x5555] silence_end: {end:.1} | silence_duration: 2.5\n"
+        ));
+    }
+    fs::write(bin_dir.join("fake_silence.txt"), fake_silence).expect("write fake_silence.txt");
+
+    let dummy_wav = fix.dir.path().join("dummy.wav");
+    fs::write(&dummy_wav, b"RIFF....WAVEfmt ").expect("write dummy wav");
+
+    let intervals = detect_audio_silence(
+        &fix.fake_ffmpeg,
+        &dummy_wav,
+        Some(fix.dir.path()),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    // With 250 intervals (500 lines of stderr), a 200-line ring buffer only retains the last ~100 intervals.
+    // Full streaming via LineSinks must retain all 250 intervals including early intervals like t = 10.0 and t = 1770.0.
+    assert_eq!(
+        intervals.len(),
+        250,
+        "all 250 silence intervals must be preserved, got {}",
+        intervals.len()
+    );
+    assert!(
+        intervals.iter().any(|i| (i.start_sec - 10.0).abs() < 0.1),
+        "early silence interval at t=10.0s was lost"
+    );
+    assert!(
+        intervals.iter().any(|i| (i.start_sec - 1770.0).abs() < 0.1),
+        "silence interval around 30m boundary at t=1770.0s was lost"
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_fails_with_whisper_model_missing_when_model_not_installed() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("uninstalled_model.mp4");
+
+    let queue_path = fix.dir.path().join("queue_missing_model.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Missing Model".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("small-q5_1".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                let error = item.error.as_ref().expect("item error must be present");
+                assert_eq!(
+                    error.code, "WHISPER_MODEL_MISSING",
+                    "missing model error code must be WHISPER_MODEL_MISSING"
+                );
+                assert_eq!(
+                    error.message_key, "error.ytdlp.whisperModelMissing",
+                    "missing model message_key must be error.ytdlp.whisperModelMissing"
+                );
+                assert_eq!(
+                    error.detail.as_deref(),
+                    Some("small-q5_1"),
+                    "missing model detail should contain the model ID"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper model is not installed"
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_fails_with_whisper_missing_when_sidecar_not_found() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("missing_sidecar.mp4");
+
+    let queue_path = fix.dir.path().join("queue_missing_sidecar.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: None,
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Missing Sidecar".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                let error = item.error.as_ref().expect("item error must be present");
+                assert_eq!(
+                    error.code, "WHISPER_MISSING",
+                    "missing sidecar error code must be WHISPER_MISSING"
+                );
+                assert_eq!(
+                    error.message_key, "error.ytdlp.whisperMissing",
+                    "missing sidecar message_key must be error.ytdlp.whisperMissing"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper sidecar is not installed"
+    );
+}
+
+#[tokio::test]
+async fn local_media_with_none_duration_probes_ffprobe_and_chunks() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("three_hour_lecture.mp4");
+
+    // Provide 3-hour duration from fake ffprobe (10,800 seconds)
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "10800.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let queue_path = fix.dir.path().join("queue_local_probe.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fix.fake_whisper.clone()),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path.clone(),
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Three Hour Lecture".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: None, // No duration provided!
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out_probe"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: false,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: true,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    // Wait for queue item to process
+    let mut finished = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                finished = true;
+                assert_eq!(
+                    item.duration_sec,
+                    Some(10800),
+                    "local media queue item duration_sec must be probed from ffprobe"
+                );
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("item failed: {:?}", item.error);
+            }
+        }
+    }
+    assert!(finished, "queue item should finish processing");
+
+    // Because duration is 10800s (> 7200s), chunking must have been triggered:
+    // fake_whisper should have been called multiple times (for each chunk, >= 6 times).
+    let calls_file = fix.exe_dir().join("fake-whisper.calls");
+    let calls = if calls_file.exists() {
+        fs::read_to_string(&calls_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    assert!(
+        calls > 1,
+        "local media longer than 2 hours must be chunked into multiple whisper calls, got {calls} calls"
+    );
+}
+
+#[tokio::test]
+async fn transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("long_podcast_no_duration.mp4");
+
+    // Provide 7400 seconds (> 2 hours) from fake ffprobe
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "7400.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let req = TranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        whisper_path: fix.fake_whisper.clone(),
+        model_path: fix.model_path.clone(),
+        vad_model_path: None,
+        input_media: media.clone(),
+        language: Some("it".to_string()),
+        translate_to_english: false,
+        skip_silence_vad: false,
+        whisper_threads: 0,
+        transcripts_subfolder: false,
+        duration_sec: None, // Missing duration! Must be probed via ffprobe.
+        temp_dir: Some(fix.dir.path().join("tmp_probe_direct")),
+    };
+
+    let outcome = run_transcribe(req, CancellationToken::new(), None)
+        .await
+        .expect("transcription should succeed");
+
+    assert!(outcome.paths.srt.is_file());
+
+    // Because duration probed from ffprobe was 7400s (> 7200s), chunking was triggered:
+    let calls_file = fix.exe_dir().join("fake-whisper.calls");
+    let calls: u32 = fs::read_to_string(&calls_file)
+        .expect("fake-whisper.calls must exist")
+        .trim()
+        .parse()
+        .expect("parse calls");
+    assert!(
+        calls > 1,
+        "transcribe with None duration must probe ffprobe and chunk audio above 2 hours, got {calls} calls"
+    );
+}
+
+#[tokio::test]
+async fn prepare_16khz_wav_probes_duration_from_ffprobe_when_none() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("media_for_prep.mp4");
+    let out_wav = fix.dir.path().join("prepared.wav");
+
+    fs::write(fix.exe_dir().join("fake_ffprobe_duration.txt"), "10800.0")
+        .expect("write fake_ffprobe_duration.txt");
+
+    let res = scaricatore_di_porto_lib::services::transcribe::whisper::prepare_16khz_wav(
+        &fix.fake_ffmpeg,
+        &media,
+        &out_wav,
+        None,
+        None, // duration_sec is None!
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(res.is_ok(), "prepare_16khz_wav should succeed: {res:?}");
+    assert!(out_wav.is_file(), "output wav should be created");
+}
+
+struct MutableWhisperTools {
+    whisper: Arc<std::sync::Mutex<Option<PathBuf>>>,
+    ffmpeg: PathBuf,
+    models_dir: PathBuf,
+    default_model: String,
+    private_temp: Option<PathBuf>,
+}
+
+impl ToolProvider for MutableWhisperTools {
+    fn environment(
+        &self,
+        options: ItemOptions,
+    ) -> BoxFuture<Result<JobEnvironment, scaricatore_di_porto_lib::error::ErrorInfo>> {
+        fs::create_dir_all(&options.output_dir).ok();
+        let whisper = self.whisper.lock().unwrap().clone();
+        let env = JobEnvironment {
+            ytdlp: self.ffmpeg.clone(),
+            ffmpeg: Some(self.ffmpeg.clone()),
+            ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
+            whisper,
+            models_dir: Some(self.models_dir.clone()),
+            whisper_threads: 2,
+            skip_silence_vad: true,
+            default_whisper_model: Some(self.default_model.clone()),
+            default_transcript_language: Some("it".to_string()),
+            runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
+                mode: JsRuntimeMode::QuickJsOnly,
+                qjs: None,
+                deno: None,
+                ytdlp_version: "2026.01.01".to_string(),
+            },
+            private_temp: self.private_temp.clone(),
+            memory: Arc::new(RuntimeMemoryStore::load(self.models_dir.join("mem.json"))),
+            youtube_clients: None,
+        };
+        Box::pin(std::future::ready(Ok(env)))
+    }
+}
+
+#[tokio::test]
+async fn queue_engine_updates_item_file_after_encoding_before_transcribe_stage() {
+    let fix = Fixture::new();
+    let local_file = fix.create_dummy_media("raw_video.webm");
+
+    let queue_path = fix.dir.path().join("queue_encode_transcribe_fail.json");
+    let whisper_holder = Arc::new(std::sync::Mutex::new(None));
+    let tools = Arc::new(MutableWhisperTools {
+        whisper: Arc::clone(&whisper_holder),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.models_dir.clone(),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let req = AddRequest {
+        url: format!("local://{}", local_file.display()),
+        title: Some("Raw Video".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: fix.dir.path().join("out"),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            filename_prefix: None,
+            include_id_in_filename: false,
+            prefer_h264: false,
+            archive_file: None,
+            sleep_interval: None,
+            live_from_start: None,
+            proxy: None,
+            limit_rate: None,
+            referer: None,
+            user_agent: None,
+            custom_headers: Vec::new(),
+            impersonate_retry: false,
+            encode: true,
+            video_codec: None,
+            audio_codec: None,
+            trim_start: None,
+            trim_end: None,
+            keep_original: false,
+            auto_play: false,
+            embed_metadata: false,
+            embed_thumbnail: false,
+            embed_chapters: false,
+            sponsorblock_mode: None,
+            sponsorblock_categories: Vec::new(),
+            transcribe: true,
+            whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+            transcript_language: Some("it".to_string()),
+            translate_to_english: Some(false),
+            transcripts_subfolder: Some(false),
+        },
+        group_id: None,
+        file: Some(local_file.clone()),
+    };
+
+    let outcome = engine.add(vec![req], true);
+    assert_eq!(outcome.added.len(), 1);
+    let item_id = outcome.added[0].clone();
+
+    let mut failed = false;
+    let mut finished_encoded_file = None;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Failed {
+                failed = true;
+                // Original file was deleted by run_encode because keep_original = false
+                assert!(
+                    !local_file.exists(),
+                    "pre-encode original file should be deleted when keep_original = false"
+                );
+
+                let current_file = item
+                    .file
+                    .as_ref()
+                    .expect("item.file must be Some after encoding succeeds");
+
+                assert_ne!(
+                    current_file, &local_file,
+                    "item.file must not point to deleted pre-encode file: {:?}",
+                    current_file
+                );
+                assert!(
+                    current_file.is_file(),
+                    "item.file ({}) must exist on disk as the finished encoded output",
+                    current_file.display()
+                );
+                assert!(
+                    item.size_bytes.is_some(),
+                    "item.size_bytes must be set for the encoded media file"
+                );
+                finished_encoded_file = Some(current_file.clone());
+                break;
+            }
+        }
+    }
+    assert!(
+        failed,
+        "queue item should fail when Whisper sidecar is missing"
+    );
+
+    let encoded_file = finished_encoded_file.expect("encoded file must be known");
+
+    // Now provide whisper sidecar and retry: item should resume directly on transcribe
+    // stage without re-encoding, and finish with Done.
+    *whisper_holder.lock().unwrap() = Some(fix.fake_whisper.clone());
+    let retry_outcome = engine.retry(&item_id);
+    assert_eq!(
+        retry_outcome,
+        scaricatore_di_porto_lib::services::queue::engine::Outcome::Ok
+    );
+
+    let mut retried_done = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.state == ItemState::Done {
+                retried_done = true;
+                assert_eq!(item.file, Some(encoded_file.clone()));
+                assert_eq!(item.transcript_files.len(), 3);
+                for path in &item.transcript_files {
+                    assert!(
+                        path.is_file(),
+                        "transcript file must exist: {}",
+                        path.display()
+                    );
+                }
+                break;
+            } else if item.state == ItemState::Failed {
+                panic!("retried item failed unexpectedly: {:?}", item.error);
+            }
+        }
+    }
+    assert!(
+        retried_done,
+        "retried queue item should finish successfully"
+    );
+}

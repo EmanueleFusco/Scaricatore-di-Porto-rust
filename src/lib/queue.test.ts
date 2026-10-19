@@ -33,6 +33,7 @@ import {
   normaliseSummary,
   normaliseUpdate,
   progressLabelKey,
+  progressLine,
   qualityKey,
   qualityLabel,
   secondsToClock,
@@ -99,6 +100,11 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
       embedChapters: false,
       sponsorblockMode: null,
       sponsorblockCategories: [],
+      transcribe: false,
+      whisperModel: null,
+      transcriptLanguage: null,
+      translateToEnglish: null,
+      transcriptsSubfolder: null,
     },
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
@@ -116,6 +122,8 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
     updatedAt: 0,
     startedAt: null,
     finishedAt: null,
+    transcriptFiles: [],
+    transcriptPreview: null,
     ...overrides,
   };
 }
@@ -191,11 +199,19 @@ describe("the actions a state offers", () => {
     expect(actionsFor("done", true)).toContain("reveal");
   });
 
-  it("always offers copy link and open page", () => {
+  it("always offers copy link and open page for remote items", () => {
     for (const state of ["queued", "downloading", "done", "failed"] as ItemState[]) {
       const actions = actionsFor(state, false);
       expect(actions).toContain("copyLink");
       expect(actions).toContain("openPage");
+    }
+  });
+
+  it("omits copy link and open page for local items", () => {
+    for (const state of ["queued", "transcribing", "done", "failed"] as ItemState[]) {
+      const actions = actionsFor(state, false, false);
+      expect(actions).not.toContain("copyLink");
+      expect(actions).not.toContain("openPage");
     }
   });
 });
@@ -246,6 +262,27 @@ describe("normalising the backend payloads", () => {
     expect(parsed.error?.code).toBe("NETWORK");
     // A non-string line in the tail is dropped rather than rendered.
     expect(parsed.logTail).toEqual(["line one"]);
+  });
+
+  it("preserves typed WHISPER_MISSING and WHISPER_MODEL_MISSING errors", () => {
+    const whisperMissingItem = normaliseItem({
+      id: "q_whisper",
+      state: "failed",
+      url: "https://a.example/1",
+      error: { code: "WHISPER_MISSING", messageKey: "error.ytdlp.whisperMissing", detail: "sdp-whisper not found" },
+    });
+    expect(whisperMissingItem.error?.code).toBe("WHISPER_MISSING");
+    expect(whisperMissingItem.error?.messageKey).toBe("error.ytdlp.whisperMissing");
+
+    const modelMissingItem = normaliseItem({
+      id: "q_model",
+      state: "failed",
+      url: "https://a.example/2",
+      error: { code: "WHISPER_MODEL_MISSING", messageKey: "error.ytdlp.whisperModelMissing", detail: "small-q5_1" },
+    });
+    expect(modelMissingItem.error?.code).toBe("WHISPER_MODEL_MISSING");
+    expect(modelMissingItem.error?.messageKey).toBe("error.ytdlp.whisperModelMissing");
+    expect(modelMissingItem.error?.detail).toBe("small-q5_1");
   });
 
   it("gives the summary the documented zeros rather than undefined", () => {
@@ -479,6 +516,46 @@ describe("the text the cards show", () => {
     );
     expect(text.split("\n")).toEqual(["Network problem", "raw detail", "last line"]);
     expect(detailsText(item(), null)).toBe("");
+  });
+
+  it("folds transcript preview into progress line while transcribing", () => {
+    // While transcribing, if transcriptPreview is present, it folds into the single status line
+    expect(
+      progressLine("Transcribing…", null, null, {
+        isTranscribing: true,
+        transcriptPreview: "Hello world live segment",
+      }),
+    ).toBe("Transcribing… · Hello world live segment");
+
+    // When transcribing but no stage text, shows preview
+    expect(
+      progressLine(null, null, null, {
+        isTranscribing: true,
+        transcriptPreview: "Hello world live segment",
+      }),
+    ).toBe("Hello world live segment");
+
+    // When transcribing but no preview yet, shows stage text
+    expect(
+      progressLine("Transcribing…", null, null, {
+        isTranscribing: true,
+        transcriptPreview: null,
+      }),
+    ).toBe("Transcribing…");
+
+    // When not transcribing, does not fold transcript preview
+    expect(
+      progressLine("Downloading…", "5.0 MB/s", "00:10", {
+        isTranscribing: false,
+        transcriptPreview: "stale preview",
+      }),
+    ).toBe("Downloading… · 5.0 MB/s · 00:10");
+
+    // When empty, falls back to waitingDataText or empty string
+    expect(progressLine(null, null, null, { waitingDataText: "Waiting for data…" })).toBe(
+      "Waiting for data…",
+    );
+    expect(progressLine(null, null, null)).toBe("");
   });
 });
 

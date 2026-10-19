@@ -1,0 +1,226 @@
+# Whisper sidecar build (spec §5.4, §13.5c).
+#
+# Builds `sdp-whisper` from a PINNED tag of whisper.cpp (ggml-org/whisper.cpp)
+# for Windows x64, macOS universal (Metal, embedded), Linux x64, and Tier 2 targets.
+#
+# Static where possible: -DBUILD_SHARED_LIBS=OFF, -DGGML_NATIVE=OFF (portable CPU),
+# Windows static CRT (MultiThreaded), macOS embedded Metal library, Linux static libstdc++/libgcc.
+#
+# Output: sdp-whisper-<target-triple>[.exe] + SHA256SUMS uploaded as artifacts and attached to a release.
+
+name: Whisper Sidecar
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "whisper.cpp git tag to build"
+        required: true
+        default: "v1.9.5"
+
+concurrency:
+  group: whisper-sidecar-${{ github.ref }}
+
+permissions:
+  contents: write
+
+jobs:
+  build-tier1:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+            triple: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: windows-x64
+            triple: x86_64-pc-windows-msvc
+          - os: macos-26
+            target: macos-universal
+            triple: universal-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Clone whisper.cpp at pinned tag
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.tag || 'v1.9.5' }} https://github.com/ggml-org/whisper.cpp.git whisper.cpp
+
+      - name: Build whisper-cli (Linux)
+        if: runner.os == 'Linux'
+        working-directory: whisper.cpp
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build build --config Release --target whisper-cli -j2
+          ./build/bin/whisper-cli -h
+          mkdir -p ../dist
+          cp build/bin/whisper-cli ../dist/sdp-whisper-x86_64-unknown-linux-gnu
+          chmod +x ../dist/sdp-whisper-x86_64-unknown-linux-gnu
+
+      - name: Build whisper-cli (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: whisper.cpp
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build --config Release --target whisper-cli
+          ./build/bin/Release/whisper-cli.exe -h
+          mkdir -p ../dist
+          cp build/bin/Release/whisper-cli.exe ../dist/sdp-whisper-x86_64-pc-windows-msvc.exe
+
+      - name: Build whisper-cli (macOS Universal)
+        if: runner.os == 'macOS'
+        working-directory: whisper.cpp
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build --config Release --target whisper-cli -j2
+          lipo -info build/bin/whisper-cli
+          ./build/bin/whisper-cli -h
+          mkdir -p ../dist
+          cp build/bin/whisper-cli ../dist/sdp-whisper-universal-apple-darwin
+          lipo -thin arm64 build/bin/whisper-cli -output ../dist/sdp-whisper-aarch64-apple-darwin
+          lipo -thin x86_64 build/bin/whisper-cli -output ../dist/sdp-whisper-x86_64-apple-darwin
+          chmod +x ../dist/sdp-whisper-*
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: whisper-sidecar-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  build-tier2:
+    name: build tier2 (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            triple: aarch64-unknown-linux-gnu
+          - os: windows-11-arm
+            target: windows-arm64
+            triple: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Clone whisper.cpp at pinned tag
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.tag || 'v1.9.5' }} https://github.com/ggml-org/whisper.cpp.git whisper.cpp
+
+      - name: Build whisper-cli (Linux ARM64)
+        if: runner.os == 'Linux'
+        working-directory: whisper.cpp
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build build --config Release --target whisper-cli -j2
+          ./build/bin/whisper-cli -h
+          mkdir -p ../dist
+          cp build/bin/whisper-cli ../dist/sdp-whisper-aarch64-unknown-linux-gnu
+          chmod +x ../dist/sdp-whisper-aarch64-unknown-linux-gnu
+
+      - name: Build whisper-cli (Windows ARM64)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: whisper.cpp
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build --config Release --target whisper-cli
+          ./build/bin/Release/whisper-cli.exe -h
+          mkdir -p ../dist
+          cp build/bin/Release/whisper-cli.exe ../dist/sdp-whisper-aarch64-pc-windows-msvc.exe
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: whisper-sidecar-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  package-and-release:
+    name: package and release sidecar
+    needs: [build-tier1, build-tier2]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: incoming
+
+      - name: Collect and compute SHA256SUMS
+        run: |
+          mkdir -p release-assets
+          for f in $(find incoming -type f -name "sdp-whisper*"); do
+            dest="release-assets/$(basename "$f")"
+            if [ -f "$dest" ]; then
+              echo "::error::Duplicate artifact file found: $(basename "$f") already exists in release-assets!" >&2
+              exit 1
+            fi
+            cp "$f" "$dest"
+          done
+          cd release-assets
+          sha256sum sdp-whisper* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: whisper-sidecar-all
+          path: release-assets/*
+
+      - name: Attach assets to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="whisper-${{ github.event.inputs.tag || 'v1.9.5' }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG..."
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" release-assets/* \
+              --title "sdp-whisper ${{ github.event.inputs.tag || 'v1.9.5' }}" \
+              --notes "CI-built whisper-cli sidecar binaries from whisper.cpp tag ${{ github.event.inputs.tag || 'v1.9.5' }}."
+          fi

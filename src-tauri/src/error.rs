@@ -18,6 +18,20 @@ pub enum ErrorCode {
     /// Spawning an external tool, or controlling its process tree, failed
     /// (spec §4).
     Process,
+    /// Whisper model catalogue id was not found (spec §10.2).
+    ModelNotFound,
+    /// Downloaded or imported model checksum does not match expected sha256.
+    ChecksumMismatch,
+    /// Target disk partition has insufficient free space (spec §10.2).
+    DiskFull,
+    /// Source file path for model import does not exist.
+    FileNotFound,
+    /// Local file imported does not match any known model in catalogue.
+    UnknownModel,
+    /// sdp-whisper sidecar not found on the system (spec §5.4, §10.2).
+    WhisperMissing,
+    /// Whisper model file not found on disk (spec §10.2).
+    WhisperModelMissing,
 }
 
 impl ErrorCode {
@@ -29,6 +43,13 @@ impl ErrorCode {
             Self::SettingsCorrupt => "SETTINGS_CORRUPT",
             Self::Unsupported => "UNSUPPORTED",
             Self::Process => "PROCESS",
+            Self::ModelNotFound => "MODEL_NOT_FOUND",
+            Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
+            Self::DiskFull => "DISK_FULL",
+            Self::FileNotFound => "FILE_NOT_FOUND",
+            Self::UnknownModel => "UNKNOWN_MODEL",
+            Self::WhisperMissing => "WHISPER_MISSING",
+            Self::WhisperModelMissing => "WHISPER_MODEL_MISSING",
         }
     }
 
@@ -41,6 +62,13 @@ impl ErrorCode {
             Self::SettingsCorrupt => "error.settingsCorrupt",
             Self::Unsupported => "error.unsupported",
             Self::Process => "error.process",
+            Self::ModelNotFound => "error.modelNotFound",
+            Self::ChecksumMismatch => "error.checksumMismatch",
+            Self::DiskFull => "error.diskFull",
+            Self::FileNotFound => "error.fileNotFound",
+            Self::UnknownModel => "error.unknownModel",
+            Self::WhisperMissing => "error.whisperMissing",
+            Self::WhisperModelMissing => "error.whisperModelMissing",
         }
     }
 }
@@ -96,6 +124,27 @@ pub enum AppError {
     /// names the tool and the OS error, never a secret.
     #[error("{0}")]
     Process(String),
+
+    #[error("model not found: {0}")]
+    ModelNotFound(String),
+
+    #[error("checksum mismatch: expected {expected}, actual {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+
+    #[error("insufficient disk space: needed {needed} bytes, available {available} bytes")]
+    DiskFull { needed: u64, available: u64 },
+
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error("unknown model: {0}")]
+    UnknownModel(String),
+
+    #[error("sdp-whisper sidecar not found (spec §5.4). Please install or provision it.")]
+    WhisperMissing,
+
+    #[error("Whisper model '{0}' is not installed.")]
+    WhisperModelMissing(String),
 }
 
 impl AppError {
@@ -107,6 +156,13 @@ impl AppError {
             Self::SettingsCorrupt { .. } => ErrorCode::SettingsCorrupt,
             Self::Unsupported(_) => ErrorCode::Unsupported,
             Self::Process(_) => ErrorCode::Process,
+            Self::ModelNotFound(_) => ErrorCode::ModelNotFound,
+            Self::ChecksumMismatch { .. } => ErrorCode::ChecksumMismatch,
+            Self::DiskFull { .. } => ErrorCode::DiskFull,
+            Self::FileNotFound(_) => ErrorCode::FileNotFound,
+            Self::UnknownModel(_) => ErrorCode::UnknownModel,
+            Self::WhisperMissing => ErrorCode::WhisperMissing,
+            Self::WhisperModelMissing(_) => ErrorCode::WhisperModelMissing,
         }
     }
 
@@ -144,13 +200,20 @@ mod tests {
     use super::*;
 
     /// Every code, so a new one has to be added here and looked at.
-    const CODES: [ErrorCode; 6] = [
+    const CODES: [ErrorCode; 13] = [
         ErrorCode::Io,
         ErrorCode::Json,
         ErrorCode::Tauri,
         ErrorCode::SettingsCorrupt,
         ErrorCode::Unsupported,
         ErrorCode::Process,
+        ErrorCode::ModelNotFound,
+        ErrorCode::ChecksumMismatch,
+        ErrorCode::DiskFull,
+        ErrorCode::FileNotFound,
+        ErrorCode::UnknownModel,
+        ErrorCode::WhisperMissing,
+        ErrorCode::WhisperModelMissing,
     ];
 
     #[test]

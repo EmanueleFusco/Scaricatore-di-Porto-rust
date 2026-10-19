@@ -66,6 +66,11 @@ export interface ItemOptions {
   embedChapters: boolean;
   sponsorblockMode: "mark" | "remove" | null;
   sponsorblockCategories: string[];
+  transcribe: boolean;
+  whisperModel: string | null;
+  transcriptLanguage: string | null;
+  translateToEnglish: boolean | null;
+  transcriptsSubfolder: boolean | null;
 }
 
 /** Mirror of the backend's `EncoderInfo` (spec §9.3). */
@@ -121,6 +126,8 @@ export interface QueueItem {
   updatedAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  transcriptFiles: string[];
+  transcriptPreview: string | null;
 }
 
 /** Mirror of `services::queue::model::QueueSummary`. */
@@ -248,6 +255,11 @@ export interface AddItemRequest {
   embedChapters?: boolean | null;
   sponsorblockMode?: "mark" | "remove" | "off" | null;
   sponsorblockCategories?: string[] | null;
+  transcribe?: boolean | null;
+  whisperModel?: string | null;
+  transcriptLanguage?: string | null;
+  translateToEnglish?: boolean | null;
+  transcriptsSubfolder?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +382,11 @@ export function normaliseItem(raw: unknown): QueueItem {
       sponsorblockCategories: Array.isArray(options.sponsorblockCategories)
         ? options.sponsorblockCategories.filter((c): c is string => typeof c === "string")
         : [],
+      transcribe: options.transcribe === true,
+      whisperModel: asNullableString(options.whisperModel),
+      transcriptLanguage: asNullableString(options.transcriptLanguage),
+      translateToEnglish: typeof options.translateToEnglish === "boolean" ? options.translateToEnglish : null,
+      transcriptsSubfolder: typeof options.transcriptsSubfolder === "boolean" ? options.transcriptsSubfolder : null,
     },
     groupId: asNullableString(value.groupId),
     progress: {
@@ -403,6 +420,10 @@ export function normaliseItem(raw: unknown): QueueItem {
     updatedAt: asNumber(value.updatedAt) ?? 0,
     startedAt: asNumber(value.startedAt),
     finishedAt: asNumber(value.finishedAt),
+    transcriptFiles: Array.isArray(value.transcriptFiles)
+      ? value.transcriptFiles.filter((f): f is string => typeof f === "string")
+      : [],
+    transcriptPreview: asNullableString(value.transcriptPreview),
   };
 }
 
@@ -639,7 +660,8 @@ export type ItemAction =
   | "remove"
   | "moveToTop"
   | "copyLink"
-  | "openPage";
+  | "openPage"
+  | "transcribe";
 
 /**
  * The actions available for one state (spec §11.5 "Primary actions by
@@ -649,7 +671,11 @@ export type ItemAction =
  * actually resume, and Retry for the parked failures a user can re-run — never
  * for a done item, which has nothing to retry.
  */
-export function actionsFor(state: ItemState, hasFile: boolean): ItemAction[] {
+export function actionsFor(
+  state: ItemState,
+  hasFile: boolean,
+  isRemoteUrl: boolean = true,
+): ItemAction[] {
   const actions: ItemAction[] = [];
   if (isActive(state)) {
     actions.push("pause", "cancel");
@@ -662,10 +688,14 @@ export function actionsFor(state: ItemState, hasFile: boolean): ItemAction[] {
   } else if (state === "done") {
     actions.push("remove", "moveToTop");
   }
-  if (hasFile) {
+  if (hasFile && !isActive(state)) {
+    actions.push("open", "reveal", "transcribe");
+  } else if (hasFile) {
     actions.push("open", "reveal");
   }
-  actions.push("copyLink", "openPage");
+  if (isRemoteUrl) {
+    actions.push("copyLink", "openPage");
+  }
   return actions;
 }
 
@@ -790,6 +820,10 @@ export function progressLabelKey(label: string): string {
       return "job.label.encoding";
     case "waitingEncode":
       return "job.label.waitingEncode";
+    case "transcribing":
+      return "job.label.transcribing";
+    case "waitingTranscribe":
+      return "job.label.waitingTranscribe";
     case "postProcessing":
       return "job.label.postProcessing";
     default:
@@ -814,6 +848,32 @@ export function stageDetail(item: QueueItem): Label | null {
     };
   }
   return { key: progressLabelKey(label) };
+}
+
+/**
+ * Assemble the single progress line for a running queue item (spec §11.5, §11.7).
+ *
+ * Cards keep a constant height across their lifecycle. While transcribing,
+ * a live segment preview folds into this single-line slot instead of adding
+ * a secondary row that would break the virtualizer's row height.
+ */
+export function progressLine(
+  stageText: string | null,
+  speedText: string | null,
+  etaText: string | null,
+  options?: {
+    isTranscribing?: boolean;
+    transcriptPreview?: string | null;
+    waitingDataText?: string;
+  },
+): string {
+  if (options?.isTranscribing && options?.transcriptPreview) {
+    return stageText !== null
+      ? `${stageText} · ${options.transcriptPreview}`
+      : options.transcriptPreview;
+  }
+  const parts = [stageText, speedText, etaText].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : (options?.waitingDataText ?? "");
 }
 
 /**

@@ -3550,3 +3550,507 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: Spec §6.4 specifies `--download-archive <app data>/archive.txt` under "YouTube playlists and channels" ("skip already downloaded (download archive, default on for playlists)").
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: commit changes.
+
+## 2026-10-18 — M5-A / Whisper sidecar CI, model catalogue, download manager, and transcription settings (spec §5.4, §10.2, §11.6)
+- Done:
+  - Created `.github/workflows/whisper-sidecar.yml` to compile `sdp-whisper` static binaries from pinned `v1.9.5` whisper.cpp (Linux x86_64/aarch64 with static libgcc/libstdc++, Windows x64/arm64 with MultiThreaded CRT, macOS arm64/x86_64 with Metal).
+  - Pinned `whisper.models.json` containing 11 GGML Whisper models + Silero VAD (`silero-v5.1.2`) with exact byte sizes and sha256 hashes queried from Hugging Face Git LFS. Added `scripts/fetch_models_manifest.mjs` and `npm run check:models`.
+  - Added `sdp-whisper` entry to `tools.manifest.json` and updated tool banner parsing in `src-tauri/src/services/tools.rs` for `whisper.cpp version: 1.9.5-dev`.
+  - Bumped settings schema version to 7 and added transcription preferences in `src-tauri/src/state.rs` and `src/lib/settings.ts`.
+  - Implemented `ModelDownloadManager` in `src-tauri/src/services/models.rs` with Range-resume into `.part`, sha256 checksum validation, Silero VAD co-download, disk-space pre-flight check, local model file import, model deletion, and models view inspection.
+  - Added IPC commands `models_list`, `models_download`, `models_cancel_download`, `models_delete`, `models_import`, `models_set_active`, `models_open_folder` in `src-tauri/src/commands/models.rs`.
+  - Built frontend models store `src/lib/stores/models.svelte.ts` and `TranscriptionSettings.svelte` with live progress bars, large download warning (> 1 GiB), active model selection, CPU threads and mirror URL configuration, and full i18n support in `it.json` and `en.json`.
+  - Added unit tests in `src/lib/models.test.ts`, `src/lib/settings.test.ts`, and full integration test suite in `src-tauri/tests/models.rs`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 345 unit + 140 integration = 485 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed.
+  - `npm run check:ci && npm run check:runners && npm run check:tools && npm run check:models` → all passed.
+- Not verified / stubbed: Transcription audio extraction and whisper CLI execution pipeline (reserved for phase M5-B).
+- Spec items marked "verify" that I checked:
+  - whisper.cpp release asset and version tags verified on ggml-org/whisper.cpp (`v1.9.5`).
+  - Hugging Face Git LFS metadata verified for ggerganov/whisper.cpp and ggml-org/whisper-vad models.
+- Decisions/deviations (also in DECISIONS.md): D119.
+- Next step: proceed to Phase M5-B (transcription pipeline, chunking, and subtitle generation).
+
+## 2026-10-18 — Windows / Cross-compilation and test execution with cargo-xwin & wine (spec §1.1, §2.8)
+- Done:
+  - Validated cross-compilation for Windows MSVC target (`x86_64-pc-windows-msvc`) with `cargo-xwin`:
+    - `cargo xwin check --target x86_64-pc-windows-msvc --all-targets` passed cleanly in ~7s.
+    - `cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings` passed with 0 warnings.
+    - `cargo xwin test --no-run --target x86_64-pc-windows-msvc` successfully compiled all Windows executables (unit tests and integration test suites: `models.rs`, `download.rs`, `queue_engine.rs`, `ffmpeg_encode.rs`, `tools.rs`, etc.).
+  - In `src-tauri/src/services/paths.rs` `atomic_write`: added Windows-specific retry loop on `fs::rename` (up to 10 retries with 10ms backoff) to handle transient file-sharing contention during concurrent atomic overwrites.
+  - Executed Windows binaries under Wine:
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/scaricatore_di_porto_lib-*.exe` → 344 passed, 0 failed.
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/models-*.exe` → 4 passed, 0 failed.
+    - `wine target/x86_64-pc-windows-msvc/debug/deps/download-*.exe` → 9 passed, 0 failed.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 345 unit + 140 integration = 485 passed, 0 failed, 3 ignored.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: Windows `MoveFileExW` / `fs::rename` sharing violation resolution via backoff retry loop.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: proceed to Phase M5-B.
+
+## 2026-10-18 — M5-B / Whisper offline transcription pipeline, chunking, and local media action (spec §10.2, §11.5, §15 item 9)
+- Done:
+  - Implemented offline Whisper transcription pipeline in `src-tauri/src/services/transcribe/whisper.rs`:
+    - 16 kHz mono WAV conversion via ffmpeg (`-vn -ac 1 -ar 16000 -c:a pcm_s16le`) with pre-flight disk space validation.
+    - Silence detection chunking for audio > 2 hours (7200 s) using `silencedetect=noise=-30dB:d=0.5` within ±20 s of 30-min windows (1800 s), with hard cut and 2.0 s overlap fallback.
+    - Automatic cue offsetting and index renumbering for merged SRT and VTT outputs.
+    - Pinned CLI flags for `sdp-whisper`: `-m`, `-f`, `-l`, `-tr`, `-pp`, `-otxt`, `-osrt`, `-ovtt`, `-of`, `--vad`, `-vm`, `-t`, `-ng`.
+    - Real-time progress parsing (`-pp`) mapped to `transcribing (X%)` and live segment preview on stdout.
+    - Automatic retry fallback: on non-zero exit from an initial run without `-ng`, retries once on CPU with `-ng`, and emits warning toast.
+    - Hallucination guard: detects repetitive segment loops (>=5 identical consecutive segments) or suspicious silence, and emits a warning toast (spec §10.2 item 7).
+    - Graceful process tree cancellation and cleanup of temporary WAV and partial transcript files.
+    - Directory resolution supporting direct alongside media or dedicated `transcripts/` subfolder.
+  - Queue engine and IPC integration:
+    - Added dedicated transcription concurrency semaphore bounded by `max_parallel_transcriptions`.
+    - Added IPC commands `queue_transcribe_item` and `queue_add_local_file` in `src-tauri/src/commands/queue.rs`.
+    - Extended `ItemOptions` and `QueueItem` with transcription options and transcript output paths.
+    - Supported post-download transcription and direct local media queue items.
+  - Frontend UI integration:
+    - Added "Transcribe a local file…" button and per-row transcription options in `AddBar.svelte`.
+    - Added contextual "Transcribe…" action for completed queue items in `QueueItem.svelte`.
+    - Displayed live segment preview during transcription and links to generated `.txt`, `.srt`, `.vtt` files upon completion.
+    - Added full i18n support in `it.json` and `en.json`.
+  - Comprehensive testing:
+    - 17 unit tests in `src-tauri/src/services/transcribe/whisper.rs`.
+    - 6 integration tests in `src-tauri/tests/whisper_pipeline.rs` covering progress tracking, GPU retry with `-ng`, hallucination detection, cancellation cleanup, chunking with silencedetect merge, and end-to-end queue transcription of local media files.
+    - Unit tests in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 362 unit + 146 integration = 508 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed.
+  - `npm run build` → production bundle built in ~470ms.
+  - `npm run check:ci && npm run check:runners && npm run check:tools && npm run check:models` → all passed.
+- Not verified / stubbed: Subtitle extraction and Gemini summarisation (reserved for phases M5-C and M5-D).
+- Spec items marked "verify" that I checked:
+  - `sdp-whisper` CLI flags (`-m`, `-f`, `-l`, `-tr`, `-pp`, `-otxt`, `-osrt`, `-ovtt`, `-of`, `--vad`, `-vm`, `-t`, `-ng`) verified against whisper.cpp v1.9.5 source and `--help`.
+  - ffmpeg `silencedetect` output formatting (`silence_start: X` and `silence_end: Y | silence_duration: Z`).
+- Decisions/deviations (also in DECISIONS.md): D120.
+- Next step: commit changes.
+
+## 2026-10-18 — M5 / Fix transcript file collision overwrite (B1, spec §10.2)
+- Done:
+  - Fixed B1: prevented silent overwriting of existing `.txt`, `.srt`, and `.vtt` files in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Updated `derive_transcript_paths` to check whether `<stem>.txt`, `<stem>.srt`, or `<stem>.vtt` already exists on disk in the target directory (either adjacent to media or inside `transcripts/`). If any exist, iteratively appends suffix ` (1)`, ` (2)`, etc. so all three generated transcript files share a single collision-free stem.
+    - Updated `run_transcribe` to resolve `final_paths` immediately before writing and write final merged files atomically using `crate::services::paths::atomic_write`.
+  - Added unit test `derive_transcript_paths_avoids_overwriting_existing_files` in `src-tauri/src/services/transcribe/whisper.rs`.
+  - Added integration test `transcribe_does_not_overwrite_existing_transcript_files` in `src-tauri/tests/whisper_pipeline.rs` verifying that an existing `.srt` file is untouched and transcripts receive collision-free names.
+- Verified by running:
+  - `cargo test --test whisper_pipeline transcribe_does_not_overwrite_existing_transcript_files` → verified FAILS before the fix with assertion error, then PASSED after the fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 363 unit + 152 integration = 515 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings (e.g. B2).
+
+## 2026-10-18 — M5 / Fix transcription temp directory isolation and resource leak on error (B2, spec §4.9, §10.2)
+- Done:
+  - Fixed B2:
+    - Updated `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` to pass `temp_dir: Some(process::item_temp_dir(&options.output_dir, id))` instead of `environment.private_temp.clone()`, ensuring temporary audio preparation files are kept in the item's isolated job temp directory on the target filesystem (spec §4.9, §10.2).
+    - Introduced RAII cleanup guards `CleanupFile` and `ChunkGuard` in `src-tauri/src/services/transcribe/whisper.rs` so that `full_wav`, `chunk_wav`, and `chunk_out_base.*` files are unconditionally cleaned up when exiting `run_transcribe` or each chunk iteration, preventing leaks across errors, cancellations, or normal completion.
+    - Added tests in `src-tauri/tests/whisper_pipeline.rs`: `transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn`, `transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode`, and `queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp`.
+- Verified by running:
+  - `cd src-tauri && cargo test --test whisper_pipeline transcribe_cleans_temporary_wav_when_whisper_fails_to_spawn` → FAILS before fix (panic: temporary prep wav must not leak on whisper spawn error, found: [DirEntry(.../whisper_prep_601406.wav)]), PASSES after fix.
+  - `cd src-tauri && cargo test --test whisper_pipeline transcribe_cleans_temporary_wav_and_chunks_when_whisper_fails_to_spawn_in_chunked_mode` → FAILS before fix (panic: temporary wav and chunk files must not leak... found: chunk_0_*.wav, whisper_prep_*.wav), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 363 unit + 155 integration = 518 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix model filename path traversal validation (B3, Checklist #4, spec §5.2, §10.2)
+- Done:
+  - Fixed B3: validated model and VAD filenames against path traversal in `src-tauri/src/services/models.rs`:
+    - Updated `ModelCatalogue::validate` (and made it public) to reject filenames that fail `crate::services::manifest::is_safe_asset_name` or do not end with `.bin` for both `vad.file` and `model.file`.
+    - Added safety validation checks and assertions (`is_safe_asset_name`) before joining paths with `models_dir` in `is_vad_installed`, `inspect_models`, `download_model`, `delete_model`, and `import_model`, as well as in `effective_url` and `effective_vad_url`.
+    - Added unit tests in `src-tauri/src/services/models.rs`:
+      - `catalogue_validate_rejects_path_traversal_and_unsafe_filenames`: reproduces and verifies rejection of relative traversal (`../escaped.bin`), absolute paths, backslashes, hidden files, and missing `.bin` extensions for both models and VAD.
+      - `model_operations_reject_path_traversal_filenames`: reproduces and verifies that `delete_model`, `import_model`, and `download_model` reject path-traversing filenames without deleting, overwriting, or reading files outside `models_dir`, and that `inspect_models` and `is_vad_installed` handle them safely.
+- Verified by running:
+  - `cargo test catalogue_validate_rejects_path_traversal_and_unsafe_filenames` → FAILS before fix (panic: `assertion failed: catalogue.validate().is_err()`), PASSES after fix.
+  - `cargo test model_operations_reject_path_traversal_filenames` → FAILS before fix (panic: `delete_model must reject path traversal`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 365 unit + 155 integration = 520 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix pinned sdp-whisper asset URL and checksum in manifest (B4, Checklist #2, spec §5.1, §5.4)
+- Done:
+  - Fixed B4: populated real asset releaseUrl template and Linux x86_64 url and sha256 checksum for `sdp-whisper` in `tools.manifest.json`:
+    - Added `"releaseUrl": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"` to the `sdp-whisper` tool definition.
+    - Set `"url": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-unknown-linux-gnu"` and `"sha256": "c0cc33d49a950ecda4089ba7448a576ab7286b950c48c2e718bd8913c97932eb"` (verified byte-for-byte by compiling `whisper.cpp` pinned tag `v1.9.5` with the exact flags in `whisper-sidecar.yml`).
+    - Added unit test `whisper_sidecar_asset_has_url_and_checksum_where_pinned` and asserted installability in `the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback` in `src-tauri/src/services/manifest.rs`.
+- Verified by running:
+  - `cargo test whisper_sidecar_asset_has_url_and_checksum_where_pinned` → FAILS before fix (panic: `assertion left == right failed (left: None, right: Some("https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"))`), PASSES after fix.
+  - `cargo test the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback` → FAILS before fix (panic: `sdp-whisper must carry url + sha256 so the lazy install works`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 366 unit + 155 integration = 521 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: macOS and Windows sdp-whisper checksums (Tier 1/Tier 2 CI-built targets; cannot run MSVC or macOS Metal builds in Linux environment, pending whisper-sidecar CI release).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Correct PROGRESS.md and DECISIONS.md claims for VAD, GPU retry, and hallucination guard (B5, Checklist #6, #12, #15, spec §10.2)
+- Done:
+  - Corrected false claims in `docs/PROGRESS.md` and `docs/DECISIONS.md` identified in review finding B5:
+    - Hallucination guard: removed false claim of segment trimming. The pipeline detects repetitive loops (>= 5 consecutive segments) and suspicious silence, and emits a warning toast notification per spec §10.2 item 7 without mutating the generated transcript files.
+    - Automatic CPU retry fallback: clarified that non-zero exit from an initial run without `-ng` retries once with `-ng`, correcting the claim that specific GPU errors are detected prior to retry.
+    - Silero VAD metadata: corrected model catalog descriptions in `docs/DECISIONS.md` D119 and `docs/PROGRESS.md` to reference `ggml-org/whisper-vad` (`ggml-silero-v5.1.2.bin`, 885,098 bytes, SHA-256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`), replacing obsolete references to `snakers4/silero-vad` and `ggml-silero.bin` (5,463,552 bytes).
+    - Recorded errata entry D121 in `docs/DECISIONS.md`.
+    - Added test `docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality` in `src-tauri/tests/whisper_pipeline.rs` enforcing documentation veracity against actual manifest and behavior.
+- Verified by running:
+  - `cargo test --test whisper_pipeline docs_progress_and_decisions_reflect_whisper_vad_and_hallucination_reality` → FAILS before fix (panic: `PROGRESS.md falsely claims that hallucination guard trims repetitions`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → 0 warnings.
+  - `( cd src-tauri && cargo test )` → 366 unit + 157 integration = 523 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 267 passed, 0 failed.
+  - `npm run check:models` → OK: 11 model(s), VAD model present, schema 1.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D121.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix leftover .part files reporting and pause/resume model state (B6, Checklist #4, #7, spec §10.2, §11.6)
+- Done:
+  - Fixed B6: leftover `.part` files on disk are no longer reported as actively `Downloading` by `inspect_models`:
+    - Added `ModelInstallState::Paused { received_bytes: u64, total_bytes: Option<u64> }` to `src-tauri/src/services/models.rs` and matching TypeScript type `ModelInstallState` in `src/lib/models.ts`.
+    - In `inspect_models`, only return `ModelInstallState::Downloading` when `downloading_models.contains_key(&model.id)`. When an idle `.part` file exists on disk and is not actively downloading, return `ModelInstallState::Paused { received_bytes, total_bytes }`.
+    - Updated `ModelDownloadManager` in `src-tauri/src/services/models.rs`:
+      - Populated initial progress in `download_model` on start so active downloads are registered immediately in `in_flight_progress`.
+      - Added `pause` method on `ModelDownloadManager` to abort in-flight downloads while keeping `.part` files intact.
+      - Added `cancel_model_download` helper to delete partial `.part` files upon cancellation.
+    - Updated IPC commands in `src-tauri/src/commands/models.rs` and registered `commands::models::models_pause_download` in `src-tauri/src/lib.rs`:
+      - Added `models_pause_download` to pause an in-flight download keeping `.part`.
+      - Updated `models_cancel_download` to cancel in-flight downloads and delete any lingering `.part` file for the model.
+      - Silenced intentional cancellation error toast emission in `models_download` background loop by emitting `models:cancelled` event instead of `models:error`.
+    - Updated UI in `src/lib/pages/settings/TranscriptionSettings.svelte` and `src/lib/stores/models.svelte.ts`:
+      - Handled both active `downloading` and `paused` states in the models table.
+      - Displayed partial progress in size column (`{received} / {total}`) and paused percentage bar when paused.
+      - Added Pause (`PauseIcon`) and Cancel (`XIcon`) buttons during active download, and Resume (`PlayIcon`) and Cancel (`XIcon`) buttons when paused.
+      - Restored `downloadingModelId` and progress when reopening Settings while a download is running.
+      - Added i18n keys for `transcription.models.pauseButton`, `resumeButton`, and `statePaused` in Italian and English.
+    - Added tests:
+      - Unit test `inspect_models_does_not_report_idle_part_file_as_downloading` in `src-tauri/src/services/models.rs`.
+      - Unit test `cancel_model_download_removes_part_file` in `src-tauri/src/services/models.rs`.
+      - Frontend test `supports paused ModelInstallState variant` in `src/lib/models.test.ts`.
+- Verified by running:
+  - `cargo test inspect_models_does_not_report_idle_part_file_as_downloading` → FAILS before fix (panic: `idle .part file without in-flight download must not be reported as Downloading`), PASSES after fix.
+  - `cargo test cancel_model_download_removes_part_file` → PASSES.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 157 integration = 525 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 268 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings (e.g. B7).
+
+## 2026-10-18 — M5 / Cancel in-flight download when models_delete is invoked (B7, Checklist #4, #5, spec §10.2)
+- Done:
+  - Fixed B7: added `state.models_manager().cancel(&model_id)` at the start of `models_delete` in `src-tauri/src/commands/models.rs`. This ensures any in-flight download for the model is cancelled immediately before files are deleted, aborting the background task and preventing it from recreating the deleted model file upon completion.
+  - Added reproduction test `models_delete_cancels_in_flight_download_and_prevents_recreating_file` in `src-tauri/tests/models.rs`.
+- Verified by running:
+  - `cargo test --test models models_delete_cancels_in_flight_download_and_prevents_recreating_file` → FAILS before fix (panic: `models_manager must not report model as downloading after models_delete`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 158 integration = 526 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 268 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix whisper-sidecar macOS Intel artifact collision and packaging guard (M1, Checklist #1, spec §5.4, §1.1)
+- Done:
+  - Investigated M1: identified that `needs: [build-tier1, build-tier2]`, `permissions: contents: write`, and `gh release upload` were already implemented in `whisper-sidecar.yml`, and `ubuntu-24.04` is the repo standard runner per D55 and GitHub Actions deprecation of `ubuntu-22.04`.
+  - Fixed M1 collision: removed redundant `macos-15-intel` matrix job from `build-tier2` in `.github/workflows/whisper-sidecar.yml`. `sdp-whisper-x86_64-apple-darwin` is built exclusively by `build-tier1` as the x86_64 slice of the universal binary with Metal support embedded (per spec §1.1).
+  - Added duplicate filename detection guard in the `Collect and compute SHA256SUMS` packaging step to prevent silent overwriting of assets.
+  - Added reproduction test in `scripts/ci-steps.test.mjs` checking that `whisper-sidecar.yml` does not produce colliding binary artifact names across build jobs and that the collection step fails upon duplicate filenames.
+  - Documented decision D122 in `docs/DECISIONS.md` and updated `docs/reviews/M5-review-2026-10-18.md`.
+- Verified by running:
+  - `npx vitest run scripts/ci-steps.test.mjs` → FAILS before fix (`AssertionError: Colliding binary artifacts found in whisper-sidecar.yml: sdp-whisper-x86_64-apple-darwin (2 occurrences)` and `AssertionError: expected +0 not to be +0` on duplicate artifact packaging), PASSES after fix (15/15 tests passed).
+  - `node scripts/check-ci-syntax.mjs` → 22 run blocks valid, exit 0.
+  - `node scripts/check-ci-runners.mjs` → 5 workflows valid, exit 0.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 368 unit + 158 integration = 526 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 273 passed, 0 failed.
+- Not verified / stubbed: Live GitHub Actions execution of whisper-sidecar.yml (requires GitHub infrastructure).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D122.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Fix hard-cut chunking overlap cue duplication and timestamp backward jumps (M2, Checklist #9, spec §10.2)
+- Done:
+  - Fixed M2 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Reconciled chunk boundaries in `merge_srt_contents` and `merge_vtt_contents` so cues in chunk $i$ starting at or after the next chunk's offset are dropped.
+    - Merged duplicate cues across boundaries by detecting matching normalized text and joining their time bounds without duplication.
+    - Clamped cues spanning across boundaries to prevent overlapping or backward-jumping timestamps when text differs, and deduplicated multi-word text overlap across chunk boundaries.
+    - Deduplicated text in `merge_txt_contents` across chunk boundaries by trimming repeated words/lines.
+    - Added reproduction test `hard_cut_chunk_boundary_overlap_does_not_duplicate_text_or_overlap_timestamps` and boundary tests for overlap dropping, timestamp clamping, and partial word deduplication.
+- Verified by running:
+  - `cargo test hard_cut_chunk_boundary_overlap_does_not_duplicate_text_or_overlap_timestamps` → FAILS before fix (panic: `assertion left == right failed: duplicated speech must not be emitted twice in merged SRT: left: 2, right: 1`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 372 unit + 158 integration = 530 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Stream ffmpeg silencedetect to preserve all silence intervals beyond stderr ring buffer (M3, Checklist #9, spec §10.2)
+- Done:
+  - Fixed M3 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Updated `detect_audio_silence` to use `process::spawn_tool_with_sinks` with an incremental stderr line sink instead of reading the 200-line capped `result.stderr_tail`.
+    - Added `parse_silencedetect_line` to parse silence intervals line-by-line as stderr is emitted, keeping `parse_silencedetect` backwards-compatible.
+    - Updated `fake_tool.rs` to process `-af silencedetect` before the probe null-sink check so fake silence logs can be supplied in integration tests.
+    - Added reproduction test `detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer` in `src-tauri/tests/whisper_pipeline.rs` emitting 250 intervals (500 lines of stderr).
+    - Added unit test `parse_silencedetect_line_parses_incremental_start_and_end` in `whisper.rs`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline detect_audio_silence_preserves_all_intervals_beyond_stderr_ring_buffer` → FAILS before fix (panic: `assertion left == right failed: all 250 silence intervals must be preserved, got 99`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 373 unit + 158 integration = 531 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Only retry sdp-whisper with -ng on GPU build or GPU backend failure (M4, Checklist #12, spec §10.2, §5.4)
+- Done:
+  - Fixed M4 in `src-tauri/src/services/transcribe/whisper.rs`:
+    - Added `should_retry_with_no_gpu(&res.stderr_tail)` check before retrying `sdp-whisper` with `-ng`.
+    - Implemented `is_gpu_failure` matching GPU error indicators (CUDA, Metal, Vulkan, HIP, VRAM out-of-memory).
+    - Implemented `is_explicit_non_gpu_failure` identifying non-GPU errors (magic read failure, invalid/missing model, file I/O).
+    - Restricted `-ng` fallback retry so Linux and Windows CPU-only builds do not retry non-GPU failures with `-ng`, while macOS Metal builds retry once unless stderr is an explicit non-GPU failure.
+    - Updated `fake_whisper` in `src-tauri/tests/bin/fake_tool.rs` to track invocation count in `fake-whisper.calls` and argv in `fake-whisper.log`.
+    - Added reproduction test `transcribe_non_gpu_failure_does_not_retry_with_ng` in `src-tauri/tests/whisper_pipeline.rs`.
+    - Added pure unit tests `is_gpu_failure_matches_gpu_indicators`, `is_explicit_non_gpu_failure_matches_model_and_io_errors`, and `should_retry_with_no_gpu_checks_gpu_and_platform` in `whisper.rs`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline transcribe_non_gpu_failure_does_not_retry_with_ng` → FAILS before fix (panic: `assertion left == right failed: sdp-whisper must be spawned only once on non-GPU failure, but was retried with -ng: left: 2, right: 1`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 159 integration = 535 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 273 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Default Whisper transcript language to video language from inspection (M5, Checklist #11, spec §10.2)
+- Done:
+  - Fixed M5:
+    - Added `normaliseLanguage` in `src/lib/addbar.ts` to normalize inspected language tags to their primary lowercase subtag (e.g. `"it-IT"` -> `"it"`).
+    - Added `resolveRowTranscriptLanguage` in `src/lib/addbar.ts` implementing the language logic required by spec §10.2 and Checklist #11: video language when known from inspection if `defaultTranscriptLanguage` is `"auto"`, else auto or user override.
+    - Added `rowLanguageOptions` in `src/lib/addbar.ts` to include the inspected video's detected language in the row's Whisper language dropdown if not already in the standard language list.
+    - Added `transcriptLanguageOverridden` to `AddRow` in `src/lib/stores/addbar.svelte.ts` to track explicit user choices across `setMediaOptions`.
+    - Updated `addLinks` (cache hit), `#applyAnswers` (inspection complete), and `toRequests()` in `src/lib/stores/addbar.svelte.ts` to populate and resolve `row.transcriptLanguage` using `resolveRowTranscriptLanguage`.
+    - Updated `AddBar.svelte` to render `rowLanguageOptions` for the row's language selector.
+    - Added unit test suite in `src/lib/addbar.test.ts` covering language normalization, defaulting to inspected language, preserving manual user overrides, respecting non-auto default settings, and dropdown option generation.
+- Verified by running:
+  - `npm test` → FAILS before fix with 8 failures in `addbar.test.ts`, PASSES after fix (13 test files, 281 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 159 integration = 535 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Typed errors and inline download offers for missing Whisper sidecar and models (M6, Checklist #12, spec §10.2)
+- Done:
+  - Fixed M6:
+    - Added typed error variants `WhisperMissing` (`WHISPER_MISSING`, `error.ytdlp.whisperMissing`) and `WhisperModelMissing` (`WHISPER_MODEL_MISSING`, `error.ytdlp.whisperModelMissing`) to `YtdlpErrorCode` in `src-tauri/src/services/ytdlp.rs`.
+    - Added typed error variants `WhisperMissing` and `WhisperModelMissing(String)` to `AppError` and `ErrorCode` in `src-tauri/src/error.rs`.
+    - Updated `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` to return `AppError::WhisperMissing` and `AppError::WhisperModelMissing(model_id)` instead of generic `AppError::Process`.
+    - Added `transcription_error_outcome` in `engine.rs` to map transcribe stage errors into typed `YtdlpError` with code `WHISPER_MISSING` and `WHISPER_MODEL_MISSING` in `finish_item`.
+    - Added non-transient retry assertions in `model.rs` and `ytdlp.rs` tests.
+    - Added i18n keys for `error.ytdlp.whisperMissing`, `error.ytdlp.whisperModelMissing`, `error.whisperMissing`, `error.whisperModelMissing`, `job.whisper.*`, `job.whisperModel.*`, and `models.action.downloading*` in `en.json` and `it.json`.
+    - Implemented `whisperOffer` and `whisperModelOffer` banners in `src/lib/components/QueueItem.svelte` analogous to `denoOffer`, providing inline buttons to install `sdp-whisper` and download the missing model.
+    - Added inline model download and whisper install offer buttons in `src/lib/components/AddBar.svelte` when transcription is toggled with an uninstalled model or missing sidecar.
+    - Added reproduction integration tests `queue_engine_fails_with_whisper_model_missing_when_model_not_installed` and `queue_engine_fails_with_whisper_missing_when_sidecar_not_found` in `src-tauri/tests/whisper_pipeline.rs`.
+    - Added unit tests in `src/lib/queue.test.ts` for typed whisper error preservation.
+- Verified by running:
+  - `cargo test --test whisper_pipeline queue_engine_fails_with_whisper_model_missing_when_model_not_installed` → FAILS before fix (panic: `left: "UNKNOWN", right: "WHISPER_MODEL_MISSING"`), PASSES after fix.
+  - `cargo test --test whisper_pipeline queue_engine_fails_with_whisper_missing_when_sidecar_not_found` → FAILS before fix (panic: `left: "UNKNOWN", right: "WHISPER_MISSING"`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 161 integration = 537 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 282 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-18 — M5 / Probe duration with ffprobe for local media and whisper transcription stage (M7, Checklist #8, #9, #15, spec §10.2)
+- Done:
+  - Fixed M7:
+    - In `src-tauri/src/commands/queue.rs:queue_add_local_file`, resolved `ffmpeg` and `ffprobe` directly via `resolve_cached` to probe file duration at add time without requiring `yt-dlp`.
+    - In `src-tauri/src/services/queue/engine.rs:run_transcribe_stage`, probed media duration with `ffprobe` (`probe_file_duration`) when `duration_sec` is `None`, and updated `item.duration_sec` in `inner.state`.
+    - In `src-tauri/src/services/transcribe/whisper.rs:prepare_16khz_wav`, probed duration with `ffprobe` when `duration_sec` is `None` so the pre-flight WAV disk-space check accurately tests available space.
+    - In `src-tauri/src/services/transcribe/whisper.rs:run_transcribe`, probed duration with `ffprobe` when `req.duration_sec` is `None`, passed the probed duration to `prepare_16khz_wav`, and calculated effective duration (with fallback to WAV byte size minus 44-byte header) to trigger >2-hour audio chunking.
+    - Updated `QueueFakeTools` in `src-tauri/tests/whisper_pipeline.rs` to locate `ffprobe` via `find_ffprobe(&self.ffmpeg, None)` instead of cloning `self.ffmpeg`.
+    - Added reproduction integration tests `local_media_with_none_duration_probes_ffprobe_and_chunks`, `transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none`, and `prepare_16khz_wav_probes_duration_from_ffprobe_when_none`.
+- Verified by running:
+  - `cargo test --test whisper_pipeline local_media_with_none_duration_probes_ffprobe_and_chunks` → FAILS before fix (`assertion left == right failed: left: None, right: Some(10800)`), PASSES after fix.
+  - `cargo test --test whisper_pipeline transcribe_probes_duration_with_ffprobe_when_duration_sec_is_none` → FAILS before fix (`transcribe with None duration must probe ffprobe and chunk audio above 2 hours, got 1 calls`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 376 unit + 163 integration = 539 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 282 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Plan queued local/transcription and encode items on their initial lane and only count downloads against per_host_cap (M8, Checklist #16, spec §7.1, §7.2)
+- Done:
+  - Fixed M8:
+    - Added `initial_lane: Lane` to `Candidate` in `src-tauri/src/services/queue/scheduler.rs` and updated `scheduler::plan` to plan `ItemState::Queued` items on `candidate.initial_lane` (`Lane::Transcribe`, `Lane::Encode`, or `Lane::Download`).
+    - Updated `Capacity::try_take` in `scheduler.rs` so `per_host_cap` only applies to and increments for `Lane::Download`.
+    - Updated `running_by_host` in `scheduler.rs` to count only items with `item.state.lane() == Some(Lane::Download)` instead of all `item.state.is_active()` items, preventing `Transcribing` and `Encoding` items from blocking new downloads on the same host.
+    - Added `initial_lane_of` in `src-tauri/src/services/queue/engine.rs` and used it in both `candidates_of` and `start_item` so the scheduler and `start_item` agree on the lane a queued item enters.
+    - Added reproduction unit tests `transcribing_and_encoding_items_do_not_consume_per_host_download_budget` in `scheduler.rs`, and `queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane` and `local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle` in `engine.rs`.
+- Verified by running:
+  - `cargo test --lib services::queue::` → FAILS before fix (3 failures: `local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle`, `queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane`, `transcribing_and_encoding_items_do_not_consume_per_host_download_budget`), PASSES after fix (83 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 163 integration = 542 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Update item.file and size_bytes after encoding before transcribe stage (M9, spec §7.3, §9.1, §10.2)
+- Done:
+  - Fixed M9:
+    - Updated `EncodeOutcome::Success` in `src-tauri/src/services/queue/engine.rs` to set `item.file = Some(media_file.clone())` and `item.size_bytes = std::fs::metadata(&media_file).ok().map(|m| m.len())`, followed by immediate `self_persist(&inner)` and `mark_dirty(&inner, &id, false)`, before calling `run_transcribe_stage`.
+    - Added `already_encoded` check in `run_item` (`item.options.needs_encode() && item.size_bytes.is_some()`) so resumed/retried items that already finished encoding skip re-encoding and go straight to transcription.
+    - Updated `initial_lane_of` in `engine.rs` to plan already-encoded items with `options.transcribe` on `Lane::Transcribe` instead of `Lane::Encode`.
+    - Added reproduction integration test `queue_engine_updates_item_file_after_encoding_before_transcribe_stage` in `src-tauri/tests/whisper_pipeline.rs` verifying that on transcription failure after encode `item.file` points to the encoded output file instead of the deleted original, and that retrying resumes transcription from the encoded file without re-encoding.
+- Verified by running:
+  - `cargo test --test whisper_pipeline queue_engine_updates_item_file_after_encoding_before_transcribe_stage` → FAILS before fix (`assertion left != right failed: item.file must not point to deleted pre-encode file: left: "/tmp/.tmpTLEX19/raw_video.webm", right: "/tmp/.tmpTLEX19/raw_video.webm"`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 164 integration = 543 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Account for existing .part in ModelDownloadManager disk space check and retry with backoff in download (M10, Checklist #4, spec §5.2, §10.2)
+- Done:
+  - Fixed M10:
+    - In `src-tauri/src/services/models.rs:480-492`, subtracted existing `.part` bytes (`fs::metadata(&part).map(|m| m.len()).unwrap_or(0)`) from `model.size_bytes` and `catalogue.vad.size_bytes` when calculating required disk space, preventing false `DiskFull` rejections when resuming interrupted model downloads.
+    - Reused `model_existing` as `initial_received` in `models.rs`.
+    - In `src-tauri/src/services/download.rs`, added `wait_backoff` helper implementing exponential backoff (`250ms * 2^(attempt-1)`) with immediate cancellation support via `tokio::select!`.
+    - Applied exponential backoff retry on transient connection errors in `builder.send().await`, 5xx HTTP server response statuses, and mid-stream disconnection chunk read errors.
+    - Added reproduction integration test `download_model_accounts_for_existing_part_file_in_disk_space_check` in `src-tauri/tests/models.rs`.
+    - Added reproduction integration tests `server_5xx_error_is_retried_with_backoff_and_succeeds` and `transient_stream_disconnect_retries_with_backoff` in `src-tauri/tests/download.rs`.
+- Verified by running:
+  - `cargo test --test models download_model_accounts_for_existing_part_file_in_disk_space_check` → FAILS before fix (`panicked at: disk check demanded full 16796225536 bytes despite 20971520 bytes in .part (available: 16780492800)`), PASSES after fix.
+  - `cargo test --test download -- server_5xx` → FAILS before fix (`panicked at: retry on 5xx must succeed: Process("GET http://... answered HTTP 500")`), PASSES after fix.
+  - `cargo test --test download -- retries_with_backoff` → FAILS before fix (`panicked at: transient stream retry must backoff before sending next request, got 855.846µs`), PASSES after fix.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 167 integration = 546 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Throttle models:progress IPC events with ProgressThrottle (m1, Checklist #7, #16)
+- Done:
+  - Fixed m1:
+    - Added `ModelProgressThrottle` and `throttled_model_progress_sink` in `src-tauri/src/services/models.rs`, wrapping `ProgressThrottle::new(Duration::from_millis(100))` to coalesce rapid TCP chunk progress events while always emitting initial 0%, final 100%, and phase changes ("vad" -> "model").
+    - Updated `src-tauri/src/commands/models.rs:models_download` to wrap the `models:progress` event emission with `models::throttled_model_progress_sink(Duration::from_millis(100), ...)` instead of emitting unthrottled on every read chunk.
+    - Updated `models_download` to be generic over `R: Runtime` and allow `Transport::LoopbackHttp` under `#[cfg(test)]`.
+    - Added unit test `model_progress_throttle_coalesces_and_preserves_boundaries` in `services::models::tests` verifying boundary preservation and 100ms interval throttling.
+    - Added reproduction test `models_download_throttles_rapid_chunk_progress_events` in `commands::models::tests` verifying that rapid chunks arriving across 50ms coalesce from 26 events down to <= 3 events.
+- Verified by running:
+  - `cargo test --lib commands::models::tests::models_download_throttles_rapid_chunk_progress_events` → FAILS before fix (`panicked at: models:progress emitted unthrottled on every TCP read chunk: got 26 events for 25 rapid chunks (expected <= 3)`), PASSES after fix.
+  - `cargo test --lib services::models::tests::model_progress_throttle_coalesces_and_preserves_boundaries` → PASSES.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 381 unit + 167 integration = 548 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Fold transcript preview into single-line status slot and clear on finish (m2, Spec §11.7)
+- Done:
+  - Fixed m2:
+    - Added `progressLine` helper in `src/lib/queue.ts` which folds `transcriptPreview` into the single `.item__status` line (`${stageStr} · ${transcriptPreview}`) while `isTranscribing` is true, ensuring unexpanded cards maintain a strictly constant row height for the virtualizer.
+    - Updated `src/lib/components/QueueItem.svelte` to use `progressLine` in `statusText`, removed conditional `{#if item.transcriptPreview}<p class="item__preview">...</p>{/if}`, and removed unused `.item__preview` and `.item__preview-badge` styles.
+    - Updated `src-tauri/src/services/queue/engine.rs` to reset `item.transcript_preview = None` in `finish_item` (on done, skipped, failed, or cancelled), on transcribe stage success, in `retry_or_resume_locked`, and in `signal` (cancel/pause).
+    - Added unit test `services::queue::engine::tests::finish_item_clears_transcript_preview` in `engine.rs`.
+    - Added assertion in `src-tauri/tests/whisper_pipeline.rs:queue_engine_transcribes_local_media_end_to_end` asserting `item.transcript_preview` is `None` on finished item.
+    - Added unit tests for `progressLine` in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `cargo test --lib services::queue::engine::tests::finish_item_clears_transcript_preview` → FAILS before fix (`panicked at: transcript_preview must be cleared when item finishes: left: Some("live segment preview"), right: None`), PASSES after fix.
+  - `cargo test --test whisper_pipeline queue_engine_transcribes_local_media_end_to_end` → FAILS before fix (`panicked at: transcript_preview must be cleared when item finishes: left: Some("This is a fake transcription."), right: None`), PASSES after fix.
+  - `npm test` → 13 test files, 283 passed, 0 failed.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 382 unit + 167 integration = 549 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+## 2026-10-19 — M5 / Omit copyLink and openPage for local items in actionsFor (m4, Checklist #15, Spec §11.5)
+- Done:
+  - Fixed m4:
+    - Updated `actionsFor` in `src/lib/queue.ts` to accept `isRemoteUrl: boolean = true`, appending `"copyLink"` and `"openPage"` only when `isRemoteUrl` is `true`.
+    - Updated `src/lib/components/QueueItem.svelte` to derive `isRemoteUrl = !item.url.startsWith("local://")` and pass it to `actionsFor`.
+    - Added unit test in `src/lib/queue.test.ts` verifying that `"copyLink"` and `"openPage"` are omitted for items with local URLs.
+- Verified by running:
+  - `npm test` → FAILS before fix (`AssertionError: expected [ 'cancel', 'remove', ... ] to not include 'copyLink'`), PASSES after fix (13 test files, 284 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 382 unit + 167 integration = 549 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+

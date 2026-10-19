@@ -44,6 +44,8 @@ enum Behaviour {
     IgnoreRange,
     /// Answer 404.
     NotFound,
+    /// Answer 500 Internal Server Error `times` times before succeeding.
+    ServerError { times: usize },
 }
 
 /// A one-file HTTP/1.1 server on loopback, shut down when dropped.
@@ -51,6 +53,7 @@ struct Server {
     port: u16,
     requests: Arc<AtomicUsize>,
     ranges_seen: Arc<Mutex<Vec<String>>>,
+    request_times: Arc<Mutex<Vec<(std::time::Instant, std::time::Instant)>>>,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -62,11 +65,13 @@ impl Server {
         let body = Arc::new(body);
         let requests = Arc::new(AtomicUsize::new(0));
         let ranges_seen = Arc::new(Mutex::new(Vec::new()));
+        let request_times = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
 
         let thread_body = Arc::clone(&body);
         let thread_requests = Arc::clone(&requests);
         let thread_ranges = Arc::clone(&ranges_seen);
+        let thread_times = Arc::clone(&request_times);
         let thread_stop = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             for stream in listener.incoming() {
@@ -80,6 +85,7 @@ impl Server {
                     behaviour,
                     &thread_requests,
                     &thread_ranges,
+                    &thread_times,
                 );
             }
         });
@@ -88,6 +94,7 @@ impl Server {
             port,
             requests,
             ranges_seen,
+            request_times,
             stop,
             handle: Some(handle),
         }
@@ -110,6 +117,14 @@ impl Server {
             .cloned()
             .unwrap_or_default()
     }
+
+    /// Delay between the end of request `req1` and start of request `req2`.
+    fn retry_delay_between(&self, req1: usize, req2: usize) -> Option<Duration> {
+        let times = self.request_times.lock().ok()?;
+        let end1 = times.get(req1 - 1)?.1;
+        let start2 = times.get(req2 - 1)?.0;
+        Some(start2.saturating_duration_since(end1))
+    }
 }
 
 impl Drop for Server {
@@ -129,7 +144,9 @@ fn serve_one(
     behaviour: Behaviour,
     requests: &AtomicUsize,
     ranges_seen: &Arc<Mutex<Vec<String>>>,
+    request_times: &Arc<Mutex<Vec<(std::time::Instant, std::time::Instant)>>>,
 ) {
+    let start_time = std::time::Instant::now();
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .expect("read timeout");
@@ -181,6 +198,10 @@ fn serve_one(
 
     let (status, slice): (&str, &[u8]) = if behaviour == Behaviour::NotFound {
         ("404 Not Found", &b""[..])
+    } else if let Behaviour::ServerError { times } = behaviour
+        && ordinal <= times
+    {
+        ("500 Internal Server Error", &b"server error"[..])
     } else if offset > 0 && behaviour == Behaviour::IgnoreRange {
         ("200 OK", body)
     } else if offset > 0 {
@@ -221,6 +242,9 @@ fn serve_one(
         let _ = stream.write_all(slice);
         let _ = stream.flush();
         let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
+    if let Ok(mut times) = request_times.lock() {
+        times.push((start_time, std::time::Instant::now()));
     }
 }
 
@@ -493,4 +517,57 @@ async fn the_default_transport_refuses_plain_http() {
         "{err}"
     );
     assert!(!destination.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn server_5xx_error_is_retried_with_backoff_and_succeeds() {
+    let dir = TempDir::new().expect("temp dir");
+    // Fails with 500 on the first attempt, succeeds on the second.
+    let server = Server::start(payload(), Behaviour::ServerError { times: 1 });
+    let (destination, part) = temp_paths(&dir);
+
+    let mut request = request(&server.url("/tool"), &destination);
+    request.transport = Transport::loopback_http();
+
+    let outcome = download::download(&request, &CancellationToken::new(), |_| {})
+        .await
+        .expect("retry on 5xx must succeed");
+
+    assert_eq!(server.requests(), 2, "must retry after 500");
+    assert!(destination.is_file());
+    assert_eq!(fs::read(&destination).expect("read"), payload());
+    assert!(!part.exists());
+    assert!(outcome.sha256 == sha256_of(&payload()));
+    let retry_delay = server
+        .retry_delay_between(1, 2)
+        .expect("must have 2 requests");
+    assert!(
+        retry_delay >= Duration::from_millis(200),
+        "5xx retry must backoff before sending next request, got {retry_delay:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transient_stream_disconnect_retries_with_backoff() {
+    let dir = TempDir::new().expect("temp dir");
+    let cut = 20_000;
+    let server = Server::start(payload(), Behaviour::Truncated { cut, times: 1 });
+    let (destination, _) = temp_paths(&dir);
+
+    let mut request = request(&server.url("/tool"), &destination);
+    request.transport = Transport::loopback_http();
+
+    let outcome = download::download(&request, &CancellationToken::new(), |_| {})
+        .await
+        .expect("resume after disconnect must succeed");
+
+    assert!(outcome.resumed);
+    assert_eq!(server.requests(), 2);
+    let retry_delay = server
+        .retry_delay_between(1, 2)
+        .expect("must have 2 requests");
+    assert!(
+        retry_delay >= Duration::from_millis(200),
+        "transient stream retry must backoff before sending next request, got {retry_delay:?}"
+    );
 }

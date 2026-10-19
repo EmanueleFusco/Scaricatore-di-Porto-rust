@@ -183,6 +183,10 @@ struct Inner {
     encodes_running: Mutex<usize>,
     /// Woken when an encode slot frees up or the lane capacity changes.
     encode_slot: Notify,
+    /// Limits concurrent transcribe jobs (spec §7.2: "The transcribe lane is 1 by default").
+    transcribes_running: Mutex<usize>,
+    /// Woken when a transcribe slot frees up or the lane capacity changes.
+    transcribe_slot: Notify,
 }
 
 /// The handle. Cloneable, cheap, and the only thing the commands see.
@@ -228,6 +232,8 @@ impl QueueEngine {
                 pending_toasts: Mutex::new(Vec::new()),
                 encodes_running: Mutex::new(0),
                 encode_slot: Notify::new(),
+                transcribes_running: Mutex::new(0),
+                transcribe_slot: Notify::new(),
             }),
         };
         if let Some(recovery) = recovery {
@@ -320,6 +326,8 @@ impl QueueEngine {
         *lock(&self.inner.lanes) = lanes;
         // Items waiting for an encode slot re-check against the new capacity.
         self.inner.encode_slot.notify_waiters();
+        // Items waiting for a transcribe slot re-check against the new capacity.
+        self.inner.transcribe_slot.notify_waiters();
         *lock(&self.inner.notify_on_idle) = notify_on_idle;
         self.inner.wake.notify_waiters();
     }
@@ -469,6 +477,7 @@ impl QueueEngine {
             item.retry_at = None;
             item.error = None;
             item.finished_at = None;
+            item.transcript_preview = None;
             item.updated_at = now_unix();
             if reset_budget {
                 item.auto_retries = 0;
@@ -520,6 +529,7 @@ impl QueueEngine {
                         item.state = ItemState::Cancelled;
                         item.control = ControlSignal::None;
                         item.error = None;
+                        item.transcript_preview = None;
                         item.progress = ItemProgress::empty();
                         item.finished_at = Some(now_unix());
                         item.updated_at = now_unix();
@@ -536,6 +546,7 @@ impl QueueEngine {
                             item.paused_from = Some(item.state);
                             item.state = ItemState::Paused;
                             item.control = ControlSignal::None;
+                            item.transcript_preview = None;
                             item.progress.speed_bps = None;
                             item.progress.eta_sec = None;
                             item.updated_at = now_unix();
@@ -724,6 +735,49 @@ impl QueueEngine {
         Outcome::Ok
     }
 
+    /// Mark an existing item with finished media for transcription (spec §10.2, §11.5).
+    pub fn transcribe_item(
+        &self,
+        id: &str,
+        whisper_model: Option<String>,
+        transcript_language: Option<String>,
+        translate_to_english: Option<bool>,
+        transcripts_subfolder: Option<bool>,
+    ) -> Outcome {
+        let ok = {
+            let mut state = lock(&self.inner.state);
+            let Some(item) = state.item_mut(id) else {
+                return Outcome::NotFound;
+            };
+            if item.file.as_ref().map(|f| f.is_file()) != Some(true) {
+                return Outcome::NotFound;
+            }
+            item.options.transcribe = true;
+            if whisper_model.is_some() {
+                item.options.whisper_model = whisper_model;
+            }
+            if transcript_language.is_some() {
+                item.options.transcript_language = transcript_language;
+            }
+            if translate_to_english.is_some() {
+                item.options.translate_to_english = translate_to_english;
+            }
+            if transcripts_subfolder.is_some() {
+                item.options.transcripts_subfolder = transcripts_subfolder;
+            }
+            item.state = ItemState::Queued;
+            item.progress = ItemProgress::with_label("waitingTranscribe");
+            item.error = None;
+            item.updated_at = now_unix();
+            true
+        };
+        if ok {
+            mark_dirty(&self.inner, id, true);
+            self.after_mutation();
+        }
+        Outcome::Ok
+    }
+
     fn items_in_state(&self, states: &[ItemState]) -> Vec<String> {
         let state = lock(&self.inner.state);
         state
@@ -800,6 +854,22 @@ fn push_toast(inner: &Arc<Inner>, toast: QueueToast) {
     inner.dirty.notify_waiters();
 }
 
+fn transcription_error_outcome(err: crate::error::AppError) -> JobOutcome {
+    let err_msg = err.to_string();
+    match err {
+        crate::error::AppError::WhisperMissing => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::WhisperMissing, err_msg))
+        }
+        crate::error::AppError::WhisperModelMissing(model) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::WhisperModelMissing, model))
+        }
+        _ => JobOutcome::Failed(YtdlpError::new(
+            YtdlpErrorCode::Unknown,
+            format!("Transcription failed: {err_msg}"),
+        )),
+    }
+}
+
 fn note_removed(inner: &Arc<Inner>, id: &str) {
     {
         let mut pending = lock(&inner.pending_removed);
@@ -821,6 +891,7 @@ pub struct AddRequest {
     pub duration_sec: Option<u64>,
     pub options: ItemOptions,
     pub group_id: Option<String>,
+    pub file: Option<PathBuf>,
 }
 
 impl AddRequest {
@@ -832,6 +903,7 @@ impl AddRequest {
             site: self.site,
             duration_sec: self.duration_sec,
             group_id: self.group_id,
+            file: self.file,
             state: ItemState::Queued,
             options: self.options,
             added_at: now,
@@ -947,6 +1019,23 @@ fn until(at: u64, now: u64) -> Duration {
     Duration::from_secs(at.saturating_sub(now)).max(Duration::from_millis(50))
 }
 
+/// The lane a queued item will enter when [`start_item`] runs.
+fn initial_lane_of(item: &QueueItem) -> Lane {
+    let is_existing_media = item.file.as_ref().map(|f| f.is_file()).unwrap_or(false);
+    let already_encoded =
+        is_existing_media && item.options.needs_encode() && item.size_bytes.is_some();
+    if is_existing_media
+        && item.options.transcribe
+        && (!item.options.needs_encode() || already_encoded)
+    {
+        Lane::Transcribe
+    } else if is_existing_media && item.options.needs_encode() && !already_encoded {
+        Lane::Encode
+    } else {
+        Lane::Download
+    }
+}
+
 /// The snapshot the planner works on.
 fn candidates_of(items: &[QueueItem]) -> Vec<Candidate<'_>> {
     items
@@ -955,6 +1044,7 @@ fn candidates_of(items: &[QueueItem]) -> Vec<Candidate<'_>> {
             id: item.id.as_str(),
             url: item.url.as_str(),
             state: item.state,
+            initial_lane: initial_lane_of(item),
             retry_at: item.retry_at,
         })
         .collect()
@@ -985,14 +1075,26 @@ fn start_item(inner: &Arc<Inner>, id: String) {
         if !matches!(item.state, ItemState::Queued | ItemState::Interrupted) {
             return;
         }
-        item.state = ItemState::Downloading;
+        match initial_lane_of(item) {
+            Lane::Transcribe => {
+                item.state = ItemState::Transcribing;
+                item.progress = ItemProgress::with_label("waitingTranscribe");
+            }
+            Lane::Encode => {
+                item.state = ItemState::Encoding;
+                item.progress = ItemProgress::with_label("waitingEncode");
+            }
+            Lane::Download => {
+                item.state = ItemState::Downloading;
+                item.progress = ItemProgress::with_label("preparing");
+            }
+        }
         item.control = ControlSignal::None;
         item.error = None;
         item.retry_at = None;
         item.started_at = Some(now);
         item.updated_at = now;
         item.finished_at = None;
-        item.progress = ItemProgress::with_label("preparing");
         lock(&inner.running).insert(
             id.clone(),
             Running {
@@ -1037,19 +1139,21 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
         let state = lock(&inner.state);
         state.item(&id).and_then(|item| {
             let file = item.file.as_ref()?;
-            (item.options.needs_encode() && item.size_bytes.is_none() && file.is_file()).then(
-                || JobOutcome::Done {
-                    file: file.clone(),
-                    runtime: if item.runtime.as_deref() == Some("deno") {
-                        crate::services::jsruntime::RuntimeKind::Deno
-                    } else {
-                        crate::services::jsruntime::RuntimeKind::QuickJs
-                    },
-                    elapsed_ms: 0,
-                    requested_height: item.requested_height,
-                    actual_height: item.actual_height,
+            let is_existing_file = file.is_file()
+                && ((item.options.needs_encode() && item.size_bytes.is_none())
+                    || item.options.transcribe
+                    || item.url.starts_with("local://"));
+            is_existing_file.then(|| JobOutcome::Done {
+                file: file.clone(),
+                runtime: if item.runtime.as_deref() == Some("deno") {
+                    crate::services::jsruntime::RuntimeKind::Deno
+                } else {
+                    crate::services::jsruntime::RuntimeKind::QuickJs
                 },
-            )
+                elapsed_ms: 0,
+                requested_height: item.requested_height,
+                actual_height: item.actual_height,
+            })
         })
     };
     let outcome = match downloaded {
@@ -1073,7 +1177,14 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 (item.options.clone(), item.duration_sec)
             };
 
-            if options.needs_encode() {
+            let already_encoded = {
+                let state = lock(&inner.state);
+                state
+                    .item(&id)
+                    .is_some_and(|item| item.options.needs_encode() && item.size_bytes.is_some())
+            };
+
+            if options.needs_encode() && !already_encoded {
                 let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
                     finish_item(
                         &inner,
@@ -1277,9 +1388,78 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             }
                             push_toast(&inner, QueueToast::new("toast.hardwareEncoderFallback"));
                         }
+                        let media_file = output_file;
+                        let size_bytes = std::fs::metadata(&media_file).ok().map(|m| m.len());
+                        {
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(&id) {
+                                item.file = Some(media_file.clone());
+                                item.size_bytes = size_bytes;
+                                item.updated_at = now_unix();
+                            }
+                        }
+                        self_persist(&inner);
+                        mark_dirty(&inner, &id, false);
+
+                        if options.transcribe {
+                            match run_transcribe_stage(
+                                &inner,
+                                &id,
+                                media_file.clone(),
+                                duration_sec,
+                                &environment,
+                                &options,
+                                &token,
+                            )
+                            .await
+                            {
+                                Ok(res) => {
+                                    {
+                                        let mut state = lock(&inner.state);
+                                        if let Some(item) = state.item_mut(&id) {
+                                            item.transcript_files = res.paths.all();
+                                            item.transcript_preview = None;
+                                            if res.used_cpu_fallback {
+                                                item.push_log("Whisper GPU execution failed; fell back to CPU (-ng).");
+                                            }
+                                            if res.hallucination_warning.is_some() {
+                                                item.push_log("Warning: possible hallucination detected (repeated loops or long silence). Consider enabling VAD, using a larger model, or setting the language explicitly.");
+                                            }
+                                        }
+                                    }
+                                    if res.used_cpu_fallback {
+                                        push_toast(
+                                            &inner,
+                                            QueueToast::new("toast.whisperCpuFallback"),
+                                        );
+                                    }
+                                    if res.hallucination_warning.is_some() {
+                                        push_toast(
+                                            &inner,
+                                            QueueToast::new("toast.hallucinationWarning"),
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    if token.is_cancelled() {
+                                        finish_item(&inner, &id, JobOutcome::Cancelled);
+                                        return;
+                                    }
+                                    let err_msg = err.to_string();
+                                    {
+                                        let mut state = lock(&inner.state);
+                                        if let Some(item) = state.item_mut(&id) {
+                                            item.push_log(&err_msg);
+                                        }
+                                    }
+                                    finish_item(&inner, &id, transcription_error_outcome(err));
+                                    return;
+                                }
+                            }
+                        }
                         if options.auto_play {
                             let _ = tauri_plugin_opener::open_path(
-                                output_file.to_string_lossy().as_ref(),
+                                media_file.to_string_lossy().as_ref(),
                                 None::<&str>,
                             );
                         }
@@ -1287,7 +1467,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             &inner,
                             &id,
                             JobOutcome::Done {
-                                file: output_file,
+                                file: media_file,
                                 runtime,
                                 elapsed_ms,
                                 requested_height,
@@ -1319,9 +1499,62 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     }
                 }
             } else {
+                let media_file = file;
+                if options.transcribe {
+                    match run_transcribe_stage(
+                        &inner,
+                        &id,
+                        media_file.clone(),
+                        duration_sec,
+                        &environment,
+                        &options,
+                        &token,
+                    )
+                    .await
+                    {
+                        Ok(res) => {
+                            {
+                                let mut state = lock(&inner.state);
+                                if let Some(item) = state.item_mut(&id) {
+                                    item.transcript_files = res.paths.all();
+                                    item.transcript_preview = None;
+                                    if res.used_cpu_fallback {
+                                        item.push_log(
+                                            "Whisper GPU execution failed; fell back to CPU (-ng).",
+                                        );
+                                    }
+                                    if res.hallucination_warning.is_some() {
+                                        item.push_log("Warning: possible hallucination detected (repeated loops or long silence). Consider enabling VAD, using a larger model, or setting the language explicitly.");
+                                    }
+                                }
+                            }
+                            if res.used_cpu_fallback {
+                                push_toast(&inner, QueueToast::new("toast.whisperCpuFallback"));
+                            }
+                            if res.hallucination_warning.is_some() {
+                                push_toast(&inner, QueueToast::new("toast.hallucinationWarning"));
+                            }
+                        }
+                        Err(err) => {
+                            if token.is_cancelled() {
+                                finish_item(&inner, &id, JobOutcome::Cancelled);
+                                return;
+                            }
+                            let err_msg = err.to_string();
+                            {
+                                let mut state = lock(&inner.state);
+                                if let Some(item) = state.item_mut(&id) {
+                                    item.push_log(&err_msg);
+                                }
+                            }
+                            finish_item(&inner, &id, transcription_error_outcome(err));
+                            return;
+                        }
+                    }
+                }
                 if options.auto_play {
                     let _ = tauri_plugin_opener::open_path(
-                        file.to_string_lossy().as_ref(),
+                        media_file.to_string_lossy().as_ref(),
                         None::<&str>,
                     );
                 }
@@ -1329,7 +1562,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     &inner,
                     &id,
                     JobOutcome::Done {
-                        file,
+                        file: media_file,
                         runtime,
                         elapsed_ms,
                         requested_height,
@@ -1403,6 +1636,246 @@ fn on_encode_progress(
         progress.is_end
     };
     mark_dirty(inner, id, milestone);
+}
+
+/// A held transcribe slot; dropping it frees the slot and wakes the waiters.
+struct TranscribeSlot(Arc<Inner>);
+
+impl Drop for TranscribeSlot {
+    fn drop(&mut self) {
+        {
+            let mut running = lock(&self.0.transcribes_running);
+            *running = running.saturating_sub(1);
+        }
+        self.0.transcribe_slot.notify_waiters();
+    }
+}
+
+/// Wait for a free transcribe slot (spec §7.1, §7.2, §10.2), checked against the lane
+/// capacity in force *now*. `None` when cancelled first.
+async fn acquire_transcribe_slot(
+    inner: &Arc<Inner>,
+    token: &CancellationToken,
+) -> Option<TranscribeSlot> {
+    loop {
+        let notified = inner.transcribe_slot.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        {
+            let capacity = lock(&inner.lanes).capacity(Lane::Transcribe);
+            let mut running = lock(&inner.transcribes_running);
+            if *running < capacity {
+                *running += 1;
+                return Some(TranscribeSlot(Arc::clone(inner)));
+            }
+        }
+        tokio::select! {
+            _ = token.cancelled() => return None,
+            _ = &mut notified => {}
+        }
+    }
+}
+
+/// Fold one Whisper progress payload into the item (spec §3, §7.6, §10.2).
+fn on_transcribe_progress(inner: &Arc<Inner>, id: &str, percent: f64, segment: Option<&str>) {
+    let milestone = {
+        let mut state = lock(&inner.state);
+        let Some(item) = state.item_mut(id) else {
+            return;
+        };
+        if item.control != ControlSignal::None {
+            return;
+        }
+        item.state = ItemState::Transcribing;
+        item.progress.label = "transcribing".to_string();
+        item.progress.percent = Some(percent);
+        item.progress.speed_bps = None;
+        item.progress.eta_sec = None;
+        if let Some(text) = segment {
+            item.transcript_preview = Some(text.to_string());
+        }
+        item.updated_at = now_unix();
+        percent >= 100.0
+    };
+    mark_dirty(inner, id, milestone);
+}
+
+/// Run Whisper transcription stage for an item (spec §10.2).
+async fn run_transcribe_stage(
+    inner: &Arc<Inner>,
+    id: &str,
+    media_file: PathBuf,
+    duration_sec: Option<u64>,
+    environment: &JobEnvironment,
+    options: &ItemOptions,
+    token: &CancellationToken,
+) -> Result<crate::services::transcribe::whisper::TranscriptionOutcome, crate::error::AppError> {
+    // 1. Move to Transcribing state
+    let cancelled = {
+        let mut state = lock(&inner.state);
+        let Some(item) = state.item_mut(id) else {
+            return Err(crate::error::AppError::Process("Item removed".to_string()));
+        };
+        if item.control == ControlSignal::None {
+            item.state = ItemState::Transcribing;
+            item.progress.label = "waitingTranscribe".to_string();
+            item.progress.percent = None;
+            item.progress.speed_bps = None;
+            item.progress.eta_sec = None;
+            item.updated_at = now_unix();
+            false
+        } else {
+            true
+        }
+    };
+    if cancelled {
+        return Err(crate::error::AppError::Process("Cancelled".to_string()));
+    }
+    self_persist(inner);
+    mark_dirty(inner, id, true);
+    // Wake scheduler: previous lane is now free
+    inner.wake.notify_waiters();
+
+    // 2. Acquire transcribe slot
+    let Some(_slot) = acquire_transcribe_slot(inner, token).await else {
+        return Err(crate::error::AppError::Process("Cancelled".to_string()));
+    };
+
+    // 3. Update status once slot acquired
+    {
+        let mut state = lock(&inner.state);
+        if let Some(item) = state.item_mut(id) {
+            item.progress.label = "transcribing".to_string();
+            item.progress.percent = Some(0.0);
+            item.updated_at = now_unix();
+        }
+    }
+    mark_dirty(inner, id, true);
+
+    // Re-check stop signal
+    let stopped = lock(&inner.state)
+        .item(id)
+        .is_some_and(|item| item.control != ControlSignal::None);
+    if stopped || token.is_cancelled() {
+        return Err(crate::error::AppError::Process("Cancelled".to_string()));
+    }
+
+    // 4. Resolve whisper & ffmpeg tools
+    let Some(whisper_path) = environment.whisper.as_ref() else {
+        return Err(crate::error::AppError::WhisperMissing);
+    };
+    let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
+        return Err(crate::error::AppError::Process(
+            "ffmpeg is required for transcription preparation but was not found".to_string(),
+        ));
+    };
+
+    // 5. Resolve model path
+    let catalogue = crate::services::models::ModelCatalogue::parse(
+        crate::services::models::MODELS_CATALOGUE_JSON,
+    )?;
+    let model_id = options
+        .whisper_model
+        .as_deref()
+        .or(environment.default_whisper_model.as_deref())
+        .unwrap_or("large-v3-turbo-q5_0");
+
+    let model_path = if let Some(models_dir) = environment.models_dir.as_ref() {
+        if let Some(entry) = catalogue
+            .find(model_id)
+            .or_else(|| catalogue.find_by_file(model_id))
+        {
+            let p = models_dir.join(&entry.file);
+            if p.is_file() { Some(p) } else { None }
+        } else {
+            let p = models_dir.join(model_id);
+            if p.is_file() {
+                Some(p)
+            } else if std::path::Path::new(model_id).is_file() {
+                Some(std::path::PathBuf::from(model_id))
+            } else {
+                None
+            }
+        }
+    } else if std::path::Path::new(model_id).is_file() {
+        Some(std::path::PathBuf::from(model_id))
+    } else {
+        None
+    };
+
+    let Some(model_path) = model_path else {
+        return Err(crate::error::AppError::WhisperModelMissing(
+            model_id.to_string(),
+        ));
+    };
+
+    let vad_model_path = if environment.skip_silence_vad {
+        environment
+            .models_dir
+            .as_ref()
+            .map(|d| d.join(&catalogue.vad.file))
+            .filter(|p| p.is_file())
+    } else {
+        None
+    };
+
+    let language = options
+        .transcript_language
+        .clone()
+        .or_else(|| environment.default_transcript_language.clone());
+    let translate_to_english = options.translate_to_english.unwrap_or(false);
+    let transcripts_subfolder = options.transcripts_subfolder.unwrap_or(false);
+    let mut duration_sec_f64 = duration_sec.map(|s| s as f64);
+    if duration_sec_f64.is_none() {
+        if let Some(ffprobe) =
+            crate::services::ffmpeg::find_ffprobe(ffmpeg_path, environment.ffprobe.as_deref())
+        {
+            if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
+                &ffprobe,
+                &media_file,
+                environment.private_temp.as_deref(),
+                token.clone(),
+            )
+            .await
+            {
+                duration_sec_f64 = Some(dur);
+                let dur_u64 = dur.round() as u64;
+                let mut state = lock(&inner.state);
+                if let Some(item) = state.item_mut(id) {
+                    item.duration_sec = Some(dur_u64);
+                }
+            }
+        }
+    }
+
+    let req = crate::services::transcribe::whisper::TranscribeRequest {
+        ffmpeg_path: ffmpeg_path.clone(),
+        whisper_path: whisper_path.clone(),
+        model_path,
+        vad_model_path,
+        input_media: media_file,
+        language,
+        translate_to_english,
+        skip_silence_vad: environment.skip_silence_vad,
+        whisper_threads: environment.whisper_threads,
+        transcripts_subfolder,
+        duration_sec: duration_sec_f64,
+        temp_dir: Some(process::item_temp_dir(&options.output_dir, id)),
+    };
+
+    let progress_inner = Arc::clone(inner);
+    let progress_id = id.to_string();
+    let sink: crate::services::transcribe::whisper::TranscribeProgressSink =
+        Arc::new(move |percent: f64, segment: Option<&str>| {
+            on_transcribe_progress(&progress_inner, &progress_id, percent, segment);
+        });
+
+    let outcome =
+        crate::services::transcribe::whisper::run_transcribe(req, token.clone(), Some(sink)).await;
+
+    drop(_slot);
+    inner.wake.notify_waiters();
+    outcome
 }
 
 /// Read the item out of the state, resolve its tools and build the job request.
@@ -1515,6 +1988,7 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
         let Some(index) = state.index_of(id) else {
             return;
         };
+        state.items[index].transcript_preview = None;
         let control = state.items[index].control;
 
         match control {
@@ -1788,6 +2262,12 @@ mod tests {
                     ytdlp: PathBuf::from("/nonexistent/yt-dlp"),
                     ffmpeg: None,
                     ffprobe: None,
+                    whisper: None,
+                    models_dir: None,
+                    whisper_threads: 0,
+                    skip_silence_vad: true,
+                    default_whisper_model: None,
+                    default_transcript_language: None,
                     runtimes: crate::services::inspect::Runtimes {
                         mode: crate::services::jsruntime::JsRuntimeMode::QuickJsOnly,
                         qjs: None,
@@ -1859,6 +2339,7 @@ mod tests {
                 ..ItemOptions::default()
             },
             group_id: None,
+            file: None,
         }
     }
 
@@ -2289,5 +2770,138 @@ mod tests {
         assert_eq!(snap.items.len(), 1);
         assert_eq!(snap.items[0].id, ids[2]);
         assert!(snap.groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane() {
+        let dir = TempDir::new().expect("temp dir");
+        let (sink, _seen) = collector();
+        let engine = QueueEngine::open(EngineConfig {
+            path: dir.path().join("queue.json"),
+            provider: Arc::new(HangingProvider),
+            sink,
+            lanes: LaneConfig::default(), // download: 2, encode: 1, transcribe: 1
+            notify_on_idle: false,
+            notifier: None,
+        });
+
+        let local1 = dir.path().join("local1.mp4");
+        let local2 = dir.path().join("local2.mp4");
+        std::fs::write(&local1, b"fake media 1").expect("write local1");
+        std::fs::write(&local2, b"fake media 2").expect("write local2");
+
+        // Case (b): Add 2 local files for transcription when Download lane has 2 free slots
+        // and Transcribe lane has capacity 1. Only 1 may start in a scheduler tick!
+        let mut req1 = request("local://1", dir.path());
+        req1.file = Some(local1);
+        req1.options.transcribe = true;
+
+        let mut req2 = request("local://2", dir.path());
+        req2.file = Some(local2);
+        req2.options.transcribe = true;
+
+        let ids = engine.add(vec![req1, req2], true).added;
+        tick(&engine.inner).await;
+
+        assert_eq!(
+            state_of_id(&engine, &ids[0]),
+            ItemState::Transcribing,
+            "first local transcription item should start on Transcribe lane"
+        );
+        assert_eq!(
+            state_of_id(&engine, &ids[1]),
+            ItemState::Queued,
+            "second local transcription item must stay Queued because Transcribe lane cap is 1"
+        );
+
+        engine.shutdown();
+    }
+
+    #[tokio::test]
+    async fn local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle() {
+        let dir = TempDir::new().expect("temp dir");
+        let (sink, _seen) = collector();
+        let engine = QueueEngine::open(EngineConfig {
+            path: dir.path().join("queue.json"),
+            provider: Arc::new(HangingProvider),
+            sink,
+            lanes: LaneConfig::default(), // download: 2, encode: 1, transcribe: 1
+            notify_on_idle: false,
+            notifier: None,
+        });
+
+        // Start 2 downloads so Lane::Download (cap 2) is completely full
+        let dl_ids = engine
+            .add(
+                vec![
+                    request("https://site1.example/1", dir.path()),
+                    request("https://site2.example/2", dir.path()),
+                ],
+                true,
+            )
+            .added;
+        tick(&engine.inner).await;
+        assert_eq!(state_of_id(&engine, &dl_ids[0]), ItemState::Downloading);
+        assert_eq!(state_of_id(&engine, &dl_ids[1]), ItemState::Downloading);
+
+        // Case (a): Now add a local file for transcription while Lane::Download is full
+        // and Lane::Transcribe is idle. It must start immediately on the next tick!
+        let local = dir.path().join("local.mp4");
+        std::fs::write(&local, b"fake media").expect("write local");
+        let mut local_req = request("local://media", dir.path());
+        local_req.file = Some(local);
+        local_req.options.transcribe = true;
+
+        let local_id = engine.add(vec![local_req], true).added[0].clone();
+        tick(&engine.inner).await;
+
+        assert_eq!(
+            state_of_id(&engine, &local_id),
+            ItemState::Transcribing,
+            "local transcription item must start even when Download lane is full"
+        );
+
+        engine.shutdown();
+    }
+
+    #[test]
+    fn finish_item_clears_transcript_preview() {
+        let dir = TempDir::new().expect("temp dir");
+        let engine = engine(&dir);
+        let id = engine
+            .add(vec![request("https://a.example/1", dir.path())], false)
+            .added[0]
+            .clone();
+
+        {
+            let mut state = lock(&engine.inner.state);
+            let item = state.item_mut(&id).expect("the item is there");
+            item.state = ItemState::Transcribing;
+            item.transcript_preview = Some("live segment preview".to_string());
+        }
+
+        finish_item(
+            &engine.inner,
+            &id,
+            JobOutcome::Done {
+                file: dir.path().join("out.mp4"),
+                runtime: crate::services::jsruntime::RuntimeKind::QuickJs,
+                elapsed_ms: 100,
+                requested_height: None,
+                actual_height: None,
+            },
+        );
+
+        let snapshot = engine.snapshot();
+        let item = snapshot
+            .items
+            .iter()
+            .find(|i| i.id == id)
+            .expect("item exists");
+        assert_eq!(item.state, ItemState::Done);
+        assert_eq!(
+            item.transcript_preview, None,
+            "transcript_preview must be cleared when item finishes"
+        );
     }
 }

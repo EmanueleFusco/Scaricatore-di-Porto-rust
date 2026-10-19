@@ -18,6 +18,7 @@
     "check:ci": "node scripts/check-ci-syntax.mjs",
     "check:runners": "node scripts/check-ci-runners.mjs",
     "check:tools": "node scripts/fetch_bundled_tools.mjs --check",
+    "check:models": "node scripts/fetch_models_manifest.mjs --check",
     "fetch:tools": "node scripts/fetch_bundled_tools.mjs",
     "check:release": "node scripts/check-release-version.mjs"
   },

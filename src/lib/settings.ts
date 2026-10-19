@@ -87,6 +87,22 @@ export interface Settings {
   defaultVideoCodec: string | null;
   /** Spec §9.4, §11.8: Default audio codec (e.g. "aac", "mp3", "opus"). */
   defaultAudioCodec: string | null;
+  /** Spec §10.2, §11.6: Active Whisper model id. */
+  activeWhisperModel: string | null;
+  /** Spec §10.2, §11.6: Custom mirror base URL for Whisper models. */
+  whisperModelsMirrorUrl: string | null;
+  /** Spec §10.2, §11.6: Silero VAD silence skipping. */
+  skipSilenceVad: boolean;
+  /** Spec §10.2, §11.6: CPU threads to allocate for Whisper (0 = auto). */
+  whisperThreads: number;
+  /** Spec §10.2, §11.6: Translate to English option (-tr). */
+  whisperTranslateToEnglish: boolean;
+  /** Spec §10.2, §11.6: Default transcription language. */
+  defaultTranscriptLanguage: string;
+  /** Spec §10.1, §11.6: Transcription engine ordering. */
+  transcriptionEngineOrder: string;
+  /** Spec §10, §11.6: Put transcript outputs in a transcripts/ subfolder. */
+  transcriptsSubfolder: boolean;
 }
 
 /** SponsorBlock mode (spec §8.4): mark as chapters vs remove cuts. */
@@ -121,7 +137,7 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
@@ -156,6 +172,14 @@ export const DEFAULT_SETTINGS: Settings = {
   sponsorblockCategories: ["sponsor", "selfpromo", "interaction"],
   defaultVideoCodec: null,
   defaultAudioCodec: "aac",
+  activeWhisperModel: "large-v3-turbo-q5_0",
+  whisperModelsMirrorUrl: null,
+  skipSilenceVad: true,
+  whisperThreads: 0,
+  whisperTranslateToEnglish: false,
+  defaultTranscriptLanguage: "auto",
+  transcriptionEngineOrder: "subtitles_whisper_gemini",
+  transcriptsSubfolder: false,
 };
 
 /**
@@ -321,6 +345,36 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
     defaultVideoCodec: normaliseOptionalTrimmed(raw?.defaultVideoCodec),
     defaultAudioCodec:
       normaliseOptionalTrimmed(raw?.defaultAudioCodec) ?? DEFAULT_SETTINGS.defaultAudioCodec,
+    activeWhisperModel:
+      raw && typeof raw === "object" && "activeWhisperModel" in raw
+        ? normaliseOptionalTrimmed(raw.activeWhisperModel)
+        : DEFAULT_SETTINGS.activeWhisperModel,
+    whisperModelsMirrorUrl: normaliseOptionalTrimmed(raw?.whisperModelsMirrorUrl),
+    skipSilenceVad:
+      typeof raw?.skipSilenceVad === "boolean"
+        ? raw.skipSilenceVad
+        : DEFAULT_SETTINGS.skipSilenceVad,
+    whisperThreads:
+      typeof raw?.whisperThreads === "number" && Number.isFinite(raw.whisperThreads)
+        ? Math.max(0, Math.min(128, Math.round(raw.whisperThreads)))
+        : DEFAULT_SETTINGS.whisperThreads,
+    whisperTranslateToEnglish: raw?.whisperTranslateToEnglish === true,
+    defaultTranscriptLanguage:
+      typeof raw?.defaultTranscriptLanguage === "string" &&
+      raw.defaultTranscriptLanguage.trim() !== ""
+        ? raw.defaultTranscriptLanguage.trim().toLowerCase()
+        : DEFAULT_SETTINGS.defaultTranscriptLanguage,
+    transcriptionEngineOrder:
+      typeof raw?.transcriptionEngineOrder === "string" &&
+      [
+        "subtitles_whisper_gemini",
+        "whisper_only",
+        "gemini_only",
+        "subtitles_only",
+      ].includes(raw.transcriptionEngineOrder)
+        ? raw.transcriptionEngineOrder
+        : DEFAULT_SETTINGS.transcriptionEngineOrder,
+    transcriptsSubfolder: raw?.transcriptsSubfolder === true,
   };
 }
 

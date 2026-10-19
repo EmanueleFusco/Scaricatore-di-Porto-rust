@@ -7,6 +7,9 @@ import {
   validateTrimInput,
   AUDIO_CODEC_OPTIONS,
   SPONSORBLOCK_CATEGORY_KEYS,
+  normaliseLanguage,
+  resolveRowTranscriptLanguage,
+  rowLanguageOptions,
 } from "$lib/addbar";
 
 describe("splitLinks and newLinks", () => {
@@ -167,5 +170,80 @@ describe("M4 constants", () => {
     expect(SPONSORBLOCK_CATEGORY_KEYS).toContain("sponsor");
     expect(SPONSORBLOCK_CATEGORY_KEYS).toContain("selfpromo");
     expect(SPONSORBLOCK_CATEGORY_KEYS).toContain("interaction");
+  });
+});
+
+describe("transcription language resolution (spec §10.2, checklist #11, M5)", () => {
+  it("normalises video language tags to primary lowercase subtag", () => {
+    expect(normaliseLanguage("it-IT")).toBe("it");
+    expect(normaliseLanguage("en_US")).toBe("en");
+    expect(normaliseLanguage("  ES-419  ")).toBe("es");
+    expect(normaliseLanguage("FR")).toBe("fr");
+    expect(normaliseLanguage("")).toBeNull();
+    expect(normaliseLanguage("   ")).toBeNull();
+    expect(normaliseLanguage(null)).toBeNull();
+    expect(normaliseLanguage(undefined)).toBeNull();
+  });
+
+  it("defaults transcript language to video language when known and default is auto", () => {
+    const lang = resolveRowTranscriptLanguage({
+      inspectedLanguage: "it-IT",
+      currentLanguage: "auto",
+      defaultTranscriptLanguage: "auto",
+      languageOverridden: false,
+    });
+    expect(lang).toBe("it");
+  });
+
+  it("preserves manual user override when set", () => {
+    const lang = resolveRowTranscriptLanguage({
+      inspectedLanguage: "it",
+      currentLanguage: "en",
+      defaultTranscriptLanguage: "auto",
+      languageOverridden: true,
+    });
+    expect(lang).toBe("en");
+  });
+
+  it("preserves manual user override even when user chose auto", () => {
+    const lang = resolveRowTranscriptLanguage({
+      inspectedLanguage: "it",
+      currentLanguage: "auto",
+      defaultTranscriptLanguage: "auto",
+      languageOverridden: true,
+    });
+    expect(lang).toBe("auto");
+  });
+
+  it("respects non-auto default transcript language setting", () => {
+    const lang = resolveRowTranscriptLanguage({
+      inspectedLanguage: "it",
+      currentLanguage: "de",
+      defaultTranscriptLanguage: "de",
+      languageOverridden: false,
+    });
+    expect(lang).toBe("de");
+  });
+
+  it("falls back to auto when video language is unknown or empty", () => {
+    const lang = resolveRowTranscriptLanguage({
+      inspectedLanguage: null,
+      currentLanguage: "auto",
+      defaultTranscriptLanguage: "auto",
+      languageOverridden: false,
+    });
+    expect(lang).toBe("auto");
+  });
+
+  it("includes detected video language in dropdown options when not already listed", () => {
+    const options = rowLanguageOptions("ja", "auto");
+    expect(options.some((opt) => opt.value === "ja")).toBe(true);
+    expect(options.find((opt) => opt.value === "ja")?.label).toBe("ja");
+  });
+
+  it("does not duplicate detected video language when already in standard list", () => {
+    const options = rowLanguageOptions("it-IT", "it");
+    const itOptions = options.filter((opt) => opt.value === "it");
+    expect(itOptions).toHaveLength(1);
   });
 });

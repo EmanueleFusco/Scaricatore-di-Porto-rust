@@ -28,6 +28,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -319,6 +320,14 @@ fn download_error(message: impl Into<String>) -> AppError {
     AppError::Process(message.into())
 }
 
+async fn wait_backoff(attempt: usize, token: &CancellationToken) -> Result<(), AppError> {
+    let millis = 250u64.saturating_mul(1u64 << attempt.saturating_sub(1).min(10));
+    tokio::select! {
+        _ = token.cancelled() => Err(download_error("the download was cancelled")),
+        _ = tokio::time::sleep(Duration::from_millis(millis)) => Ok(()),
+    }
+}
+
 /// Download `request.url` to `request.destination`, resuming and verifying.
 ///
 /// `on_progress` is called as bytes arrive so the UI can show a bar; it is
@@ -360,12 +369,31 @@ pub async fn download(
         if let Some(range) = range_header(offset) {
             builder = builder.header(reqwest::header::RANGE, range);
         }
-        let response = builder
-            .send()
-            .await
-            .map_err(|err| download_error(format!("GET {}: {err}", request.url)))?;
+        let response = match builder.send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                attempt += 1;
+                if attempt >= MAX_TRANSIENT_RETRIES {
+                    return Err(download_error(format!("GET {}: {err}", request.url)));
+                }
+                wait_backoff(attempt, token).await?;
+                continue;
+            }
+        };
 
         let status = response.status().as_u16();
+        if (500..600).contains(&status) {
+            attempt += 1;
+            if attempt >= MAX_TRANSIENT_RETRIES {
+                return Err(download_error(format!(
+                    "GET {} answered HTTP {status}",
+                    request.url
+                )));
+            }
+            wait_backoff(attempt, token).await?;
+            continue;
+        }
+
         if !(200..300).contains(&status) && status != 416 {
             return Err(download_error(format!(
                 "GET {} answered HTTP {status}",
@@ -435,6 +463,7 @@ pub async fn download(
             if attempt >= MAX_TRANSIENT_RETRIES {
                 return Err(err);
             }
+            wait_backoff(attempt, token).await?;
             continue;
         }
         break (received, append);

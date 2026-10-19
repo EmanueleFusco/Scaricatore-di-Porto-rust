@@ -93,6 +93,37 @@ describe("M4 settings", () => {
   });
 });
 
+describe("M5-A settings", () => {
+  it("defaults transcription settings and preserves them in normalisation", () => {
+    expect(DEFAULT_SETTINGS.activeWhisperModel).toBe("large-v3-turbo-q5_0");
+    expect(DEFAULT_SETTINGS.skipSilenceVad).toBe(true);
+    expect(DEFAULT_SETTINGS.whisperThreads).toBe(0);
+    expect(DEFAULT_SETTINGS.whisperTranslateToEnglish).toBe(false);
+    expect(DEFAULT_SETTINGS.defaultTranscriptLanguage).toBe("auto");
+    expect(DEFAULT_SETTINGS.transcriptionEngineOrder).toBe("subtitles_whisper_gemini");
+    expect(DEFAULT_SETTINGS.transcriptsSubfolder).toBe(false);
+
+    const normalised = normaliseSettings({
+      activeWhisperModel: "small-q5_1",
+      whisperModelsMirrorUrl: "https://hf-mirror.com/models",
+      skipSilenceVad: false,
+      whisperThreads: 4,
+      whisperTranslateToEnglish: true,
+      defaultTranscriptLanguage: "IT",
+      transcriptionEngineOrder: "whisper_only",
+      transcriptsSubfolder: true,
+    });
+    expect(normalised.activeWhisperModel).toBe("small-q5_1");
+    expect(normalised.whisperModelsMirrorUrl).toBe("https://hf-mirror.com/models");
+    expect(normalised.skipSilenceVad).toBe(false);
+    expect(normalised.whisperThreads).toBe(4);
+    expect(normalised.whisperTranslateToEnglish).toBe(true);
+    expect(normalised.defaultTranscriptLanguage).toBe("it");
+    expect(normalised.transcriptionEngineOrder).toBe("whisper_only");
+    expect(normalised.transcriptsSubfolder).toBe(true);
+  });
+});
+
 describe("sanitizePlayerClients() (spec §5.3.7, D74)", () => {
   it("normalises a real client list", () => {
     expect(sanitizePlayerClients("  WEB_EMBEDDED,web,Tv ")).toBe("web_embedded,web,tv");

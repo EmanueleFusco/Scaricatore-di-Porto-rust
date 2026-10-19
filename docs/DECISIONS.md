@@ -3268,3 +3268,82 @@ choice, and it is written here so the v0.1.0 release does not go looking for it.
 **Verified** by `npm run check:ci` (13 `run: |` blocks), `npm run
 check:runners` (4 workflows, no floating or deprecated image, every action on
 Node 24), a YAML parse of all four files, and the `diff` above (empty).
+
+### D119 — Whisper sidecar (sdp-whisper) build workflow and model download manager (M5-A)
+
+Spec §5.4, §10.2, §11.6, `whisper.models.json`.
+
+1. **Pinned whisper.cpp sidecar (`sdp-whisper`) version is `v1.9.5`** (ggml-org/whisper.cpp).
+   The workflow `.github/workflows/whisper-sidecar.yml` builds static binaries:
+   - Linux (x86_64, aarch64): static linkage with `-static-libgcc -static-libstdc++`.
+   - Windows (x64, arm64): static C++ runtime (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`).
+   - macOS (arm64, x86_64): Metal enabled (`GGML_METAL=ON`).
+   Asset release naming adheres to `sdp-whisper-{target}`.
+2. **Model catalogue (`whisper.models.json`) pinned via Hugging Face Git LFS query**:
+   Contains 11 Whisper ggml models (Tiny, Base, Small, Medium, Large-v3, Large-v3-Turbo with quantized variants) and Silero VAD (`silero-v5.1.2` from `ggml-org/whisper-vad`, `ggml-silero-v5.1.2.bin`, 885,098 bytes, sha256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`).
+   Every entry has exact byte size and sha256 checksum. `scripts/fetch_models_manifest.mjs` provides offline/online validation (`npm run check:models`).
+3. **Automatic VAD co-download**:
+   As specified in §10.2 ("Silero VAD model fetched together with the first model"), `download_model` checks if `ggml-silero-v5.1.2.bin` exists; if not, it transparently downloads and verifies the VAD model first before initiating the target Whisper model download.
+4. **Resumable HTTP Range download and disk space check**:
+   Downloader writes to `<model>.part` using HTTP `Range: bytes=N-`, calculates in-progress received bytes, guards against low disk space prior to start, and deletes corrupted `.part` files on sha256 mismatch.
+5. **State and IPC**:
+   `SETTINGS_SCHEMA_VERSION` bumped to 7 with transcription preferences (`active_whisper_model`, `whisper_models_mirror_url`, `skip_silence_vad`, `whisper_threads`, `whisper_translate_to_english`, `default_transcript_language`, `transcription_engine_order`, `transcripts_subfolder`).
+   IPC commands `models_list`, `models_download`, `models_cancel_download`, `models_delete`, `models_import`, `models_set_active`, `models_open_folder` wired to Svelte 5 frontend.
+
+### D120 — Whisper offline transcription pipeline, chunking, and local media action (M5-B)
+
+Spec §10.2, §3, §11.5, §14 row M5, §15 item 9.
+
+1. **Audio preparation**:
+   - 16 kHz mono WAV conversion via ffmpeg: `-vn -ac 1 -ar 16000 -c:a pcm_s16le`.
+   - Pre-flight free disk space check requires minimum estimated WAV size (`32,000 bytes/sec * duration + 200 MiB safety margin`).
+2. **Chunking for audio > 2 hours (7200 s)**:
+   - Evaluates silence points within ±20 s of 30-minute boundaries (1800 s) using ffmpeg `silencedetect=noise=-30dB:d=0.5`.
+   - If no silence interval is detected, falls back to a hard cut with 2.0 s overlap.
+   - Individual chunk transcripts (.txt, .srt, .vtt) are generated in temporary storage and stitched together. SRT and VTT cues are offset by the chunk starting millisecond and cue sequence indices are renumbered continuously.
+3. **Whisper CLI flags pinned**:
+   - Spawns `sdp-whisper` with flags: `-m <model>`, `-f <wav>`, `-l <lang>`, `-tr` (if translate requested), `-pp` (progress callback), `-otxt`, `-osrt`, `-ovtt`, `-of <out_base>`, `--vad` and `-vm <silero_vad>` (if VAD enabled), `-t <threads>`, and `-ng` (if GPU off / fallback).
+4. **Stderr progress parsing & stdout live preview**:
+   - Parses stderr progress callbacks: `whisper_print_progress_callback: progress = X%` and maps them cleanly into item stage progress `transcribing (X%)`.
+   - Streams live segment text from whisper stdout to item state and UI preview.
+5. **Automatic retry fallback with `-ng`**:
+   - If `sdp-whisper` terminates with an error and was launched without `-ng`, the pipeline automatically retries once on CPU by appending `-ng`.
+   - Emits a warning notification informing the user that transcription failed and CPU fallback was engaged.
+6. **Hallucination detection loop guard**:
+   - Detects repetitive segment loops (>= 5 identical consecutive segments) or suspicious silence markers emitted by Whisper (spec §10.2 item 7).
+   - Emits a warning toast to notify the user ("try VAD, a larger model, or set the language") without modifying the transcript text.
+7. **Cancellation & process tree cleanup**:
+   - Graceful cancellation via `CancellationToken` terminates the process tree (whisper or ffmpeg) and removes temporary WAV and partial transcript files.
+8. **Queue engine integration**:
+   - Added dedicated transcription concurrency semaphore (`max_parallel_transcriptions`).
+   - Supports transcription after media download, standalone "Transcribe a local file…" action in the Add bar, and contextual "Transcribe…" action on completed queue items.
+
+### D121 — Errata for D119 and D120: Silero VAD metadata, fallback retry, and hallucination guard (B5)
+
+Review finding B5 identified discrepancies between code/manifest reality and descriptions in D119/D120:
+
+1. **Silero VAD metadata (D119 item 2 & 3)**:
+   The Silero VAD asset in `whisper.models.json` is `ggml-silero-v5.1.2.bin` (885,098 bytes, SHA-256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`) sourced from `ggml-org/whisper-vad`. D119 previously cited an outdated size and hash from `snakers4/silero-vad` and referenced `ggml-silero.bin`.
+2. **CPU fallback on non-zero exit (D120 item 5)**:
+   `whisper.rs` retries with `-ng` upon non-zero exit if `-ng` was not passed. It does not inspect stderr for GPU-specific error strings.
+3. **Hallucination guard behavior (D120 item 6)**:
+   Per spec §10.2 item 7 ("after a run, detect obvious loops (the same segment repeated >= 5 times) or suspicious silence-only output and warn the user"), `detect_hallucination` inspects the transcript and returns a `HallucinationWarning` to display a toast notification. It does not alter, trim, or mutate the written transcript text.
+
+### D122 — Whisper sidecar CI: macOS Intel deduplication and Ubuntu 24.04 runner standard (M1)
+
+Spec §5.4, §1.1. Review M1.
+
+1. **macOS Intel binary deduplication**:
+   In `.github/workflows/whisper-sidecar.yml`, `build-tier1` on `macos-26` compiles the macOS universal binary (`arm64;x86_64`) with Metal enabled and embedded library (`-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON`), producing `sdp-whisper-universal-apple-darwin`, `sdp-whisper-aarch64-apple-darwin` (`lipo -thin arm64`), and `sdp-whisper-x86_64-apple-darwin` (`lipo -thin x86_64`).
+   This matches spec §1.1 ("macOS Intel (the x64 slice of the universal binary)").
+   `build-tier2` previously also built `sdp-whisper-x86_64-apple-darwin` on `macos-15-intel` without Metal. This resulted in an artifact name collision when downloading all job artifacts into `incoming/` during the packaging step, where `find ... -exec cp` arbitrarily overwrote one with the other.
+   `macos-15-intel` has been removed from `build-tier2`. `sdp-whisper-x86_64-apple-darwin` is built exclusively by `build-tier1` with Metal support embedded.
+
+2. **Artifact packaging collision guard**:
+   The `Collect and compute SHA256SUMS` step in `whisper-sidecar.yml` now inspects every incoming artifact filename and aborts with `exit 1` if a duplicate filename is encountered across job artifact folders, preventing silent overwriting of assets.
+
+3. **Ubuntu 24.04 as CI runner standard**:
+   Spec §5.4 originally suggested building the Linux sidecar binary on Ubuntu 22.04 ("oldest supported distro"). However, GitHub Actions has announced the deprecation and phased brownouts of `ubuntu-22.04` (actions/runner-images#14254). Per D55 and `scripts/check-ci-runners.mjs`, all repository workflows use `ubuntu-24.04` as the fixed Linux runner. The sidecar build in `whisper-sidecar.yml` uses `runs-on: ubuntu-24.04` with static linking (`-static-libgcc -static-libstdc++`) as standard.
+
+
+

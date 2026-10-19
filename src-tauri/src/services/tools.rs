@@ -323,6 +323,11 @@ pub fn parse_version_banner(text: &str) -> Option<String> {
             if manifest::parse_version(digits).is_some() {
                 return Some(digits.to_owned());
             }
+            if let Some((clean, _)) = digits.split_once('-') {
+                if clean.contains('.') && manifest::parse_version(clean).is_some() {
+                    return Some(clean.to_owned());
+                }
+            }
         }
     }
     None
@@ -1437,6 +1442,11 @@ mod tests {
             "the older, unprefixed form still parses"
         );
         assert_eq!(parse_version_banner("v2.3.4").as_deref(), Some("2.3.4"));
+        assert_eq!(
+            parse_version_banner("whisper.cpp version: 1.9.5-dev").as_deref(),
+            Some("1.9.5"),
+            "the `-dev` prerelease suffix of whisper.cpp is stripped and the dotted version extracted"
+        );
     }
 
     #[test]

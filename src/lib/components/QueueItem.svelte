@@ -13,11 +13,13 @@
     actionKey,
     barPercentFor,
     detailsText,
+    fileName,
     formatBytes,
     heightWarning,
     isActive,
     wasSkippedByArchive,
     itemLabel,
+    progressLine,
     qualityKey,
     speedMbits,
     stageDetail,
@@ -30,6 +32,7 @@
   import { queueStore } from "$lib/stores/queue.svelte";
   import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
+  import { modelsStore } from "$lib/stores/models.svelte";
 
   let { item }: { item: QueueItem } = $props();
 
@@ -37,7 +40,8 @@
   let copied = $state(false);
 
   const hasFile = $derived(item.file !== null);
-  const actions = $derived(actionsFor(item.state, hasFile));
+  const isRemoteUrl = $derived(!item.url.startsWith("local://"));
+  const actions = $derived(actionsFor(item.state, hasFile, isRemoteUrl));
   const warning = $derived(heightWarning(item));
   const speed = $derived(speedMbits(item.progress.speedBps));
   const eta = $derived(secondsToClock(item.progress.etaSec));
@@ -71,12 +75,16 @@
       });
     }
     if (statusKind === "progress") {
-      const parts = [
+      return progressLine(
         stage !== null ? tt(stage.key, stage.params) : null,
         speed !== null ? tt("queue.speed", { value: speed }) : null,
         eta !== null ? tt("queue.eta", { value: eta }) : null,
-      ].filter((part) => part !== null);
-      return parts.length > 0 ? parts.join(" · ") : tt("queue.status.waitingData");
+        {
+          isTranscribing: item.state === "transcribing",
+          transcriptPreview: item.transcriptPreview,
+          waitingDataText: tt("queue.status.waitingData"),
+        },
+      );
     }
     // Spec §6.4: finished without downloading because the archive has it.
     if (wasSkippedByArchive(item)) return tt("queue.item.skippedArchive");
@@ -109,6 +117,42 @@
 
   async function dismissDeno(): Promise<void> {
     await settingsStore.update({ denoOfferDismissed: true });
+  }
+
+  const whisperAvailable = $derived(
+    toolsStore.view.tools.some((tool) => tool.name === "sdp-whisper" && tool.path !== null),
+  );
+  let whisperOfferDismissed = $state(false);
+  const whisperOffer = $derived(
+    item.state === "failed" &&
+      item.error?.code === "WHISPER_MISSING" &&
+      !whisperOfferDismissed &&
+      !whisperAvailable,
+  );
+
+  const missingModelId = $derived(
+    item.options.whisperModel ??
+      (item.error?.code === "WHISPER_MODEL_MISSING" && item.error.detail ? item.error.detail : null) ??
+      settingsStore.settings.activeWhisperModel ??
+      "large-v3-turbo-q5_0",
+  );
+  const modelInstalled = $derived(
+    modelsStore.view.models.some((m) => m.id === missingModelId && m.state.kind === "installed"),
+  );
+  let whisperModelOfferDismissed = $state(false);
+  const whisperModelOffer = $derived(
+    item.state === "failed" &&
+      item.error?.code === "WHISPER_MODEL_MISSING" &&
+      !whisperModelOfferDismissed &&
+      !modelInstalled,
+  );
+
+  async function installWhisper(): Promise<void> {
+    await toolsStore.install("sdp-whisper");
+  }
+
+  async function downloadModel(): Promise<void> {
+    await modelsStore.download(missingModelId);
   }
 
   async function act(action: ItemAction): Promise<void> {
@@ -295,6 +339,96 @@
     </div>
   {/if}
 
+  {#if whisperOffer}
+    <div class="item__offer" role="status">
+      <p class="item__offer-title">{tt("job.whisper.title")}</p>
+      <p class="item__offer-body">{tt("job.whisper.body")}</p>
+      <div class="item__offer-actions">
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={toolsStore.installingTool !== null}
+          onclick={() => void installWhisper()}
+        >
+          {#if toolsStore.installingTool === "sdp-whisper"}
+            {toolsStore.installPercent !== null
+              ? tt("tools.action.installing", { percent: toolsStore.installPercent })
+              : tt("tools.action.installingUnknown")}
+          {:else}
+            {tt("job.whisper.install")}
+          {/if}
+        </button>
+        {#if toolsStore.installingTool === "sdp-whisper"}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void toolsStore.cancelInstall()}
+          >
+            {tt("tools.action.cancel")}
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={toolsStore.installingTool === "sdp-whisper"}
+          onclick={() => { whisperOfferDismissed = true; }}
+        >
+          {tt("job.whisper.dismiss")}
+        </button>
+      </div>
+      {#if toolsStore.errorKey !== null}
+        <p class="item__offer-error">
+          {errorText(toolsStore.errorKey, toolsStore.errorDetail)}
+        </p>
+      {/if}
+    </div>
+  {/if}
+
+  {#if whisperModelOffer}
+    <div class="item__offer" role="status">
+      <p class="item__offer-title">{tt("job.whisperModel.title")}</p>
+      <p class="item__offer-body">{tt("job.whisperModel.body", { model: missingModelId })}</p>
+      <div class="item__offer-actions">
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={modelsStore.busy || (modelsStore.downloadingModelId !== null && modelsStore.downloadingModelId !== missingModelId)}
+          onclick={() => void downloadModel()}
+        >
+          {#if modelsStore.downloadingModelId === missingModelId}
+            {modelsStore.downloadPercent !== null
+              ? tt("models.action.downloading", { percent: modelsStore.downloadPercent })
+              : tt("models.action.downloadingUnknown")}
+          {:else}
+            {tt("job.whisperModel.download")}
+          {/if}
+        </button>
+        {#if modelsStore.downloadingModelId === missingModelId}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void modelsStore.cancelDownload(missingModelId)}
+          >
+            {tt("tools.action.cancel")}
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={modelsStore.downloadingModelId === missingModelId}
+          onclick={() => { whisperModelOfferDismissed = true; }}
+        >
+          {tt("job.whisperModel.dismiss")}
+        </button>
+      </div>
+      {#if modelsStore.errorKey !== null}
+        <p class="item__offer-error">
+          {errorText(modelsStore.errorKey, modelsStore.errorDetail)}
+        </p>
+      {/if}
+    </div>
+  {/if}
+
   {#if expanded}
     <div class="item__details">
       <dl class="item__facts">
@@ -311,6 +445,21 @@
         {#if size !== null}
           <dt>{tt("queue.item.size")}</dt>
           <dd>{size}</dd>
+        {/if}
+        {#if item.transcriptFiles.length > 0}
+          <dt>{tt("transcribe.outputFiles")}</dt>
+          <dd class="item__transcripts">
+            {#each item.transcriptFiles as path}
+              <button
+                type="button"
+                class="btn btn--small"
+                onclick={() => void openPath(path)}
+                title={path}
+              >
+                {fileName(path)}
+              </button>
+            {/each}
+          </dd>
         {/if}
       </dl>
 
@@ -611,5 +760,11 @@
     height: 28px;
     padding: 0 var(--space-2);
     font-size: 12px;
+  }
+
+  .item__transcripts {
+    display: flex;
+    gap: var(--space-1);
+    flex-wrap: wrap;
   }
 </style>

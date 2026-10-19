@@ -128,6 +128,8 @@ pub fn run() {
             commands::queue::queue_lanes,
             commands::queue::read_links_file,
             commands::queue::app_set_language,
+            commands::queue::queue_transcribe_item,
+            commands::queue::queue_add_local_file,
             commands::tools::tools_status,
             commands::tools::tools_test,
             commands::tools::tools_set_path,
@@ -140,6 +142,14 @@ pub fn run() {
             commands::system::open_path,
             commands::system::reveal_path,
             commands::system::encoders_probe,
+            commands::models::models_list,
+            commands::models::models_download,
+            commands::models::models_pause_download,
+            commands::models::models_cancel_download,
+            commands::models::models_delete,
+            commands::models::models_import,
+            commands::models::models_set_active,
+            commands::models::models_open_folder,
         ])
         .build(tauri::generate_context!());
 

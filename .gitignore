@@ -57,6 +57,10 @@ COME_INIZIARE.md
 reference/
 original_python/
 
+# Report delle review locali: restano solo in locale, mai su GitHub
+docs/reviews/
+reviews/
+
 # --- Editor / OS ---
 .DS_Store
 Thumbs.db

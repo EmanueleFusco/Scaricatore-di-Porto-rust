@@ -19,6 +19,7 @@ pub struct JobTools {
     /// with `FFMPEG_MISSING` before spawning anything.
     pub ffmpeg: Option<PathBuf>,
     pub ffprobe: Option<PathBuf>,
+    pub whisper: Option<PathBuf>,
     pub runtimes: Runtimes,
     /// Spec §4.9: the private TMP dir handed to children.
     pub private_temp: Option<PathBuf>,
@@ -42,6 +43,7 @@ pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResu
     let deno = resolve_cached(state, settings, manifest::DENO).await;
     let ffmpeg = resolve_cached(state, settings, tools::FFMPEG).await;
     let ffprobe = resolve_cached(state, settings, "ffprobe").await;
+    let whisper = resolve_cached(state, settings, manifest::SDP_WHISPER).await;
 
     let runtimes = Runtimes {
         mode: settings.js_runtime_mode,
@@ -60,6 +62,7 @@ pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResu
         ytdlp,
         ffmpeg: ffmpeg.map(|tool| tool.path),
         ffprobe: ffprobe.map(|tool| tool.path),
+        whisper: whisper.map(|tool| tool.path),
         runtimes,
         private_temp: state.tools().temp_dir().map(std::path::Path::to_path_buf),
     })

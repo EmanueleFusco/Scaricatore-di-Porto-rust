@@ -97,6 +97,7 @@ const ACTIONS: Record<ItemAction, true> = {
   moveToTop: true,
   copyLink: true,
   openPage: true,
+  transcribe: true,
 };
 
 /** Heights no fixed dictionary of keys could have anticipated. */
@@ -120,6 +121,8 @@ const PROGRESS_TOKENS = [
   "embedding",
   "encoding",
   "waitingEncode",
+  "transcribing",
+  "waitingTranscribe",
   "postProcessing",
   "somethingTheBackendInventedLater",
 ];

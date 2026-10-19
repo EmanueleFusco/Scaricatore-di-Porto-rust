@@ -251,6 +251,10 @@ class QueueStore {
   /** One entry point for every per-item action (spec §11.5). */
   async act(action: ItemAction, id: string): Promise<void> {
     if (!isTauriRuntime()) return;
+    if (action === "transcribe") {
+      await this.transcribeItem(id);
+      return;
+    }
     const commands: Partial<Record<ItemAction, string>> = {
       pause: "queue_pause",
       resume: "queue_resume",
@@ -262,6 +266,61 @@ class QueueStore {
     const command = commands[action];
     if (command !== undefined) {
       await this.#invoke(command, { id });
+    }
+  }
+
+  /** Transcribe an existing item that has a finished media file (spec §10.2, §11.5). */
+  async transcribeItem(
+    id: string,
+    options?: {
+      whisperModel?: string;
+      transcriptLanguage?: string;
+      translateToEnglish?: boolean;
+      transcriptsSubfolder?: boolean;
+    },
+  ): Promise<boolean> {
+    if (!isTauriRuntime()) return false;
+    try {
+      return await invoke<boolean>("queue_transcribe_item", {
+        id,
+        whisperModel: options?.whisperModel ?? null,
+        transcriptLanguage: options?.transcriptLanguage ?? null,
+        translateToEnglish: options?.translateToEnglish ?? null,
+        transcriptsSubfolder: options?.transcriptsSubfolder ?? null,
+      });
+    } catch (err) {
+      this.#fail(err);
+      return false;
+    }
+  }
+
+  /** Add a local media file directly to the queue for Whisper transcription (spec §10.2, §11.5). */
+  async addLocalFile(
+    path: string,
+    options?: {
+      whisperModel?: string;
+      transcriptLanguage?: string;
+      translateToEnglish?: boolean;
+      transcriptsSubfolder?: boolean;
+    },
+  ): Promise<string | null> {
+    if (!isTauriRuntime()) return null;
+    try {
+      const id = await invoke<string>("queue_add_local_file", {
+        path,
+        whisperModel: options?.whisperModel ?? null,
+        transcriptLanguage: options?.transcriptLanguage ?? null,
+        translateToEnglish: options?.translateToEnglish ?? null,
+        transcriptsSubfolder: options?.transcriptsSubfolder ?? null,
+      });
+      await this.load();
+      if (id) {
+        this.flash([id]);
+      }
+      return id;
+    } catch (err) {
+      this.#fail(err);
+      return null;
     }
   }
 
