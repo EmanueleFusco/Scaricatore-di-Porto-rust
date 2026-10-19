@@ -3935,3 +3935,23 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: address remaining review findings.
 
+## 2026-10-19 — M5 / Plan queued local/transcription and encode items on their initial lane and only count downloads against per_host_cap (M8, Checklist #16, spec §7.1, §7.2)
+- Done:
+  - Fixed M8:
+    - Added `initial_lane: Lane` to `Candidate` in `src-tauri/src/services/queue/scheduler.rs` and updated `scheduler::plan` to plan `ItemState::Queued` items on `candidate.initial_lane` (`Lane::Transcribe`, `Lane::Encode`, or `Lane::Download`).
+    - Updated `Capacity::try_take` in `scheduler.rs` so `per_host_cap` only applies to and increments for `Lane::Download`.
+    - Updated `running_by_host` in `scheduler.rs` to count only items with `item.state.lane() == Some(Lane::Download)` instead of all `item.state.is_active()` items, preventing `Transcribing` and `Encoding` items from blocking new downloads on the same host.
+    - Added `initial_lane_of` in `src-tauri/src/services/queue/engine.rs` and used it in both `candidates_of` and `start_item` so the scheduler and `start_item` agree on the lane a queued item enters.
+    - Added reproduction unit tests `transcribing_and_encoding_items_do_not_consume_per_host_download_budget` in `scheduler.rs`, and `queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane` and `local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle` in `engine.rs`.
+- Verified by running:
+  - `cargo test --lib services::queue::` → FAILS before fix (3 failures: `local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle`, `queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane`, `transcribing_and_encoding_items_do_not_consume_per_host_download_budget`), PASSES after fix (83 passed, 0 failed).
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 379 unit + 163 integration = 542 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: address remaining review findings.
+
+

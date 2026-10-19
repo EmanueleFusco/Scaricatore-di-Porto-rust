@@ -1016,6 +1016,18 @@ fn until(at: u64, now: u64) -> Duration {
     Duration::from_secs(at.saturating_sub(now)).max(Duration::from_millis(50))
 }
 
+/// The lane a queued item will enter when [`start_item`] runs.
+fn initial_lane_of(item: &QueueItem) -> Lane {
+    let is_existing_media = item.file.as_ref().map(|f| f.is_file()).unwrap_or(false);
+    if is_existing_media && item.options.transcribe && !item.options.needs_encode() {
+        Lane::Transcribe
+    } else if is_existing_media && item.options.needs_encode() {
+        Lane::Encode
+    } else {
+        Lane::Download
+    }
+}
+
 /// The snapshot the planner works on.
 fn candidates_of(items: &[QueueItem]) -> Vec<Candidate<'_>> {
     items
@@ -1024,6 +1036,7 @@ fn candidates_of(items: &[QueueItem]) -> Vec<Candidate<'_>> {
             id: item.id.as_str(),
             url: item.url.as_str(),
             state: item.state,
+            initial_lane: initial_lane_of(item),
             retry_at: item.retry_at,
         })
         .collect()
@@ -1054,16 +1067,19 @@ fn start_item(inner: &Arc<Inner>, id: String) {
         if !matches!(item.state, ItemState::Queued | ItemState::Interrupted) {
             return;
         }
-        let is_existing_media = item.file.as_ref().map(|f| f.is_file()).unwrap_or(false);
-        if is_existing_media && item.options.transcribe && !item.options.needs_encode() {
-            item.state = ItemState::Transcribing;
-            item.progress = ItemProgress::with_label("waitingTranscribe");
-        } else if is_existing_media && item.options.needs_encode() {
-            item.state = ItemState::Encoding;
-            item.progress = ItemProgress::with_label("waitingEncode");
-        } else {
-            item.state = ItemState::Downloading;
-            item.progress = ItemProgress::with_label("preparing");
+        match initial_lane_of(item) {
+            Lane::Transcribe => {
+                item.state = ItemState::Transcribing;
+                item.progress = ItemProgress::with_label("waitingTranscribe");
+            }
+            Lane::Encode => {
+                item.state = ItemState::Encoding;
+                item.progress = ItemProgress::with_label("waitingEncode");
+            }
+            Lane::Download => {
+                item.state = ItemState::Downloading;
+                item.progress = ItemProgress::with_label("preparing");
+            }
         }
         item.control = ControlSignal::None;
         item.error = None;
@@ -2724,5 +2740,97 @@ mod tests {
         assert_eq!(snap.items.len(), 1);
         assert_eq!(snap.items[0].id, ids[2]);
         assert!(snap.groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_local_transcription_items_plan_on_transcribe_lane_not_download_lane() {
+        let dir = TempDir::new().expect("temp dir");
+        let (sink, _seen) = collector();
+        let engine = QueueEngine::open(EngineConfig {
+            path: dir.path().join("queue.json"),
+            provider: Arc::new(HangingProvider),
+            sink,
+            lanes: LaneConfig::default(), // download: 2, encode: 1, transcribe: 1
+            notify_on_idle: false,
+            notifier: None,
+        });
+
+        let local1 = dir.path().join("local1.mp4");
+        let local2 = dir.path().join("local2.mp4");
+        std::fs::write(&local1, b"fake media 1").expect("write local1");
+        std::fs::write(&local2, b"fake media 2").expect("write local2");
+
+        // Case (b): Add 2 local files for transcription when Download lane has 2 free slots
+        // and Transcribe lane has capacity 1. Only 1 may start in a scheduler tick!
+        let mut req1 = request("local://1", dir.path());
+        req1.file = Some(local1);
+        req1.options.transcribe = true;
+
+        let mut req2 = request("local://2", dir.path());
+        req2.file = Some(local2);
+        req2.options.transcribe = true;
+
+        let ids = engine.add(vec![req1, req2], true).added;
+        tick(&engine.inner).await;
+
+        assert_eq!(
+            state_of_id(&engine, &ids[0]),
+            ItemState::Transcribing,
+            "first local transcription item should start on Transcribe lane"
+        );
+        assert_eq!(
+            state_of_id(&engine, &ids[1]),
+            ItemState::Queued,
+            "second local transcription item must stay Queued because Transcribe lane cap is 1"
+        );
+
+        engine.shutdown();
+    }
+
+    #[tokio::test]
+    async fn local_transcription_starts_when_download_lane_is_full_and_transcribe_lane_is_idle() {
+        let dir = TempDir::new().expect("temp dir");
+        let (sink, _seen) = collector();
+        let engine = QueueEngine::open(EngineConfig {
+            path: dir.path().join("queue.json"),
+            provider: Arc::new(HangingProvider),
+            sink,
+            lanes: LaneConfig::default(), // download: 2, encode: 1, transcribe: 1
+            notify_on_idle: false,
+            notifier: None,
+        });
+
+        // Start 2 downloads so Lane::Download (cap 2) is completely full
+        let dl_ids = engine
+            .add(
+                vec![
+                    request("https://site1.example/1", dir.path()),
+                    request("https://site2.example/2", dir.path()),
+                ],
+                true,
+            )
+            .added;
+        tick(&engine.inner).await;
+        assert_eq!(state_of_id(&engine, &dl_ids[0]), ItemState::Downloading);
+        assert_eq!(state_of_id(&engine, &dl_ids[1]), ItemState::Downloading);
+
+        // Case (a): Now add a local file for transcription while Lane::Download is full
+        // and Lane::Transcribe is idle. It must start immediately on the next tick!
+        let local = dir.path().join("local.mp4");
+        std::fs::write(&local, b"fake media").expect("write local");
+        let mut local_req = request("local://media", dir.path());
+        local_req.file = Some(local);
+        local_req.options.transcribe = true;
+
+        let local_id = engine.add(vec![local_req], true).added[0].clone();
+        tick(&engine.inner).await;
+
+        assert_eq!(
+            state_of_id(&engine, &local_id),
+            ItemState::Transcribing,
+            "local transcription item must start even when Download lane is full"
+        );
+
+        engine.shutdown();
     }
 }

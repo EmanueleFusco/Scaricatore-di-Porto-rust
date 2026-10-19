@@ -69,19 +69,21 @@ impl Capacity {
         self.hosts.get(host).copied().unwrap_or(0)
     }
 
-    /// Reserve a lane slot and a host slot for one item. `false` when either is
-    /// exhausted, and nothing is consumed in that case.
+    /// Reserve a lane slot (and a host slot for downloads) for one item. `false`
+    /// when either is exhausted, and nothing is consumed in that case.
     pub fn try_take(&mut self, lane: Lane, host: &str) -> bool {
         if self.free(lane) == 0 {
             return false;
         }
-        if self.running_on(host) >= self.per_host_cap {
+        if lane == Lane::Download && self.running_on(host) >= self.per_host_cap {
             return false;
         }
         if let Some(slot) = self.free.get_mut(&lane) {
             *slot -= 1;
         }
-        *self.hosts.entry(host.to_owned()).or_insert(0) += 1;
+        if lane == Lane::Download {
+            *self.hosts.entry(host.to_owned()).or_insert(0) += 1;
+        }
         true
     }
 }
@@ -92,6 +94,8 @@ pub struct Candidate<'a> {
     pub id: &'a str,
     pub url: &'a str,
     pub state: ItemState,
+    /// The lane this item enters when started from [`ItemState::Queued`].
+    pub initial_lane: Lane,
     /// Unix seconds before which the item must not start (automatic retry).
     pub retry_at: Option<u64>,
 }
@@ -111,11 +115,7 @@ pub fn plan<'a>(
         if !is_runnable(candidate, now) {
             continue;
         }
-        // Which lane the item needs. A queued item has no lane of its own:
-        // spec §3's pipeline starts at inspect/download, and that is the only
-        // stage M2 runs, so it takes the download lane. M4 and M5 give their
-        // stages a lane when they arrive.
-        let lane = candidate.state.lane().unwrap_or(Lane::Download);
+        let lane = candidate.state.lane().unwrap_or(candidate.initial_lane);
         let host = host_key(candidate.url);
         if capacity.try_take(lane, &host) {
             plan.push((candidate.id.to_owned(), lane));
@@ -154,12 +154,15 @@ pub fn next_wakeup(items: &[Candidate<'_>], now: u64) -> Option<u64> {
         .min()
 }
 
-/// How many items are running on each host (spec §6.4). Counts only items that
-/// hold a lane: a queued item from the same host must not consume the budget of
-/// a running one.
+/// How many items are downloading on each host (spec §6.4, §7.2). Counts only
+/// items that hold the download lane: a queued, encoding, or transcribing item
+/// from the same host must not consume the download budget.
 pub fn running_by_host<'a>(items: &[Candidate<'a>]) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for item in items.iter().filter(|item| item.state.is_active()) {
+    for item in items
+        .iter()
+        .filter(|item| item.state.lane() == Some(Lane::Download))
+    {
         *counts.entry(host_key(item.url)).or_insert(0) += 1;
     }
     counts
@@ -174,6 +177,7 @@ mod tests {
             id,
             url,
             state,
+            initial_lane: Lane::Download,
             retry_at: None,
         }
     }
@@ -435,5 +439,37 @@ mod tests {
             "a refused item must not consume the host slot either"
         );
         assert!(capacity.try_take(Lane::Download, "vimeo.com"));
+    }
+
+    #[test]
+    fn transcribing_and_encoding_items_do_not_consume_per_host_download_budget() {
+        let items = vec![
+            candidate("y1", "https://youtube.com/1", ItemState::Transcribing),
+            candidate("y2", "https://youtube.com/2", ItemState::Encoding),
+            candidate("y3", "https://youtube.com/3", ItemState::Queued),
+        ];
+        let counts = running_by_host(&items);
+        assert_eq!(
+            counts.get("youtube.com").copied().unwrap_or(0),
+            0,
+            "Transcribing and Encoding items must not count against per_host_cap"
+        );
+
+        let lanes = LaneConfig::default();
+        let mut free = BTreeMap::new();
+        for lane in Lane::ALL {
+            let busy = items
+                .iter()
+                .filter(|c| c.state.lane() == Some(lane))
+                .count();
+            free.insert(lane, lanes.capacity(lane).saturating_sub(busy));
+        }
+        let mut capacity = Capacity::new(free, counts, lanes.per_host_cap);
+        let started = plan(&items, &mut capacity, 0);
+        assert_eq!(
+            started_ids(&started),
+            vec!["y3"],
+            "a 3rd YouTube download must start when previous two are in Transcribing/Encoding"
+        );
     }
 }
