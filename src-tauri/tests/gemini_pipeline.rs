@@ -866,3 +866,73 @@ async fn queue_engine_fails_subtitles_only_when_local_or_no_subs() {
         "item with subtitles_only on local media should fail with NO_SUBTITLES"
     );
 }
+
+#[tokio::test]
+async fn transcription_and_summary_do_not_overwrite_existing_files() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("lecture.mp4");
+    let server = MockGeminiServer::start(MockBehavior::Normal);
+
+    let out_dir = fix.dir.path().join("out");
+    fs::create_dir_all(&out_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    let existing_txt = out_dir.join("lecture.txt");
+    let existing_summary = out_dir.join("lecture.summary.md");
+    fs::write(&existing_txt, "original user transcript").expect("write existing txt");
+    fs::write(&existing_summary, "original user summary").expect("write existing summary");
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media,
+        temp_dir: temp_dir.clone(),
+        output_dir: out_dir.clone(),
+        base_filename: "lecture".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-123".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: None,
+        base_url: Some(server.base_url()),
+        poll_interval: Some(Duration::from_millis(50)),
+    };
+
+    let token = CancellationToken::new();
+    let res = run_gemini_transcription(req, token.clone(), None).await;
+    assert!(res.is_ok(), "transcription should succeed: {:?}", res.err());
+    let txt_path = res.unwrap();
+
+    let sum_req = SummaryRequest {
+        transcript_text: "Some transcript text".to_string(),
+        language: None,
+        model: None,
+        api_key: "test-fake-key-123".to_string(),
+        output_dir: out_dir.clone(),
+        base_filename: "lecture".to_string(),
+        transcripts_subfolder: false,
+        base_url: Some(server.base_url()),
+    };
+
+    let sum_res = generate_summary(sum_req, token).await;
+    assert!(
+        sum_res.is_ok(),
+        "summary should succeed: {:?}",
+        sum_res.err()
+    );
+    let summary_path = sum_res.unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&existing_txt).expect("read existing txt"),
+        "original user transcript",
+        "existing .txt must never be silently overwritten"
+    );
+    assert_eq!(
+        fs::read_to_string(&existing_summary).expect("read existing summary"),
+        "original user summary",
+        "existing .summary.md must never be silently overwritten"
+    );
+    assert_eq!(txt_path, out_dir.join("lecture (1).txt"));
+    assert_eq!(summary_path, out_dir.join("lecture (1).summary.md"));
+    assert!(txt_path.is_file());
+    assert!(summary_path.is_file());
+}

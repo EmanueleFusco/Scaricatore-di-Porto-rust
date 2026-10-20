@@ -4167,4 +4167,28 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D125.
 - Next step: merge or proceed to next milestone M7.
 
+## 2026-10-20 — M6 / Prevent silent overwriting of existing transcript, subtitle and summary files (B1, Spec §10.1, §10.3, §10.4)
+- Done:
+  - Fixed B1:
+    - Added `paths::collision_free_stem` in `src-tauri/src/services/paths.rs` to iteratively append ` (1)`, ` (2)`, etc. when destination files already exist on disk.
+    - Updated `whisper::derive_transcript_paths` in `src-tauri/src/services/transcribe/whisper.rs` to reuse `paths::collision_free_stem`.
+    - Updated `process_downloaded_subtitles` in `src-tauri/src/services/transcribe/subtitles.rs` to derive collision-free stems for `.srt` and `.txt` files and write outputs atomically via `paths::atomic_write`.
+    - Updated `run_gemini_transcription` in `src-tauri/src/services/transcribe/gemini.rs` to derive collision-free stems for `.txt` outputs and write atomically via `paths::atomic_write`.
+    - Updated `generate_summary` in `src-tauri/src/services/transcribe/summary.rs` to derive collision-free stems for `.summary.md` outputs and write atomically via `paths::atomic_write`.
+  - Tests:
+    - Added unit test `collision_free_stem_finds_first_unused_suffix` in `src-tauri/src/services/paths.rs`.
+    - Added reproducing unit test `process_downloaded_subtitles_does_not_overwrite_existing_files` in `src-tauri/src/services/transcribe/subtitles.rs` (verified FAILS before fix, PASSES after fix).
+    - Added reproducing integration test `transcription_and_summary_do_not_overwrite_existing_files` in `src-tauri/tests/gemini_pipeline.rs` (verified FAILS before fix, PASSES after fix).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 395 unit + 179 integration = 574 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 287 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+
 

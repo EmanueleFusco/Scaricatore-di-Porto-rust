@@ -268,10 +268,42 @@ pub fn sanitize_component(name: &str, max_len: usize) -> String {
     out
 }
 
+/// Finds a collision-free stem given a base stem and an existence check.
+///
+/// Calls `check_exists(stem)` starting with `base_stem`. If any candidate file
+/// already exists, iteratively tries `"{base_stem} (1)"`, `"{base_stem} (2)"`,
+/// etc. until `check_exists` returns `false`.
+pub fn collision_free_stem<F>(base_stem: &str, mut check_exists: F) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    if !check_exists(base_stem) {
+        return base_stem.to_string();
+    }
+    let mut counter = 1u64;
+    loop {
+        let candidate = format!("{base_stem} ({counter})");
+        if !check_exists(&candidate) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn collision_free_stem_finds_first_unused_suffix() {
+        let existing = ["file", "file (1)", "file (2)"];
+        let picked = collision_free_stem("file", |s| existing.contains(&s));
+        assert_eq!(picked, "file (3)");
+
+        let free = collision_free_stem("other", |s| existing.contains(&s));
+        assert_eq!(free, "other");
+    }
 
     #[test]
     fn atomic_write_creates_missing_parents() {

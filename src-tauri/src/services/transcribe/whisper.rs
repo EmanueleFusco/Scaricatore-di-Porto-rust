@@ -236,19 +236,12 @@ pub fn derive_transcript_paths(media_path: &Path, transcripts_subfolder: bool) -
         }
     };
 
-    let mut current = candidate_paths(&stem);
-    if !current.txt.exists() && !current.srt.exists() && !current.vtt.exists() {
-        return current;
-    }
+    let free_stem = paths::collision_free_stem(&stem, |name| {
+        let p = candidate_paths(name);
+        p.txt.exists() || p.srt.exists() || p.vtt.exists()
+    });
 
-    let mut counter = 1u64;
-    loop {
-        current = candidate_paths(&format!("{stem} ({counter})"));
-        if !current.txt.exists() && !current.srt.exists() && !current.vtt.exists() {
-            return current;
-        }
-        counter += 1;
-    }
+    candidate_paths(&free_stem)
 }
 
 // ---------------------------------------------------------------------------

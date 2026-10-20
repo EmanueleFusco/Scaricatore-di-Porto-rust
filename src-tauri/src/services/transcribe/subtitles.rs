@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
+use crate::services::paths;
 use crate::services::process::{self, ToolCommand};
 
 /// Default pause threshold in milliseconds to split subtitles into paragraphs.
@@ -472,18 +473,25 @@ fn process_downloaded_subtitles(
         fs::create_dir_all(&target_dir).map_err(AppError::Io)?;
     }
 
-    // Sidecar naming: `.it.srt` or `.it.auto.srt`
-    let srt_name = match origin {
-        SubtitleOrigin::Manual => format!("{}.{}.srt", req.base_filename, lang),
-        SubtitleOrigin::Auto => format!("{}.{}.auto.srt", req.base_filename, lang),
+    // Derive collision-free paths (spec §10.1, Regression F.2)
+    let candidate_paths = |stem: &str| -> (PathBuf, PathBuf) {
+        let srt_name = match origin {
+            SubtitleOrigin::Manual => format!("{stem}.{lang}.srt"),
+            SubtitleOrigin::Auto => format!("{stem}.{lang}.auto.srt"),
+        };
+        let txt_name = format!("{stem}.txt");
+        (target_dir.join(srt_name), target_dir.join(txt_name))
     };
-    let txt_name = format!("{}.txt", req.base_filename);
 
-    let target_srt = target_dir.join(srt_name);
-    let target_txt = target_dir.join(txt_name);
+    let free_stem = paths::collision_free_stem(&req.base_filename, |stem| {
+        let (srt_p, txt_p) = candidate_paths(stem);
+        srt_p.exists() || txt_p.exists()
+    });
 
-    fs::copy(&sub_path, &target_srt).map_err(AppError::Io)?;
-    fs::write(&target_txt, cleaned_text.as_bytes()).map_err(AppError::Io)?;
+    let (target_srt, target_txt) = candidate_paths(&free_stem);
+
+    paths::atomic_write(&target_srt, srt_content.as_bytes())?;
+    paths::atomic_write(&target_txt, cleaned_text.as_bytes())?;
 
     // Clean up temp file
     let _ = fs::remove_file(sub_path);
@@ -610,5 +618,53 @@ mod tests {
             build_sub_langs_arg(None, true),
             "it-orig,it,en-orig,en,all,-live_chat"
         );
+    }
+
+    #[test]
+    fn process_downloaded_subtitles_does_not_overwrite_existing_files() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let out_dir = temp.path().join("out");
+        fs::create_dir_all(&out_dir).expect("create out");
+        let temp_dir = temp.path().join("tmp");
+        fs::create_dir_all(&temp_dir).expect("create tmp");
+
+        let existing_txt = out_dir.join("lecture.txt");
+        let existing_srt = out_dir.join("lecture.en.srt");
+        fs::write(&existing_txt, "user text").expect("write existing txt");
+        fs::write(&existing_srt, "user srt").expect("write existing srt");
+
+        let sub_temp = temp_dir.join("sub.en.srt");
+        fs::write(&sub_temp, "1\n00:00:01,000 --> 00:00:02,000\nSub text\n").expect("write sub");
+
+        let req = SubtitleFetchRequest {
+            ytdlp_path: PathBuf::from("fake_ytdlp"),
+            url: "https://example.com".to_string(),
+            language: Some("en".to_string()),
+            temp_dir,
+            output_dir: out_dir.clone(),
+            base_filename: "lecture".to_string(),
+            transcripts_subfolder: false,
+        };
+
+        let outcome =
+            process_downloaded_subtitles(&req, sub_temp, SubtitleOrigin::Manual, "en".to_string())
+                .expect("process subtitles")
+                .expect("outcome");
+
+        assert_eq!(
+            fs::read_to_string(&existing_txt).expect("read txt"),
+            "user text",
+            "existing .txt must not be overwritten"
+        );
+        assert_eq!(
+            fs::read_to_string(&existing_srt).expect("read srt"),
+            "user srt",
+            "existing .srt must not be overwritten"
+        );
+
+        assert_eq!(outcome.txt_file, out_dir.join("lecture (1).txt"));
+        assert_eq!(outcome.srt_file, out_dir.join("lecture (1).en.srt"));
+        assert!(outcome.txt_file.is_file());
+        assert!(outcome.srt_file.is_file());
     }
 }

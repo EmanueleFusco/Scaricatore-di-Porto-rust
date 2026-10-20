@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
+use crate::services::paths;
 use crate::services::process::{self, ToolCommand};
 
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -895,8 +896,11 @@ pub async fn run_gemini_transcription(
         fs::create_dir_all(&target_dir).map_err(AppError::Io)?;
     }
 
-    let txt_path = target_dir.join(format!("{}.txt", req.base_filename));
-    fs::write(&txt_path, transcript.as_bytes()).map_err(AppError::Io)?;
+    let free_stem = paths::collision_free_stem(&req.base_filename, |stem| {
+        target_dir.join(format!("{stem}.txt")).exists()
+    });
+    let txt_path = target_dir.join(format!("{free_stem}.txt"));
+    paths::atomic_write(&txt_path, transcript.as_bytes())?;
 
     if let Some(sink) = &progress_sink {
         sink(1.0, "transcribing");

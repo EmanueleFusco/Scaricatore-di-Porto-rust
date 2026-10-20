@@ -16,6 +16,7 @@ use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
+use crate::services::paths;
 use crate::services::transcribe::gemini::{
     DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, MAX_RETRIES,
 };
@@ -321,8 +322,11 @@ pub async fn generate_summary(
         fs::create_dir_all(&target_dir).map_err(AppError::Io)?;
     }
 
-    let summary_path = target_dir.join(format!("{}.summary.md", req.base_filename));
-    fs::write(&summary_path, summary_md.as_bytes()).map_err(AppError::Io)?;
+    let free_stem = paths::collision_free_stem(&req.base_filename, |stem| {
+        target_dir.join(format!("{stem}.summary.md")).exists()
+    });
+    let summary_path = target_dir.join(format!("{free_stem}.summary.md"));
+    paths::atomic_write(&summary_path, summary_md.as_bytes())?;
 
     Ok(summary_path)
 }
