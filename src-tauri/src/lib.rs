@@ -150,6 +150,11 @@ pub fn run() {
             commands::models::models_import,
             commands::models::models_set_active,
             commands::models::models_open_folder,
+            commands::gemini::gemini_key_get_status,
+            commands::gemini::gemini_key_save,
+            commands::gemini::gemini_key_delete,
+            commands::gemini::gemini_key_test,
+            commands::gemini::gemini_models_list,
         ])
         .build(tauri::generate_context!());
 

@@ -2,6 +2,7 @@
 
 pub mod download;
 pub mod env;
+pub mod gemini;
 pub mod inspect;
 pub mod models;
 pub mod queue;

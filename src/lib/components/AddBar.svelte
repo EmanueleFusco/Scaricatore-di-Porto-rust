@@ -859,6 +859,34 @@
                       />
                       {tt("transcribe.subfolder")}
                     </label>
+
+                    <div class="field">
+                      <label class="field__label" for={`engine-order-${row.key}`}>
+                        {tt("addbar.transcribeEngine")}
+                      </label>
+                      <select
+                        class="select"
+                        id={`engine-order-${row.key}`}
+                        value={row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { transcriptionEngine: event.currentTarget.value })}
+                      >
+                        <option value="subtitles_whisper_gemini">{tt("transcription.engine.subtitlesWhisperGemini")}</option>
+                        <option value="whisper_only">{tt("transcription.engine.whisperOnly")}</option>
+                        <option value="gemini_only">{tt("transcription.engine.geminiOnly")}</option>
+                        <option value="subtitles_only">{tt("transcription.engine.subtitlesOnly")}</option>
+                      </select>
+                    </div>
+
+                    <label class="add__check">
+                      <input
+                        type="checkbox"
+                        checked={row.summarize}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { summarize: event.currentTarget.checked })}
+                      />
+                      {tt("addbar.summarize")}
+                    </label>
                   {/if}
                 </div>
 

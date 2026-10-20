@@ -736,6 +736,7 @@ impl QueueEngine {
     }
 
     /// Mark an existing item with finished media for transcription (spec §10.2, §11.5).
+    #[allow(clippy::too_many_arguments)]
     pub fn transcribe_item(
         &self,
         id: &str,
@@ -743,6 +744,10 @@ impl QueueEngine {
         transcript_language: Option<String>,
         translate_to_english: Option<bool>,
         transcripts_subfolder: Option<bool>,
+        transcription_engine: Option<String>,
+        gemini_model: Option<String>,
+        summarize: Option<bool>,
+        summary_language: Option<String>,
     ) -> Outcome {
         let ok = {
             let mut state = lock(&self.inner.state);
@@ -764,6 +769,18 @@ impl QueueEngine {
             }
             if transcripts_subfolder.is_some() {
                 item.options.transcripts_subfolder = transcripts_subfolder;
+            }
+            if transcription_engine.is_some() {
+                item.options.transcription_engine = transcription_engine;
+            }
+            if gemini_model.is_some() {
+                item.options.gemini_model = gemini_model;
+            }
+            if summarize.is_some() {
+                item.options.summarize = summarize;
+            }
+            if summary_language.is_some() {
+                item.options.summary_language = summary_language;
             }
             item.state = ItemState::Queued;
             item.progress = ItemProgress::with_label("waitingTranscribe");
@@ -862,6 +879,24 @@ fn transcription_error_outcome(err: crate::error::AppError) -> JobOutcome {
         }
         crate::error::AppError::WhisperModelMissing(model) => {
             JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::WhisperModelMissing, model))
+        }
+        crate::error::AppError::GeminiKeyMissing => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::GeminiKeyMissing, err_msg))
+        }
+        crate::error::AppError::GeminiKeyInvalid(detail) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::GeminiKeyInvalid, detail))
+        }
+        crate::error::AppError::GeminiQuotaExceeded(detail) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::GeminiQuotaExceeded, detail))
+        }
+        crate::error::AppError::GeminiModelNotFound(model) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::GeminiModelNotFound, model))
+        }
+        crate::error::AppError::GeminiBlocked(reason) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::GeminiBlocked, reason))
+        }
+        crate::error::AppError::NoSubtitles => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::NoSubtitles, err_msg))
         }
         _ => JobOutcome::Failed(YtdlpError::new(
             YtdlpErrorCode::Unknown,
@@ -1417,7 +1452,8 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                     {
                                         let mut state = lock(&inner.state);
                                         if let Some(item) = state.item_mut(&id) {
-                                            item.transcript_files = res.paths.all();
+                                            item.transcript_files = res.transcript_files;
+                                            item.transcript_origin = Some(res.origin);
                                             item.transcript_preview = None;
                                             if res.used_cpu_fallback {
                                                 item.push_log("Whisper GPU execution failed; fell back to CPU (-ng).");
@@ -1516,7 +1552,8 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             {
                                 let mut state = lock(&inner.state);
                                 if let Some(item) = state.item_mut(&id) {
-                                    item.transcript_files = res.paths.all();
+                                    item.transcript_files = res.transcript_files;
+                                    item.transcript_origin = Some(res.origin);
                                     item.transcript_preview = None;
                                     if res.used_cpu_fallback {
                                         item.push_log(
@@ -1700,7 +1737,16 @@ fn on_transcribe_progress(inner: &Arc<Inner>, id: &str, percent: f64, segment: O
     mark_dirty(inner, id, milestone);
 }
 
-/// Run Whisper transcription stage for an item (spec §10.2).
+/// Result of the transcription and summary stage for an item.
+#[derive(Debug, Clone)]
+pub struct TranscribeStageOutcome {
+    pub transcript_files: Vec<PathBuf>,
+    pub origin: String,
+    pub used_cpu_fallback: bool,
+    pub hallucination_warning: Option<crate::services::transcribe::whisper::HallucinationWarning>,
+}
+
+/// Run transcription stage for an item according to configured engine ordering (spec §10.1, §10.2, §10.3, §10.4).
 async fn run_transcribe_stage(
     inner: &Arc<Inner>,
     id: &str,
@@ -1709,7 +1755,7 @@ async fn run_transcribe_stage(
     environment: &JobEnvironment,
     options: &ItemOptions,
     token: &CancellationToken,
-) -> Result<crate::services::transcribe::whisper::TranscriptionOutcome, crate::error::AppError> {
+) -> Result<TranscribeStageOutcome, crate::error::AppError> {
     // 1. Move to Transcribing state
     let cancelled = {
         let mut state = lock(&inner.state);
@@ -1760,122 +1806,384 @@ async fn run_transcribe_stage(
         return Err(crate::error::AppError::Process("Cancelled".to_string()));
     }
 
-    // 4. Resolve whisper & ffmpeg tools
-    let Some(whisper_path) = environment.whisper.as_ref() else {
-        return Err(crate::error::AppError::WhisperMissing);
-    };
-    let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
-        return Err(crate::error::AppError::Process(
-            "ffmpeg is required for transcription preparation but was not found".to_string(),
-        ));
-    };
-
-    // 5. Resolve model path
-    let catalogue = crate::services::models::ModelCatalogue::parse(
-        crate::services::models::MODELS_CATALOGUE_JSON,
-    )?;
-    let model_id = options
-        .whisper_model
+    let engine_order = options
+        .transcription_engine
         .as_deref()
-        .or(environment.default_whisper_model.as_deref())
-        .unwrap_or("large-v3-turbo-q5_0");
+        .or(environment.default_transcription_engine_order.as_deref())
+        .unwrap_or("subtitles_whisper_gemini");
 
-    let model_path = if let Some(models_dir) = environment.models_dir.as_ref() {
-        if let Some(entry) = catalogue
-            .find(model_id)
-            .or_else(|| catalogue.find_by_file(model_id))
-        {
-            let p = models_dir.join(&entry.file);
-            if p.is_file() { Some(p) } else { None }
-        } else {
-            let p = models_dir.join(model_id);
-            if p.is_file() {
-                Some(p)
-            } else if std::path::Path::new(model_id).is_file() {
-                Some(std::path::PathBuf::from(model_id))
+    let url = lock(&inner.state)
+        .item(id)
+        .map(|i| i.url.clone())
+        .unwrap_or_default();
+    let base_filename = media_file
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".to_string());
+    let temp_dir = process::item_temp_dir(&options.output_dir, id);
+    let transcripts_subfolder = options.transcripts_subfolder.unwrap_or(false);
+
+    let mut outcome: Option<TranscribeStageOutcome> = None;
+    let mut last_error: Option<crate::error::AppError> = None;
+
+    // Subtitles attempt
+    let try_subtitles = || async {
+        if url.starts_with("local://") {
+            return Ok(None);
+        }
+        let sub_req = crate::services::transcribe::subtitles::SubtitleFetchRequest {
+            ytdlp_path: environment.ytdlp.clone(),
+            url: url.clone(),
+            language: options
+                .transcript_language
+                .clone()
+                .or_else(|| environment.default_transcript_language.clone()),
+            temp_dir: temp_dir.clone(),
+            output_dir: options.output_dir.clone(),
+            base_filename: base_filename.clone(),
+            transcripts_subfolder,
+        };
+        crate::services::transcribe::subtitles::fetch_subtitles(sub_req, token.clone()).await
+    };
+
+    // Whisper attempt
+    let try_whisper = || async {
+        let Some(whisper_path) = environment.whisper.as_ref() else {
+            return Err(crate::error::AppError::WhisperMissing);
+        };
+        let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
+            return Err(crate::error::AppError::Process(
+                "ffmpeg is required for transcription preparation but was not found".to_string(),
+            ));
+        };
+
+        let catalogue = crate::services::models::ModelCatalogue::parse(
+            crate::services::models::MODELS_CATALOGUE_JSON,
+        )?;
+        let model_id = options
+            .whisper_model
+            .as_deref()
+            .or(environment.default_whisper_model.as_deref())
+            .unwrap_or("large-v3-turbo-q5_0");
+
+        let model_path = if let Some(models_dir) = environment.models_dir.as_ref() {
+            if let Some(entry) = catalogue
+                .find(model_id)
+                .or_else(|| catalogue.find_by_file(model_id))
+            {
+                let p = models_dir.join(&entry.file);
+                if p.is_file() { Some(p) } else { None }
             } else {
-                None
+                let p = models_dir.join(model_id);
+                if p.is_file() {
+                    Some(p)
+                } else if std::path::Path::new(model_id).is_file() {
+                    Some(std::path::PathBuf::from(model_id))
+                } else {
+                    None
+                }
+            }
+        } else if std::path::Path::new(model_id).is_file() {
+            Some(std::path::PathBuf::from(model_id))
+        } else {
+            None
+        };
+
+        let Some(model_path) = model_path else {
+            return Err(crate::error::AppError::WhisperModelMissing(
+                model_id.to_string(),
+            ));
+        };
+
+        let vad_model_path = if environment.skip_silence_vad {
+            environment
+                .models_dir
+                .as_ref()
+                .map(|d| d.join(&catalogue.vad.file))
+                .filter(|p| p.is_file())
+        } else {
+            None
+        };
+
+        let language = options
+            .transcript_language
+            .clone()
+            .or_else(|| environment.default_transcript_language.clone());
+        let translate_to_english = options.translate_to_english.unwrap_or(false);
+        let mut duration_sec_f64 = duration_sec.map(|s| s as f64);
+        if duration_sec_f64.is_none() {
+            if let Some(ffprobe) =
+                crate::services::ffmpeg::find_ffprobe(ffmpeg_path, environment.ffprobe.as_deref())
+            {
+                if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
+                    &ffprobe,
+                    &media_file,
+                    environment.private_temp.as_deref(),
+                    token.clone(),
+                )
+                .await
+                {
+                    duration_sec_f64 = Some(dur);
+                    let dur_u64 = dur.round() as u64;
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(id) {
+                        item.duration_sec = Some(dur_u64);
+                    }
+                }
             }
         }
-    } else if std::path::Path::new(model_id).is_file() {
-        Some(std::path::PathBuf::from(model_id))
-    } else {
-        None
+
+        let req = crate::services::transcribe::whisper::TranscribeRequest {
+            ffmpeg_path: ffmpeg_path.clone(),
+            whisper_path: whisper_path.clone(),
+            model_path,
+            vad_model_path,
+            input_media: media_file.clone(),
+            language,
+            translate_to_english,
+            skip_silence_vad: environment.skip_silence_vad,
+            whisper_threads: environment.whisper_threads,
+            transcripts_subfolder,
+            duration_sec: duration_sec_f64,
+            temp_dir: Some(temp_dir.clone()),
+        };
+
+        let progress_inner = Arc::clone(inner);
+        let progress_id = id.to_string();
+        let sink: crate::services::transcribe::whisper::TranscribeProgressSink =
+            Arc::new(move |percent: f64, segment: Option<&str>| {
+                on_transcribe_progress(&progress_inner, &progress_id, percent, segment);
+            });
+
+        crate::services::transcribe::whisper::run_transcribe(req, token.clone(), Some(sink)).await
     };
 
-    let Some(model_path) = model_path else {
-        return Err(crate::error::AppError::WhisperModelMissing(
-            model_id.to_string(),
-        ));
-    };
-
-    let vad_model_path = if environment.skip_silence_vad {
-        environment
-            .models_dir
+    // Gemini attempt
+    let try_gemini = || async {
+        let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
+            return Err(crate::error::AppError::Process(
+                "ffmpeg is required for Gemini audio preparation but was not found".to_string(),
+            ));
+        };
+        let api_key = environment
+            .config_dir
             .as_ref()
-            .map(|d| d.join(&catalogue.vad.file))
-            .filter(|p| p.is_file())
-    } else {
-        None
+            .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd));
+        let Some(api_key) = api_key else {
+            return Err(crate::error::AppError::GeminiKeyMissing);
+        };
+
+        let model = options
+            .gemini_model
+            .clone()
+            .or_else(|| environment.default_gemini_model.clone())
+            .unwrap_or_else(|| {
+                crate::services::transcribe::gemini::DEFAULT_GEMINI_MODEL.to_string()
+            });
+
+        let req = crate::services::transcribe::gemini::GeminiTranscribeRequest {
+            ffmpeg_path: ffmpeg_path.clone(),
+            input_media: media_file.clone(),
+            temp_dir: temp_dir.clone(),
+            output_dir: options.output_dir.clone(),
+            base_filename: base_filename.clone(),
+            transcripts_subfolder,
+            api_key,
+            model,
+            target_language: options
+                .transcript_language
+                .clone()
+                .or_else(|| environment.default_transcript_language.clone()),
+            base_url: None,
+            poll_interval: None,
+        };
+
+        let progress_inner = Arc::clone(inner);
+        let progress_id = id.to_string();
+        let sink: crate::services::transcribe::gemini::GeminiProgressSink =
+            Arc::new(move |percent: f64, _label: &str| {
+                on_transcribe_progress(&progress_inner, &progress_id, percent * 100.0, None);
+            });
+
+        crate::services::transcribe::gemini::run_gemini_transcription(
+            req,
+            token.clone(),
+            Some(sink),
+        )
+        .await
     };
 
-    let language = options
-        .transcript_language
-        .clone()
-        .or_else(|| environment.default_transcript_language.clone());
-    let translate_to_english = options.translate_to_english.unwrap_or(false);
-    let transcripts_subfolder = options.transcripts_subfolder.unwrap_or(false);
-    let mut duration_sec_f64 = duration_sec.map(|s| s as f64);
-    if duration_sec_f64.is_none() {
-        if let Some(ffprobe) =
-            crate::services::ffmpeg::find_ffprobe(ffmpeg_path, environment.ffprobe.as_deref())
-        {
-            if let Some(dur) = crate::services::ffmpeg::probe_file_duration(
-                &ffprobe,
-                &media_file,
-                environment.private_temp.as_deref(),
-                token.clone(),
-            )
-            .await
-            {
-                duration_sec_f64 = Some(dur);
-                let dur_u64 = dur.round() as u64;
-                let mut state = lock(&inner.state);
-                if let Some(item) = state.item_mut(id) {
-                    item.duration_sec = Some(dur_u64);
+    match engine_order {
+        "whisper_only" => match try_whisper().await {
+            Ok(whisper_res) => {
+                outcome = Some(TranscribeStageOutcome {
+                    transcript_files: whisper_res.paths.all(),
+                    origin: "whisper".to_string(),
+                    used_cpu_fallback: whisper_res.used_cpu_fallback,
+                    hallucination_warning: whisper_res.hallucination_warning,
+                });
+            }
+            Err(e) => return Err(e),
+        },
+        "gemini_only" => match try_gemini().await {
+            Ok(txt_path) => {
+                outcome = Some(TranscribeStageOutcome {
+                    transcript_files: vec![txt_path],
+                    origin: "gemini".to_string(),
+                    used_cpu_fallback: false,
+                    hallucination_warning: None,
+                });
+            }
+            Err(e) => return Err(e),
+        },
+        "subtitles_only" => match try_subtitles().await {
+            Ok(Some(sub_res)) => {
+                outcome = Some(TranscribeStageOutcome {
+                    transcript_files: vec![sub_res.srt_file, sub_res.txt_file],
+                    origin: sub_res.origin.as_str().to_string(),
+                    used_cpu_fallback: false,
+                    hallucination_warning: None,
+                });
+            }
+            Ok(None) => return Err(crate::error::AppError::NoSubtitles),
+            Err(e) => return Err(e),
+        },
+        _ => {
+            // "subtitles_whisper_gemini" (default fallback pipeline)
+            // 1. Try Subtitles
+            match try_subtitles().await {
+                Ok(Some(sub_res)) => {
+                    outcome = Some(TranscribeStageOutcome {
+                        transcript_files: vec![sub_res.srt_file, sub_res.txt_file],
+                        origin: sub_res.origin.as_str().to_string(),
+                        used_cpu_fallback: false,
+                        hallucination_warning: None,
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    last_error = Some(e);
+                }
+            }
+
+            // 2. Try Whisper if subtitles not found
+            if outcome.is_none() {
+                match try_whisper().await {
+                    Ok(whisper_res) => {
+                        outcome = Some(TranscribeStageOutcome {
+                            transcript_files: whisper_res.paths.all(),
+                            origin: "whisper".to_string(),
+                            used_cpu_fallback: whisper_res.used_cpu_fallback,
+                            hallucination_warning: whisper_res.hallucination_warning,
+                        });
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                    }
+                }
+            }
+
+            // 3. Try Gemini if Whisper failed or unavailable
+            if outcome.is_none() {
+                let has_gemini_key = environment
+                    .config_dir
+                    .as_ref()
+                    .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd))
+                    .is_some();
+
+                if has_gemini_key || last_error.is_none() {
+                    match try_gemini().await {
+                        Ok(txt_path) => {
+                            outcome = Some(TranscribeStageOutcome {
+                                transcript_files: vec![txt_path],
+                                origin: "gemini".to_string(),
+                                used_cpu_fallback: false,
+                                hallucination_warning: None,
+                            });
+                        }
+                        Err(e) => {
+                            if last_error.is_none()
+                                || !matches!(e, crate::error::AppError::GeminiKeyMissing)
+                            {
+                                last_error = Some(e);
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    let req = crate::services::transcribe::whisper::TranscribeRequest {
-        ffmpeg_path: ffmpeg_path.clone(),
-        whisper_path: whisper_path.clone(),
-        model_path,
-        vad_model_path,
-        input_media: media_file,
-        language,
-        translate_to_english,
-        skip_silence_vad: environment.skip_silence_vad,
-        whisper_threads: environment.whisper_threads,
-        transcripts_subfolder,
-        duration_sec: duration_sec_f64,
-        temp_dir: Some(process::item_temp_dir(&options.output_dir, id)),
+    let Some(mut stage_outcome) = outcome else {
+        drop(_slot);
+        inner.wake.notify_waiters();
+        return Err(last_error.unwrap_or(crate::error::AppError::WhisperMissing));
     };
 
-    let progress_inner = Arc::clone(inner);
-    let progress_id = id.to_string();
-    let sink: crate::services::transcribe::whisper::TranscribeProgressSink =
-        Arc::new(move |percent: f64, segment: Option<&str>| {
-            on_transcribe_progress(&progress_inner, &progress_id, percent, segment);
-        });
+    // Optional summarization step (spec §10.4)
+    let should_summarize = options.summarize.unwrap_or(environment.default_summarize);
+    if should_summarize {
+        let txt_file = stage_outcome
+            .transcript_files
+            .iter()
+            .find(|f| f.extension().is_some_and(|ext| ext == "txt"))
+            .cloned();
 
-    let outcome =
-        crate::services::transcribe::whisper::run_transcribe(req, token.clone(), Some(sink)).await;
+        if let Some(txt_path) = txt_file {
+            if let Ok(transcript_text) = std::fs::read_to_string(&txt_path) {
+                let api_key = environment
+                    .config_dir
+                    .as_ref()
+                    .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd));
+
+                if let Some(api_key) = api_key {
+                    on_transcribe_progress(inner, id, 95.0, Some("Generating summary..."));
+                    let sum_req = crate::services::transcribe::summary::SummaryRequest {
+                        transcript_text,
+                        language: options
+                            .summary_language
+                            .clone()
+                            .or_else(|| environment.default_summary_language.clone()),
+                        model: options
+                            .gemini_model
+                            .clone()
+                            .or_else(|| environment.default_gemini_model.clone()),
+                        api_key,
+                        output_dir: options.output_dir.clone(),
+                        base_filename: base_filename.clone(),
+                        transcripts_subfolder,
+                        base_url: None,
+                    };
+
+                    match crate::services::transcribe::summary::generate_summary(
+                        sum_req,
+                        token.clone(),
+                    )
+                    .await
+                    {
+                        Ok(summary_path) => {
+                            stage_outcome.transcript_files.push(summary_path);
+                        }
+                        Err(e) => {
+                            let mut state = lock(&inner.state);
+                            if let Some(item) = state.item_mut(id) {
+                                item.push_log(&format!("Summary generation warning: {e}"));
+                            }
+                        }
+                    }
+                } else {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(id) {
+                        item.push_log("Gemini API key is not configured; summary skipped.");
+                    }
+                }
+            }
+        }
+    }
 
     drop(_slot);
     inner.wake.notify_waiters();
-    outcome
+    Ok(stage_outcome)
 }
 
 /// Read the item out of the state, resolve its tools and build the job request.
@@ -2264,10 +2572,15 @@ mod tests {
                     ffprobe: None,
                     whisper: None,
                     models_dir: None,
+                    config_dir: None,
                     whisper_threads: 0,
                     skip_silence_vad: true,
                     default_whisper_model: None,
                     default_transcript_language: None,
+                    default_transcription_engine_order: None,
+                    default_gemini_model: None,
+                    default_summarize: false,
+                    default_summary_language: None,
                     runtimes: crate::services::inspect::Runtimes {
                         mode: crate::services::jsruntime::JsRuntimeMode::QuickJsOnly,
                         qjs: None,

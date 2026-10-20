@@ -4113,3 +4113,58 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: push commit to `origin/main` and verify `process-tests (macos-arm64)` on GitHub Actions.
 
+## 2026-10-20 — M6 / Subtitles-first pipeline, Gemini cloud transcription engine, map-reduce summaries, and secret storage (spec §10.1, §10.3, §10.4, §10.5)
+- Done:
+  - Subtitle downloader & cleaner (`src-tauri/src/services/transcribe/subtitles.rs`):
+    - Subtitle extraction using `yt-dlp` `--write-subs` and `--write-auto-subs` without media download.
+    - `clean_subtitles` strips WebVTT headers, timestamp tags, HTML formatting tags, and rolling auto-generated caption duplicates (both word-level and line-level overlaps).
+    - Groups text into readable paragraphs upon speech pauses >= 2.0s.
+    - Writes `<name>.txt` and timed `<name>.srt` / `<name>.vtt`.
+  - Secrets storage (`src-tauri/src/services/secrets.rs`):
+    - Integrated `keyring` v3.6 without OpenSSL (`apple-native`, `windows-native`, `sync-secret-service`, `crypto-rust`, `linux-native`).
+    - Secret resolution order: `GEMINI_API_KEY` env var -> OS Keyring -> local file fallback `<config_dir>/gemini_api_key`.
+    - On Unix, file fallback enforces strict `0600` permissions.
+    - API keys are never exposed to the frontend or printed in logs.
+  - Gemini Cloud Engine (`src-tauri/src/services/transcribe/gemini.rs`):
+    - Direct REST client using `reqwest` + `rustls-tls` without heavy Google Cloud SDKs.
+    - Audio preparation via ffmpeg transcode: 16 kHz mono Opus in an Ogg container, with fallback to MP3 or WAV.
+    - Resumable upload streamed directly from disk via Google Files API (`POST /upload/v1beta/files?uploadType=resumable` and chunked PUT).
+    - Polling for file state `ACTIVE` with exponential backoff, 10-minute timeout, and `CancellationToken` cancellation.
+    - Verbatim transcription prompt with system instructions enforcing exact transcription without commentary.
+    - RAII cleanup guard (`GeminiFileGuard`) issuing `DELETE /v1beta/files/{name}` on task completion, error, or cancellation.
+    - Automatic backoff retry on HTTP 429 quota exhaustion.
+    - Dynamic model discovery from `GET /v1beta/models`, filtering for `generateContent` capabilities, sorting `-latest` aliases first, and falling back to pinned models when offline.
+  - Summarization (`src-tauri/src/services/transcribe/summary.rs`):
+    - Map-reduce summarization for transcripts exceeding `MAX_SUMMARY_CHUNK_CHARS` (30,000 characters), splitting text along paragraph boundaries.
+    - Writes `<name>.summary.md` alongside transcript.
+  - Queue engine integration (`src-tauri/src/services/queue/engine.rs`):
+    - Engine modes: `subtitles_whisper_gemini` (default), `whisper_only`, `gemini_only`, `subtitles_only`.
+    - `item.transcript_origin` tracking (`subtitles_manual`, `subtitles_auto`, `whisper`, `gemini`).
+    - Error preservation in default pipeline: when Whisper fails (e.g. missing sidecar/model) and no Gemini key is set, the actionable Whisper error is preserved instead of being overwritten with `GeminiKeyMissing`.
+  - IPC commands (`src-tauri/src/commands/gemini.rs`):
+    - `gemini_key_get_status`, `gemini_key_save`, `gemini_key_delete`, `gemini_key_test`, `gemini_models_list`.
+  - Frontend integration:
+    - Added typed Gemini helper (`src/lib/gemini.ts`).
+    - Extended settings (`src/lib/settings.ts`) with `defaultGeminiModel`, `defaultSummarize`, `defaultSummaryLanguage`, `geminiPrivacyHintDismissed`.
+    - Extended queue items and store (`src/lib/queue.ts`, `src/lib/stores/queue.svelte.ts`, `src/lib/stores/addbar.svelte.ts`) with M6 options (`transcriptionEngine`, `geminiModel`, `summarize`, `summaryLanguage`, `transcriptOrigin`).
+    - Added UI components & controls (`src/lib/components/AddBar.svelte`, `src/lib/components/QueueItem.svelte`, `src/lib/pages/settings/TranscriptionSettings.svelte`): engine dropdown, summarize checkbox, transcript origin badge, re-transcribe actions, key management, model selector, privacy hint.
+    - Added i18n dictionary entries for all new keys in `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+  - Tests:
+    - Added 9 integration tests in `src-tauri/tests/gemini_pipeline.rs`.
+    - Added unit tests in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 393 unit + 178 integration = 571 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 13 test files, 287 passed, 0 failed.
+  - `npm run build` → dist/ built successfully.
+- Not verified / stubbed: Live Gemini API calls with real Google account (mock HTTP server used per AGENTS.md §6).
+- Spec items marked "verify" that I checked:
+  - `keyring` crate zero OpenSSL dependency checked via `cargo tree -i openssl-sys` (0 matches).
+  - Gemini Files API resumable upload endpoint: `POST https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=resumable`.
+  - Gemini models API: `GET https://generativelanguage.googleapis.com/v1beta/models`.
+- Decisions/deviations (also in DECISIONS.md): D125.
+- Next step: merge or proceed to next milestone M7.
+
+

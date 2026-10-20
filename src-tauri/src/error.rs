@@ -32,6 +32,18 @@ pub enum ErrorCode {
     WhisperMissing,
     /// Whisper model file not found on disk (spec §10.2).
     WhisperModelMissing,
+    /// Gemini API key is missing (spec §10.3, §10.5).
+    GeminiKeyMissing,
+    /// Gemini API key is invalid or unauthorized (HTTP 400/403).
+    GeminiKeyInvalid,
+    /// Gemini quota or rate limit exceeded (HTTP 429).
+    GeminiQuotaExceeded,
+    /// Gemini model not found or retired (HTTP 404).
+    GeminiModelNotFound,
+    /// Gemini blocked content generation (prompt feedback / block reason).
+    GeminiBlocked,
+    /// No subtitles found for the item (spec §10.1).
+    NoSubtitles,
 }
 
 impl ErrorCode {
@@ -50,6 +62,12 @@ impl ErrorCode {
             Self::UnknownModel => "UNKNOWN_MODEL",
             Self::WhisperMissing => "WHISPER_MISSING",
             Self::WhisperModelMissing => "WHISPER_MODEL_MISSING",
+            Self::GeminiKeyMissing => "GEMINI_KEY_MISSING",
+            Self::GeminiKeyInvalid => "GEMINI_KEY_INVALID",
+            Self::GeminiQuotaExceeded => "GEMINI_QUOTA_EXCEEDED",
+            Self::GeminiModelNotFound => "GEMINI_MODEL_NOT_FOUND",
+            Self::GeminiBlocked => "GEMINI_BLOCKED",
+            Self::NoSubtitles => "NO_SUBTITLES",
         }
     }
 
@@ -69,6 +87,12 @@ impl ErrorCode {
             Self::UnknownModel => "error.unknownModel",
             Self::WhisperMissing => "error.whisperMissing",
             Self::WhisperModelMissing => "error.whisperModelMissing",
+            Self::GeminiKeyMissing => "error.geminiKeyMissing",
+            Self::GeminiKeyInvalid => "error.geminiKeyInvalid",
+            Self::GeminiQuotaExceeded => "error.geminiQuotaExceeded",
+            Self::GeminiModelNotFound => "error.geminiModelNotFound",
+            Self::GeminiBlocked => "error.geminiBlocked",
+            Self::NoSubtitles => "error.noSubtitles",
         }
     }
 }
@@ -145,6 +169,24 @@ pub enum AppError {
 
     #[error("Whisper model '{0}' is not installed.")]
     WhisperModelMissing(String),
+
+    #[error("Gemini API key is not configured.")]
+    GeminiKeyMissing,
+
+    #[error("Gemini API key is invalid or unauthorized: {0}")]
+    GeminiKeyInvalid(String),
+
+    #[error("Gemini API quota or rate limit exceeded: {0}")]
+    GeminiQuotaExceeded(String),
+
+    #[error("Gemini model '{0}' was not found or is no longer available.")]
+    GeminiModelNotFound(String),
+
+    #[error("Gemini generation blocked: {0}")]
+    GeminiBlocked(String),
+
+    #[error("No subtitles found for requested languages.")]
+    NoSubtitles,
 }
 
 impl AppError {
@@ -163,6 +205,12 @@ impl AppError {
             Self::UnknownModel(_) => ErrorCode::UnknownModel,
             Self::WhisperMissing => ErrorCode::WhisperMissing,
             Self::WhisperModelMissing(_) => ErrorCode::WhisperModelMissing,
+            Self::GeminiKeyMissing => ErrorCode::GeminiKeyMissing,
+            Self::GeminiKeyInvalid(_) => ErrorCode::GeminiKeyInvalid,
+            Self::GeminiQuotaExceeded(_) => ErrorCode::GeminiQuotaExceeded,
+            Self::GeminiModelNotFound(_) => ErrorCode::GeminiModelNotFound,
+            Self::GeminiBlocked(_) => ErrorCode::GeminiBlocked,
+            Self::NoSubtitles => ErrorCode::NoSubtitles,
         }
     }
 
@@ -200,7 +248,7 @@ mod tests {
     use super::*;
 
     /// Every code, so a new one has to be added here and looked at.
-    const CODES: [ErrorCode; 13] = [
+    const CODES: [ErrorCode; 19] = [
         ErrorCode::Io,
         ErrorCode::Json,
         ErrorCode::Tauri,
@@ -214,6 +262,12 @@ mod tests {
         ErrorCode::UnknownModel,
         ErrorCode::WhisperMissing,
         ErrorCode::WhisperModelMissing,
+        ErrorCode::GeminiKeyMissing,
+        ErrorCode::GeminiKeyInvalid,
+        ErrorCode::GeminiQuotaExceeded,
+        ErrorCode::GeminiModelNotFound,
+        ErrorCode::GeminiBlocked,
+        ErrorCode::NoSubtitles,
     ];
 
     #[test]

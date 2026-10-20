@@ -77,10 +77,17 @@ impl<R: Runtime> ToolProvider for AppToolProvider<R> {
                 ffprobe: tools.ffprobe,
                 whisper: tools.whisper,
                 models_dir: Some(state.models_dir()),
+                config_dir: state.settings_path().parent().map(|p| p.to_path_buf()),
                 whisper_threads: settings.whisper_threads,
                 skip_silence_vad: settings.skip_silence_vad,
                 default_whisper_model: settings.active_whisper_model.clone(),
                 default_transcript_language: Some(settings.default_transcript_language.clone()),
+                default_transcription_engine_order: Some(
+                    settings.transcription_engine_order.clone(),
+                ),
+                default_gemini_model: Some(settings.default_gemini_model.clone()),
+                default_summarize: settings.default_summarize,
+                default_summary_language: Some(settings.default_summary_language.clone()),
                 runtimes: tools.runtimes,
                 memory: state.runtime_memory().clone(),
                 private_temp: tools.private_temp,
@@ -190,6 +197,14 @@ pub struct AddItemRequest {
     pub translate_to_english: Option<bool>,
     #[serde(default)]
     pub transcripts_subfolder: Option<bool>,
+    #[serde(default)]
+    pub transcription_engine: Option<String>,
+    #[serde(default)]
+    pub gemini_model: Option<String>,
+    #[serde(default)]
+    pub summarize: Option<bool>,
+    #[serde(default)]
+    pub summary_language: Option<String>,
 }
 
 fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -459,6 +474,16 @@ pub async fn queue_add<R: Runtime>(
             transcripts_subfolder: item
                 .transcripts_subfolder
                 .or(Some(settings.transcripts_subfolder)),
+            transcription_engine: item
+                .transcription_engine
+                .or_else(|| Some(settings.transcription_engine_order.clone())),
+            gemini_model: item
+                .gemini_model
+                .or_else(|| Some(settings.default_gemini_model.clone())),
+            summarize: item.summarize.or(Some(settings.default_summarize)),
+            summary_language: item
+                .summary_language
+                .or_else(|| Some(settings.default_summary_language.clone())),
         };
 
         requests.push(AddRequest {
@@ -654,7 +679,8 @@ pub fn app_set_language(state: State<'_, AppState>, lang: String) -> AppResult<(
     Ok(())
 }
 
-/// Transcribe an existing queue item with a finished media file (spec §10.2, §11.5).
+/// Transcribe an existing queue item with a finished media file (spec §10.1, §10.2, §10.3, §11.5).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn queue_transcribe_item(
     state: State<'_, AppState>,
@@ -663,6 +689,10 @@ pub fn queue_transcribe_item(
     transcript_language: Option<String>,
     translate_to_english: Option<bool>,
     transcripts_subfolder: Option<bool>,
+    transcription_engine: Option<String>,
+    gemini_model: Option<String>,
+    summarize: Option<bool>,
+    summary_language: Option<String>,
 ) -> AppResult<bool> {
     let outcome = state.require_queue()?.transcribe_item(
         &id,
@@ -670,11 +700,16 @@ pub fn queue_transcribe_item(
         transcript_language,
         translate_to_english,
         transcripts_subfolder,
+        transcription_engine,
+        gemini_model,
+        summarize,
+        summary_language,
     );
     Ok(outcome == Outcome::Ok)
 }
 
-/// Add a local media file to the queue for Whisper transcription (spec §10.2, §11.5).
+/// Add a local media file to the queue for transcription (spec §10.2, §11.5).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn queue_add_local_file(
     state: State<'_, AppState>,
@@ -683,6 +718,10 @@ pub async fn queue_add_local_file(
     transcript_language: Option<String>,
     translate_to_english: Option<bool>,
     transcripts_subfolder: Option<bool>,
+    transcription_engine: Option<String>,
+    gemini_model: Option<String>,
+    summarize: Option<bool>,
+    summary_language: Option<String>,
 ) -> AppResult<String> {
     let file_path = PathBuf::from(&path);
     if !file_path.is_file() {
@@ -764,6 +803,12 @@ pub async fn queue_add_local_file(
             .or_else(|| Some(settings.default_transcript_language.clone())),
         translate_to_english: translate_to_english.or(Some(settings.whisper_translate_to_english)),
         transcripts_subfolder: transcripts_subfolder.or(Some(settings.transcripts_subfolder)),
+        transcription_engine: transcription_engine
+            .or_else(|| Some(settings.transcription_engine_order.clone())),
+        gemini_model: gemini_model.or_else(|| Some(settings.default_gemini_model.clone())),
+        summarize: summarize.or(Some(settings.default_summarize)),
+        summary_language: summary_language
+            .or_else(|| Some(settings.default_summary_language.clone())),
     };
 
     let req = AddRequest {

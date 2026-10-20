@@ -274,6 +274,14 @@ pub struct Settings {
     pub transcription_engine_order: String,
     /// Spec §10, §11.6: Put transcript outputs in a `transcripts/` subfolder (default `false`).
     pub transcripts_subfolder: bool,
+    /// Spec §10.3, §11.6: Selected default Gemini model (default `gemini-flash-latest`).
+    pub default_gemini_model: String,
+    /// Spec §10.4, §11.6: Default summarize toggle (default `false`).
+    pub default_summarize: bool,
+    /// Spec §10.4, §11.6: Default summary language (`"auto"` by default).
+    pub default_summary_language: String,
+    /// Spec §10.4: Whether the cost/privacy hint for Gemini has been dismissed.
+    pub gemini_privacy_hint_dismissed: bool,
 }
 
 impl Default for Settings {
@@ -326,6 +334,10 @@ impl Default for Settings {
             default_transcript_language: "auto".to_owned(),
             transcription_engine_order: "subtitles_whisper_gemini".to_owned(),
             transcripts_subfolder: false,
+            default_gemini_model: "gemini-flash-latest".to_owned(),
+            default_summarize: false,
+            default_summary_language: "auto".to_owned(),
+            gemini_privacy_hint_dismissed: false,
         }
     }
 }
@@ -409,6 +421,12 @@ impl Settings {
         match self.transcription_engine_order.as_str() {
             "subtitles_whisper_gemini" | "whisper_only" | "gemini_only" | "subtitles_only" => {}
             _ => self.transcription_engine_order = "subtitles_whisper_gemini".to_owned(),
+        }
+        if self.default_gemini_model.trim().is_empty() {
+            self.default_gemini_model = "gemini-flash-latest".to_owned();
+        }
+        if self.default_summary_language.trim().is_empty() {
+            self.default_summary_language = "auto".to_owned();
         }
         self.whisper_threads = self.whisper_threads.min(128);
     }

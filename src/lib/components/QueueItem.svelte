@@ -187,6 +187,22 @@
     setTimeout(() => (copied = false), 1500);
   }
 
+  async function retranscribe(engine: "whisper_only" | "gemini_only"): Promise<void> {
+    await queueStore.transcribeItem(item.id, {
+      transcriptionEngine: engine,
+      whisperModel: settingsStore.settings.activeWhisperModel ?? undefined,
+      transcriptLanguage:
+        settingsStore.settings.defaultTranscriptLanguage !== "auto"
+          ? settingsStore.settings.defaultTranscriptLanguage
+          : undefined,
+      summarize: settingsStore.settings.defaultSummarize,
+      summaryLanguage:
+        settingsStore.settings.defaultSummaryLanguage !== "auto"
+          ? settingsStore.settings.defaultSummaryLanguage
+          : undefined,
+    });
+  }
+
   /** Drag and drop to reorder (spec §7.3), pointer-free on touch. */
   function onDragStart(event: DragEvent): void {
     const target = event.target as HTMLElement | null;
@@ -446,6 +462,22 @@
           <dt>{tt("queue.item.size")}</dt>
           <dd>{size}</dd>
         {/if}
+        {#if item.transcriptOrigin !== null}
+          <dt>{tt("queue.item.transcriptOrigin")}</dt>
+          <dd>
+            <span class="item__origin-badge">
+              {item.transcriptOrigin === "subtitles_manual"
+                ? tt("queue.origin.subtitlesManual")
+                : item.transcriptOrigin === "subtitles_auto"
+                  ? tt("queue.origin.subtitlesAuto")
+                  : item.transcriptOrigin === "whisper"
+                    ? tt("queue.origin.whisper")
+                    : item.transcriptOrigin === "gemini"
+                      ? tt("queue.origin.gemini")
+                      : item.transcriptOrigin}
+            </span>
+          </dd>
+        {/if}
         {#if item.transcriptFiles.length > 0}
           <dt>{tt("transcribe.outputFiles")}</dt>
           <dd class="item__transcripts">
@@ -484,6 +516,22 @@
       {/if}
 
       <div class="item__details-actions">
+        {#if item.file !== null && item.state === "done"}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void retranscribe("whisper_only")}
+          >
+            {tt("queue.action.retranscribeWhisper")}
+          </button>
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void retranscribe("gemini_only")}
+          >
+            {tt("queue.action.retranscribeGemini")}
+          </button>
+        {/if}
         <button type="button" class="btn btn--small" onclick={() => void copyDetails()}>
           {#if copied}{tt("queue.copied")}{:else}{tt("queue.copyDetails")}{/if}
         </button>
@@ -733,6 +781,17 @@
 
   .item__path {
     font-family: var(--font-mono);
+  }
+
+  .item__origin-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
   }
 
   .item__log-label {
