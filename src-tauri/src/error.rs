@@ -44,6 +44,8 @@ pub enum ErrorCode {
     GeminiBlocked,
     /// No subtitles found for the item (spec §10.1).
     NoSubtitles,
+    /// In-app update check or install failed (spec §13.4).
+    Update,
 }
 
 impl ErrorCode {
@@ -68,6 +70,7 @@ impl ErrorCode {
             Self::GeminiModelNotFound => "GEMINI_MODEL_NOT_FOUND",
             Self::GeminiBlocked => "GEMINI_BLOCKED",
             Self::NoSubtitles => "NO_SUBTITLES",
+            Self::Update => "UPDATE",
         }
     }
 
@@ -93,6 +96,7 @@ impl ErrorCode {
             Self::GeminiModelNotFound => "error.geminiModelNotFound",
             Self::GeminiBlocked => "error.geminiBlocked",
             Self::NoSubtitles => "error.noSubtitles",
+            Self::Update => "error.update",
         }
     }
 }
@@ -189,6 +193,9 @@ pub enum AppError {
 
     #[error("No subtitles found for requested languages.")]
     NoSubtitles,
+
+    #[error("update failed: {0}")]
+    Update(String),
 }
 
 impl AppError {
@@ -213,6 +220,7 @@ impl AppError {
             Self::GeminiModelNotFound(_) => ErrorCode::GeminiModelNotFound,
             Self::GeminiBlocked(_) => ErrorCode::GeminiBlocked,
             Self::NoSubtitles => ErrorCode::NoSubtitles,
+            Self::Update(_) => ErrorCode::Update,
         }
     }
 

@@ -196,6 +196,8 @@ describe.skipIf(process.platform === "win32")(
       "Scaricatore Di Porto_0.1.0_amd64.AppImage.tar.gz",
       "Scaricatore Di Porto_0.1.0_amd64.AppImage.tar.gz.sig",
       "macos-universal-Scaricatore Di Porto.app.zip",
+      "Scaricatore Di Porto.app.tar.gz",
+      "Scaricatore Di Porto.app.tar.gz.sig",
       "Scaricatore Di Porto_0.1.0_aarch64.dmg",
       "Scaricatore Di Porto_0.1.0_x64-setup.exe",
       "SHA256SUMS",
@@ -259,6 +261,50 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+describe("the updater wiring in ci.yml (spec §13.4)", () => {
+  const yaml = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+
+  /** The YAML of one step, from its `- name:` to the next step. */
+  function step(name) {
+    const at = yaml.indexOf(`- name: ${name}`);
+    if (at === -1) throw new Error(`ci.yml has no step called "${name}"`);
+    const next = yaml.indexOf("- name:", at + 1);
+    return yaml.slice(at, next === -1 ? undefined : next);
+  }
+
+  it("signs both the native and the universal build", () => {
+    for (const name of ["Build the bundle", "Build the universal bundle"]) {
+      const block = step(name);
+      expect(block, name).toContain("TAURI_SIGNING_PRIVATE_KEY");
+      expect(block, name).toContain("TAURI_SIGNING_PRIVATE_KEY_PASSWORD");
+    }
+  });
+
+  it("fails early when the signing key is not configured", () => {
+    expect(yaml.match(/- name: Check the updater signing key/g)).toHaveLength(2);
+  });
+
+  it("uploads the Windows and macOS signatures", () => {
+    expect(step("Upload the bundle")).toContain("nsis/*.exe*");
+    expect(step("Upload the universal bundle")).toContain("macos/*.app.tar.gz*");
+  });
+
+  it("generates latest.json before creating the draft release", () => {
+    const generate = yaml.indexOf("- name: Generate the updater manifest");
+    const release = yaml.indexOf("- name: Create the draft release");
+    expect(generate).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(generate);
+    expect(step("Generate the updater manifest")).toContain(
+      "node scripts/generate-latest-json.mjs --assets assets",
+    );
+  });
+
+  it("checks out the repository so the generator can run", () => {
+    const releaseJob = yaml.slice(yaml.indexOf("  release:"));
+    expect(releaseJob).toContain("actions/checkout@v7");
+  });
+});
 
 describe("the Whisper sidecar CI workflow (.github/workflows/whisper-sidecar.yml)", () => {
   const WORKFLOW_PATH = join(REPO_ROOT, ".github", "workflows", "whisper-sidecar.yml");

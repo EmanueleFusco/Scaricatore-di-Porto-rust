@@ -14,6 +14,7 @@
   import { router } from "$lib/router.svelte";
   import { isTypingTarget, shortcutAction } from "$lib/shortcuts";
   import { isTauriRuntime, settingsStore, tt, activeLang } from "$lib/stores/settings.svelte";
+  import { aboutStore } from "$lib/stores/about.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { themeStore } from "$lib/stores/theme.svelte";
@@ -48,6 +49,9 @@
         wizardOpen = true;
       }
       void toolsStore.refresh();
+      // The About tab and the once-a-day update check need the build info;
+      // the check is silent and never installs anything by itself.
+      void aboutStore.init().then(() => aboutStore.maybeDailyCheck());
       // Spec §11.9: the backend needs the resolved language for the system
       // notification (spec §7.7), and the webview is the only place that can
       // resolve "System" against `navigator.languages`. Sent after the settings

@@ -1,6 +1,12 @@
 //! Scaricatore Di Porto — Tauri builder, plugins and process lifetime
 //! (spec §3 `main.rs / lib.rs`).
 
+// Raising `rust-version` to 1.90 for tauri-plugin-updater switched on Clippy's
+// let-chain rewrite for every nested `if let` in the tree. Those rewrites are
+// unrelated to the update feature and would bury it in churn; the lint stays
+// off until a dedicated cleanup.
+#![allow(clippy::collapsible_if)]
+
 pub mod commands;
 pub mod error;
 pub mod services;
@@ -54,9 +60,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Spec §7.7: the notification when the queue becomes idle.
         .plugin(tauri_plugin_notification::init())
+        // Spec §13.4: signed in-app updates, endpoint and public key in
+        // `tauri.conf.json`. The private key never exists in the repository.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Relaunch after an update, from the webview.
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let state = AppState::load(&handle)?;
+            crate::services::logging::append_line(
+                &handle,
+                "INFO",
+                &format!("app started, version {}", handle.package_info().version),
+            );
             // Spec §5.2.1: copy the bundled yt-dlp into the app data dir on
             // first launch, so the copy is the thing that runs and the thing
             // `-U` can replace. Best effort: without it the app still works on
@@ -97,6 +113,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app::app_info,
+            commands::app::app_update_check,
+            commands::app::app_update_install,
+            commands::app::app_diagnostics,
+            commands::app::app_open_logs,
             commands::settings::settings_get,
             commands::settings::settings_save,
             commands::settings::archive_status,

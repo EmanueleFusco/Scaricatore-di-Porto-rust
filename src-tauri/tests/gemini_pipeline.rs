@@ -13,6 +13,8 @@
 //! - Text-only summary with map-reduce for long transcripts.
 //! - Queue engine transcript origin tracking and engine ordering.
 
+#![allow(clippy::collapsible_if)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};

@@ -7,6 +7,7 @@
    * tab is a real `href`, so the keyboard, middle-click and "open in new tab"
    * keep working (spec §11.9).
    */
+  import AboutPage from "$lib/pages/settings/AboutPage.svelte";
   import GeneralSettings from "$lib/pages/settings/GeneralSettings.svelte";
   import NetworkSettings from "$lib/pages/settings/NetworkSettings.svelte";
   import TranscriptionSettings from "$lib/pages/settings/TranscriptionSettings.svelte";
@@ -19,6 +20,7 @@
     { href: "/settings/transcription", key: "settings.tab.transcription", exact: false },
     { href: "/settings/tools", key: "settings.tab.tools", exact: false },
     { href: "/settings/network", key: "settings.tab.network", exact: false },
+    { href: "/settings/about", key: "settings.tab.about", exact: false },
   ];
 </script>
 
@@ -50,6 +52,8 @@
     <TranscriptionSettings />
   {:else if router.isActive("/settings/network")}
     <NetworkSettings />
+  {:else if router.isActive("/settings/about")}
+    <AboutPage />
   {:else}
     <GeneralSettings />
   {/if}

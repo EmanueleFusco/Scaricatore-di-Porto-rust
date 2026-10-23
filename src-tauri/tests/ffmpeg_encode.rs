@@ -7,6 +7,8 @@
 //! - Trim parsing, validation, and expected duration calculation
 //! - Progress tracking with `-progress pipe:1`
 
+#![allow(clippy::collapsible_if)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

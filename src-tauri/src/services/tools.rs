@@ -69,6 +69,10 @@ pub enum ToolSource {
     /// 3. Shipped in the installer, next to the app binary.
     Bundled,
     /// 4. Found on the inherited `PATH`.
+    ///
+    /// The frontend calls this source `path`, so the serialized name must not
+    /// follow the camelCase rename of the other variants.
+    #[serde(rename = "path")]
     PathEnv,
     /// 5. A well-known install location.
     WellKnown,
@@ -1721,6 +1725,22 @@ mod tests {
             (ToolSource::WellKnown, "wellKnown"),
         ] {
             assert_eq!(source.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn tool_sources_serialize_with_the_names_the_ui_expects() {
+        // `ToolSource` is camelCased as a whole, which would turn `PathEnv`
+        // into `pathEnv`; the frontend switches on `path`.
+        for (source, expected) in [
+            (ToolSource::Override, "override"),
+            (ToolSource::AppData, "appData"),
+            (ToolSource::Bundled, "bundled"),
+            (ToolSource::PathEnv, "path"),
+            (ToolSource::WellKnown, "wellKnown"),
+        ] {
+            let value = serde_json::to_value(source).expect("serialize a tool source");
+            assert_eq!(value, serde_json::json!(expected));
         }
     }
 

@@ -36,6 +36,8 @@
 //! tool on any of the three OSes — and it is why the lookup tests never need a
 //! shell script.
 
+#![allow(clippy::collapsible_if)]
+
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};

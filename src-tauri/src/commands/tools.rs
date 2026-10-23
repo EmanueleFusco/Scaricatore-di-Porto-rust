@@ -49,8 +49,10 @@ fn tool_names(context: &crate::state::ToolContext) -> Vec<String> {
 }
 
 /// Resolve every tool and report on it.
-#[tauri::command]
-pub async fn tools_status(state: State<'_, AppState>) -> AppResult<ToolsView> {
+///
+/// Shared with `app_diagnostics` (spec §11.8): both need the same truth about
+/// the tools, and two copies would eventually disagree.
+pub(crate) async fn collect_tools_view(state: &AppState) -> AppResult<ToolsView> {
     let context = state.tools();
     let settings = state.settings();
     let mut rows = Vec::new();
@@ -78,6 +80,12 @@ pub async fn tools_status(state: State<'_, AppState>) -> AppResult<ToolsView> {
         temp_dir: context.temp_dir().map(|dir| dir.display().to_string()),
         setup_wizard_completed: settings.setup_wizard_completed,
     })
+}
+
+/// Resolve every tool and report on it.
+#[tauri::command]
+pub async fn tools_status(state: State<'_, AppState>) -> AppResult<ToolsView> {
+    collect_tools_view(&state).await
 }
 
 /// Status of one tool, for the "Test" button (spec §11.8).

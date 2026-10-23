@@ -1,5 +1,6 @@
 //! IPC command handlers (spec §3). Thin: validate, call a service, answer.
 
+pub mod app;
 pub mod download;
 pub mod env;
 pub mod gemini;
