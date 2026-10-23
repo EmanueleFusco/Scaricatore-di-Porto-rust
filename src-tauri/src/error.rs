@@ -179,7 +179,9 @@ pub enum AppError {
     #[error("Gemini API quota or rate limit exceeded: {0}")]
     GeminiQuotaExceeded(String),
 
-    #[error("Gemini model '{0}' was not found or is no longer available.")]
+    #[error(
+        "Model '{0}' is no longer available on Gemini. Select another model (for example gemini-flash-latest) in Settings → Transcription."
+    )]
     GeminiModelNotFound(String),
 
     #[error("Gemini generation blocked: {0}")]
@@ -269,6 +271,15 @@ mod tests {
         ErrorCode::GeminiBlocked,
         ErrorCode::NoSubtitles,
     ];
+
+    #[test]
+    fn gemini_model_not_found_message_format() {
+        let err = AppError::GeminiModelNotFound("gemini-2.5-flash".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Model 'gemini-2.5-flash' is no longer available on Gemini. Select another model (for example gemini-flash-latest) in Settings → Transcription."
+        );
+    }
 
     #[test]
     fn error_info_carries_code_key_and_detail() {

@@ -51,6 +51,8 @@
   type AddMode = "download" | "queue";
 
   let busy = $state<"" | "checking" | "adding">("");
+  let pendingGeminiMode = $state<AddMode | null>(null);
+  let pendingLocalFilePath = $state<string | null>(null);
   /** The row whose link was just copied, so only that button says so. */
   let copiedKey = $state<string | null>(null);
   let pasteBlocked = $state(false);
@@ -137,8 +139,28 @@
       ],
     });
     if (typeof picked === "string") {
+      const engine = settingsStore.settings.transcriptionEngineOrder;
+      const usesGemini =
+        !settingsStore.settings.geminiPrivacyHintDismissed &&
+        (engine === "gemini_only" ||
+          engine === "subtitles_whisper_gemini" ||
+          settingsStore.settings.defaultSummarize);
+      if (usesGemini) {
+        pendingLocalFilePath = picked;
+        return;
+      }
       await queueStore.addLocalFile(picked);
     }
+  }
+
+  function requestUsesGemini(req: ReturnType<typeof addBarStore.toRequests>[number]): boolean {
+    if (!req.transcribe) return false;
+    const engine = req.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder;
+    return (
+      engine === "gemini_only" ||
+      engine === "subtitles_whisper_gemini" ||
+      req.summarize === true
+    );
   }
 
   /**
@@ -161,6 +183,22 @@
     const requests = addBarStore.toRequests();
     if (requests.length === 0) return;
 
+    if (
+      !settingsStore.settings.geminiPrivacyHintDismissed &&
+      requests.some(requestUsesGemini)
+    ) {
+      pendingGeminiMode = mode;
+      return;
+    }
+
+    await performAddAll(mode, requests);
+  }
+
+  async function performAddAll(
+    mode: AddMode,
+    requests = addBarStore.toRequests(),
+  ): Promise<void> {
+    if (requests.length === 0) return;
     busy = "adding";
     try {
       const result = await queueStore.add(requests);
@@ -173,6 +211,24 @@
     } finally {
       busy = "";
     }
+  }
+
+  async function confirmGeminiPrivacyNotice(): Promise<void> {
+    const mode = pendingGeminiMode;
+    const localPath = pendingLocalFilePath;
+    pendingGeminiMode = null;
+    pendingLocalFilePath = null;
+    await settingsStore.update({ geminiPrivacyHintDismissed: true });
+    if (localPath !== null) {
+      await queueStore.addLocalFile(localPath);
+    } else if (mode !== null) {
+      await performAddAll(mode);
+    }
+  }
+
+  function cancelGeminiPrivacyNotice(): void {
+    pendingGeminiMode = null;
+    pendingLocalFilePath = null;
   }
 
   async function addAnyway(): Promise<void> {
@@ -876,6 +932,9 @@
                         <option value="gemini_only">{tt("transcription.engine.geminiOnly")}</option>
                         <option value="subtitles_only">{tt("transcription.engine.subtitlesOnly")}</option>
                       </select>
+                      {#if (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "gemini_only" || (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "subtitles_whisper_gemini"}
+                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+                      {/if}
                     </div>
 
                     <label class="add__check">
@@ -887,6 +946,24 @@
                       />
                       {tt("addbar.summarize")}
                     </label>
+                    {#if row.summarize}
+                      <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+                    {/if}
+                    {#if !settingsStore.settings.geminiPrivacyHintDismissed && ((row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "gemini_only" || (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "subtitles_whisper_gemini" || row.summarize)}
+                      <div class="add__duplicates" role="status">
+                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+                        <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+                        <div class="add__actions">
+                          <button
+                            type="button"
+                            class="btn btn--small"
+                            onclick={() => void settingsStore.update({ geminiPrivacyHintDismissed: true })}
+                          >
+                            {tt("common.dismiss")}
+                          </button>
+                        </div>
+                      </div>
+                    {/if}
                   {/if}
                 </div>
 
@@ -941,6 +1018,21 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if pendingGeminiMode !== null || pendingLocalFilePath !== null}
+    <div class="add__duplicates" role="alert">
+      <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+      <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+      <div class="add__actions">
+        <button type="button" class="btn btn--primary" onclick={() => void confirmGeminiPrivacyNotice()}>
+          {tt("common.confirm")}
+        </button>
+        <button type="button" class="btn" onclick={cancelGeminiPrivacyNotice}>
+          {tt("common.cancel")}
+        </button>
+      </div>
+    </div>
   {/if}
 
   {#if duplicates.length > 0}

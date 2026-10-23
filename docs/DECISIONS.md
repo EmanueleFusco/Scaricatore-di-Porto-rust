@@ -3379,7 +3379,7 @@ Phase M6 implements subtitles-first transcript extraction, the Gemini cloud tran
    - Priority: `GEMINI_API_KEY` environment variable -> OS Keyring (`service = "scaricatore-di-porto"`, `user = "gemini_api_key"`) -> local file fallback.
    - On Linux systems where the D-Bus Secret Service daemon is unavailable (minimal window managers, headless CI, or containerized environments), falls back to `<app_config_dir>/gemini_api_key`.
    - On Unix, the fallback file is created with strict `0600` permissions (`libc::S_IRUSR | libc::S_IWUSR`) using `OpenOptionsExt::mode(0o600)`.
-   - The key is never transmitted to the frontend or written to logs; IPC only exposes key presence, storage target, and masked prefix/suffix.
+   - The key is never transmitted to the frontend or written to logs; IPC only exposes key presence and storage target (`has_key`, `source`).
 
 3. **Subtitle downloader and cleaner (spec §10.1)**:
    - Uses `yt-dlp --write-subs --write-auto-subs --skip-download` to retrieve manual or automatic subtitles.
@@ -3390,14 +3390,14 @@ Phase M6 implements subtitles-first transcript extraction, the Gemini cloud tran
 4. **Gemini Cloud Engine REST client (spec §10.3)**:
    - Lightweight implementation over `reqwest` + `rustls-tls` without heavy Google Cloud SDKs.
    - Audio preparation via ffmpeg transcode: 16 kHz mono Opus in an Ogg container (`-c:a libopus -b:a 24k -ar 16000 -ac 1`), with fallback to MP3 or WAV if Opus encoding is unavailable.
-   - Audio upload uses Google Files API Resumable Upload protocol streamed directly from disk (`POST /upload/v1beta/files?uploadType=resumable` followed by chunked PUT), avoiding high RAM usage on large audio files.
+   - Audio upload uses Google Files API Resumable Upload protocol streamed directly from disk (`POST /upload/v1beta/files` followed by streaming `POST` to upload URL), avoiding high RAM usage on large audio files.
    - Polls for file state `ACTIVE` with exponential backoff, 10-minute timeout, and `CancellationToken` cancellation.
    - RAII cleanup guard (`GeminiFileGuard`): issues `DELETE /v1beta/files/{name}` on task completion, error, or cancellation to avoid leaving orphaned media files on user quotas.
    - Automatic backoff retry on HTTP 429 quota exhaustion.
    - Dynamic model discovery from `GET /v1beta/models`, filtering for `generateContent` capabilities, sorting `-latest` aliases first, and falling back to pinned models when offline.
 
 5. **Map-reduce summarization (spec §10.4)**:
-   - For long transcripts exceeding `MAX_SUMMARY_CHUNK_CHARS` (30,000 characters), splits text along paragraph boundaries and summarizes individual sections before combining them in a final reduction pass.
+   - For long transcripts exceeding `MAX_SUMMARY_CHUNK_CHARS` (50,000 characters), splits text along paragraph boundaries and summarizes individual sections before combining them in a final reduction pass.
    - Produces `<name>.summary.md` alongside `<name>.txt` transcript.
 
 6. **Pipeline orchestration and error preservation (spec §10, §7)**:

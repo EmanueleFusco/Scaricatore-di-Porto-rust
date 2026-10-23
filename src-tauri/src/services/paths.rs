@@ -6,6 +6,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub use crate::services::models::free_disk_space;
+
 use tauri::{AppHandle, Manager};
 
 /// Distinguishes the temp files of two concurrent writes of the same

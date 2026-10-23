@@ -223,6 +223,10 @@ impl crate::services::queue::engine::IdleNotifier for IdleNotifier {
         let builder = self.app.notification().builder().title(title).body(body);
         let _ = builder.show();
     }
+
+    fn ui_language(&self) -> Option<String> {
+        Some(self.lang.get().as_str().to_string())
+    }
 }
 
 #[cfg(test)]

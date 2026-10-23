@@ -22,15 +22,13 @@
   import { open } from "@tauri-apps/plugin-dialog";
 
   import {
-    FALLBACK_GEMINI_MODELS,
     deleteGeminiKey,
+    geminiModelsStore,
     getGeminiKeyStatus,
-    listGeminiModels,
     saveGeminiKey,
     testGeminiKey,
     type GeminiKeyStatus,
-    type GeminiModelInfo,
-  } from "$lib/gemini";
+  } from "$lib/gemini.svelte";
   import { filterModels, formatBytes, formatWer, isLargeDownload, type ModelViewItem } from "$lib/models";
   import { modelsStore } from "$lib/stores/models.svelte";
   import { settingsStore, tt } from "$lib/stores/settings.svelte";
@@ -41,8 +39,6 @@
   let testingGeminiKey = $state(false);
   let geminiTestSuccess = $state<boolean | null>(null);
   let geminiTestMessage = $state<string | null>(null);
-  let geminiModels = $state<GeminiModelInfo[]>(FALLBACK_GEMINI_MODELS);
-  let loadingGeminiModels = $state(false);
 
   async function refreshGeminiStatus(): Promise<void> {
     try {
@@ -53,17 +49,7 @@
   }
 
   async function refreshGeminiModels(): Promise<void> {
-    loadingGeminiModels = true;
-    try {
-      const list = await listGeminiModels();
-      if (list && list.length > 0) {
-        geminiModels = list;
-      }
-    } catch {
-      // Keep existing or fallback models
-    } finally {
-      loadingGeminiModels = false;
-    }
+    await geminiModelsStore.refresh();
   }
 
   async function handleSaveGeminiKey(): Promise<void> {
@@ -115,8 +101,10 @@
   }
 
   function onGeminiModelChange(event: Event): void {
-    const value = (event.currentTarget as HTMLSelectElement).value;
-    void settingsStore.update({ defaultGeminiModel: value });
+    const value = (event.currentTarget as HTMLInputElement).value.trim();
+    if (value) {
+      void settingsStore.update({ defaultGeminiModel: value });
+    }
   }
 
   function onDefaultSummarizeChange(event: Event): void {
@@ -661,6 +649,12 @@
       <p>{tt("transcription.gemini.privacyNotice")}</p>
     </div>
 
+    {#if geminiStatus?.hasKey && geminiStatus.source === "file"}
+      <div class="banner banner--info" role="note">
+        <p>{tt("transcription.gemini.keyringFallbackNote")}</p>
+      </div>
+    {/if}
+
     <!-- API Key Input & Actions -->
     <div class="field">
       <label class="field__label" for="setting-gemini-key">
@@ -681,7 +675,9 @@
             type="button"
             class="btn-icon"
             onclick={() => (showGeminiKey = !showGeminiKey)}
-            aria-label={showGeminiKey ? "Hide key" : "Show key"}
+            aria-label={showGeminiKey
+              ? tt("transcription.gemini.hideKey")
+              : tt("transcription.gemini.showKey")}
           >
             {#if showGeminiKey}
               <EyeOffIcon size={16} aria-hidden="true" />
@@ -741,28 +737,31 @@
         <button
           type="button"
           class="btn btn--ghost btn--sm"
-          disabled={loadingGeminiModels || !geminiStatus?.hasKey}
+          disabled={geminiModelsStore.loading || !geminiStatus?.hasKey}
           onclick={refreshGeminiModels}
           aria-label={tt("transcription.gemini.refreshModels")}
         >
-          <RefreshCwIcon size={14} class={loadingGeminiModels ? "spin" : ""} aria-hidden="true" />
+          <RefreshCwIcon size={14} class={geminiModelsStore.loading ? "spin" : ""} aria-hidden="true" />
           {tt("transcription.gemini.refreshModels")}
         </button>
       </div>
 
-      <div class="model-select-wrapper">
-        <select
+      <div class="model-combobox-wrapper">
+        <input
           id="setting-gemini-model"
-          class="select"
+          type="text"
+          class="input"
+          list="gemini-models-list"
           value={settingsStore.settings.defaultGeminiModel}
           onchange={onGeminiModelChange}
-        >
-          {#each geminiModels as model (model.id)}
-            <option value={model.id}>
-              {model.displayName} ({model.id})
-            </option>
+          placeholder="gemini-flash-latest"
+          autocomplete="off"
+        />
+        <datalist id="gemini-models-list">
+          {#each geminiModelsStore.models as model (model.id)}
+            <option value={model.id}>{model.displayName} ({model.id})</option>
           {/each}
-        </select>
+        </datalist>
       </div>
       <p class="field__hint">{tt("transcription.gemini.modelHint")}</p>
     </div>
@@ -778,6 +777,7 @@
         <div class="toggle-item__text">
           <span class="toggle-item__title">{tt("transcription.gemini.defaultSummarize")}</span>
           <span class="toggle-item__hint">{tt("transcription.gemini.defaultSummarizeHint")}</span>
+          <span class="toggle-item__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</span>
         </div>
       </label>
     </div>

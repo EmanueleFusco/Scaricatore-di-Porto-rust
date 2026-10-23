@@ -3,7 +3,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-export type KeySource = "environment" | "keyring" | "file";
+export type KeySource = "environment" | "keyring" | "file" | "none";
 
 export interface GeminiKeyStatus {
   hasKey: boolean;
@@ -48,3 +48,25 @@ export async function testGeminiKey(key?: string): Promise<boolean> {
 export async function listGeminiModels(): Promise<GeminiModelInfo[]> {
   return await invoke<GeminiModelInfo[]>("gemini_models_list");
 }
+
+class GeminiModelsStore {
+  models = $state<GeminiModelInfo[]>(FALLBACK_GEMINI_MODELS);
+  loading = $state(false);
+
+  async refresh(): Promise<GeminiModelInfo[]> {
+    this.loading = true;
+    try {
+      const list = await listGeminiModels();
+      if (list && list.length > 0) {
+        this.models = list;
+      }
+      return this.models;
+    } catch {
+      return this.models;
+    } finally {
+      this.loading = false;
+    }
+  }
+}
+
+export const geminiModelsStore = new GeminiModelsStore();

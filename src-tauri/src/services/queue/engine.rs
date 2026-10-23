@@ -76,6 +76,9 @@ pub trait ToolProvider: Send + Sync + 'static {
 /// Spec §7.7: the notification when the queue goes idle.
 pub trait IdleNotifier: Send + Sync + 'static {
     fn notify(&self, summary: &QueueSummary);
+    fn ui_language(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What the engine is configured with at startup.
@@ -898,10 +901,25 @@ fn transcription_error_outcome(err: crate::error::AppError) -> JobOutcome {
         crate::error::AppError::NoSubtitles => {
             JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::NoSubtitles, err_msg))
         }
-        _ => JobOutcome::Failed(YtdlpError::new(
-            YtdlpErrorCode::Unknown,
-            format!("Transcription failed: {err_msg}"),
-        )),
+        crate::error::AppError::DiskFull { .. } => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::DiskFull, err_msg))
+        }
+        crate::error::AppError::Io(ref io_err) if io_err.raw_os_error() == Some(28) => {
+            JobOutcome::Failed(YtdlpError::new(YtdlpErrorCode::DiskFull, err_msg))
+        }
+        _ => {
+            let code = if err_msg.to_ascii_lowercase().contains("network error") {
+                YtdlpErrorCode::Network
+            } else {
+                crate::services::ytdlp::classify_stderr(std::slice::from_ref(&err_msg), false)
+            };
+            let detail = if code == YtdlpErrorCode::Unknown {
+                format!("Transcription failed: {err_msg}")
+            } else {
+                err_msg
+            };
+            JobOutcome::Failed(YtdlpError::new(code, detail))
+        }
     }
 }
 
@@ -1448,7 +1466,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             )
                             .await
                             {
-                                Ok(res) => {
+                                Ok(Some(res)) => {
                                     {
                                         let mut state = lock(&inner.state);
                                         if let Some(item) = state.item_mut(&id) {
@@ -1460,6 +1478,12 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                             }
                                             if res.hallucination_warning.is_some() {
                                                 item.push_log("Warning: possible hallucination detected (repeated loops or long silence). Consider enabling VAD, using a larger model, or setting the language explicitly.");
+                                            }
+                                            if res.gemini_truncated {
+                                                item.push_log("Warning: transcript was truncated by the model output limit.");
+                                            }
+                                            if res.gemini_duration_warning {
+                                                item.push_log("Warning: audio duration exceeds 60 minutes; Gemini transcription may be truncated by model output token limits.");
                                             }
                                         }
                                     }
@@ -1475,7 +1499,20 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                             QueueToast::new("toast.hallucinationWarning"),
                                         );
                                     }
+                                    if res.gemini_truncated {
+                                        push_toast(
+                                            &inner,
+                                            QueueToast::new("toast.geminiTruncatedWarning"),
+                                        );
+                                    }
+                                    if res.gemini_duration_warning {
+                                        push_toast(
+                                            &inner,
+                                            QueueToast::new("toast.geminiLongAudioWarning"),
+                                        );
+                                    }
                                 }
+                                Ok(None) => {}
                                 Err(err) => {
                                     if token.is_cancelled() {
                                         finish_item(&inner, &id, JobOutcome::Cancelled);
@@ -1536,6 +1573,21 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                 }
             } else {
                 let media_file = file;
+                let size_bytes = std::fs::metadata(&media_file).ok().map(|m| m.len());
+                {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(&id) {
+                        item.file = Some(media_file.clone());
+                        item.size_bytes = size_bytes;
+                        item.runtime = Some(runtime.as_str().to_owned());
+                        item.requested_height = requested_height;
+                        item.actual_height = actual_height;
+                        item.updated_at = now_unix();
+                    }
+                }
+                self_persist(&inner);
+                mark_dirty(&inner, &id, false);
+
                 if options.transcribe {
                     match run_transcribe_stage(
                         &inner,
@@ -1548,7 +1600,7 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                     )
                     .await
                     {
-                        Ok(res) => {
+                        Ok(Some(res)) => {
                             {
                                 let mut state = lock(&inner.state);
                                 if let Some(item) = state.item_mut(&id) {
@@ -1563,6 +1615,12 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                                     if res.hallucination_warning.is_some() {
                                         item.push_log("Warning: possible hallucination detected (repeated loops or long silence). Consider enabling VAD, using a larger model, or setting the language explicitly.");
                                     }
+                                    if res.gemini_truncated {
+                                        item.push_log("Warning: transcript was truncated by the model output limit.");
+                                    }
+                                    if res.gemini_duration_warning {
+                                        item.push_log("Warning: audio duration exceeds 60 minutes; Gemini transcription may be truncated by model output token limits.");
+                                    }
                                 }
                             }
                             if res.used_cpu_fallback {
@@ -1571,7 +1629,14 @@ async fn run_item(inner: Arc<Inner>, id: String, token: CancellationToken) {
                             if res.hallucination_warning.is_some() {
                                 push_toast(&inner, QueueToast::new("toast.hallucinationWarning"));
                             }
+                            if res.gemini_truncated {
+                                push_toast(&inner, QueueToast::new("toast.geminiTruncatedWarning"));
+                            }
+                            if res.gemini_duration_warning {
+                                push_toast(&inner, QueueToast::new("toast.geminiLongAudioWarning"));
+                            }
                         }
+                        Ok(None) => {}
                         Err(err) => {
                             if token.is_cancelled() {
                                 finish_item(&inner, &id, JobOutcome::Cancelled);
@@ -1744,6 +1809,8 @@ pub struct TranscribeStageOutcome {
     pub origin: String,
     pub used_cpu_fallback: bool,
     pub hallucination_warning: Option<crate::services::transcribe::whisper::HallucinationWarning>,
+    pub gemini_truncated: bool,
+    pub gemini_duration_warning: bool,
 }
 
 /// Run transcription stage for an item according to configured engine ordering (spec §10.1, §10.2, §10.3, §10.4).
@@ -1755,7 +1822,7 @@ async fn run_transcribe_stage(
     environment: &JobEnvironment,
     options: &ItemOptions,
     token: &CancellationToken,
-) -> Result<TranscribeStageOutcome, crate::error::AppError> {
+) -> Result<Option<TranscribeStageOutcome>, crate::error::AppError> {
     // 1. Move to Transcribing state
     let cancelled = {
         let mut state = lock(&inner.state);
@@ -1820,7 +1887,15 @@ async fn run_transcribe_stage(
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "media".to_string());
+    let ui_language = inner.notifier.as_ref().and_then(|n| n.ui_language());
     let temp_dir = process::item_temp_dir(&options.output_dir, id);
+    struct TempDirCleanupGuard<'a>(&'a Path);
+    impl<'a> Drop for TempDirCleanupGuard<'a> {
+        fn drop(&mut self) {
+            job::cleanup_job_dir(self.0);
+        }
+    }
+    let _temp_dir_guard = TempDirCleanupGuard(&temp_dir);
     let transcripts_subfolder = options.transcripts_subfolder.unwrap_or(false);
 
     let mut outcome: Option<TranscribeStageOutcome> = None;
@@ -1831,6 +1906,16 @@ async fn run_transcribe_stage(
         if url.starts_with("local://") {
             return Ok(None);
         }
+        let now = crate::services::jsruntime::now_unix();
+        let runtime = environment
+            .runtimes
+            .start(environment.memory.get().as_ref(), now);
+        let js_runtime_args = if let Some(runtime_path) = environment.runtimes.path_of(runtime) {
+            crate::services::jsruntime::runtime_args(runtime, runtime_path)
+        } else {
+            Vec::new()
+        };
+
         let sub_req = crate::services::transcribe::subtitles::SubtitleFetchRequest {
             ytdlp_path: environment.ytdlp.clone(),
             url: url.clone(),
@@ -1838,10 +1923,20 @@ async fn run_transcribe_stage(
                 .transcript_language
                 .clone()
                 .or_else(|| environment.default_transcript_language.clone()),
+            video_language: None,
+            ui_language,
             temp_dir: temp_dir.clone(),
             output_dir: options.output_dir.clone(),
             base_filename: base_filename.clone(),
             transcripts_subfolder,
+            ffmpeg_location: environment.ffmpeg.clone(),
+            js_runtime_args,
+            cookies: options.cookies.to_source(),
+            user_agent: options.user_agent.clone(),
+            referer: options.referer.clone(),
+            custom_headers: options.custom_headers.clone(),
+            proxy: options.proxy.clone(),
+            limit_rate: options.limit_rate.clone(),
         };
         crate::services::transcribe::subtitles::fetch_subtitles(sub_req, token.clone()).await
     };
@@ -1981,6 +2076,23 @@ async fn run_transcribe_stage(
                 crate::services::transcribe::gemini::DEFAULT_GEMINI_MODEL.to_string()
             });
 
+        let target_language = crate::services::transcribe::gemini::resolve_gemini_target_language(
+            options.translate_to_english.unwrap_or(false),
+            None,
+        );
+
+        let base_url = environment
+            .config_dir
+            .as_ref()
+            .and_then(|cd| std::fs::read_to_string(cd.join("gemini_base_url")).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let poll_interval = if base_url.is_some() {
+            Some(std::time::Duration::from_millis(50))
+        } else {
+            None
+        };
+
         let req = crate::services::transcribe::gemini::GeminiTranscribeRequest {
             ffmpeg_path: ffmpeg_path.clone(),
             input_media: media_file.clone(),
@@ -1990,12 +2102,10 @@ async fn run_transcribe_stage(
             transcripts_subfolder,
             api_key,
             model,
-            target_language: options
-                .transcript_language
-                .clone()
-                .or_else(|| environment.default_transcript_language.clone()),
-            base_url: None,
-            poll_interval: None,
+            target_language,
+            base_url,
+            poll_interval,
+            duration_sec: duration_sec.map(|d| d as f64),
         };
 
         let progress_inner = Arc::clone(inner);
@@ -2021,17 +2131,21 @@ async fn run_transcribe_stage(
                     origin: "whisper".to_string(),
                     used_cpu_fallback: whisper_res.used_cpu_fallback,
                     hallucination_warning: whisper_res.hallucination_warning,
+                    gemini_truncated: false,
+                    gemini_duration_warning: false,
                 });
             }
             Err(e) => return Err(e),
         },
         "gemini_only" => match try_gemini().await {
-            Ok(txt_path) => {
+            Ok(gemini_res) => {
                 outcome = Some(TranscribeStageOutcome {
-                    transcript_files: vec![txt_path],
+                    transcript_files: vec![gemini_res.txt_path],
                     origin: "gemini".to_string(),
                     used_cpu_fallback: false,
                     hallucination_warning: None,
+                    gemini_truncated: gemini_res.truncated,
+                    gemini_duration_warning: gemini_res.duration_warning,
                 });
             }
             Err(e) => return Err(e),
@@ -2043,10 +2157,40 @@ async fn run_transcribe_stage(
                     origin: sub_res.origin.as_str().to_string(),
                     used_cpu_fallback: false,
                     hallucination_warning: None,
+                    gemini_truncated: false,
+                    gemini_duration_warning: false,
                 });
             }
-            Ok(None) => return Err(crate::error::AppError::NoSubtitles),
-            Err(e) => return Err(e),
+            Ok(None) => {
+                if !url.starts_with("local://") {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(id) {
+                        item.push_log(
+                            "No subtitles found for video in subtitles_only mode; skipping transcription.",
+                        );
+                    }
+                    drop(_slot);
+                    inner.wake.notify_waiters();
+                    return Ok(None);
+                } else {
+                    return Err(crate::error::AppError::NoSubtitles);
+                }
+            }
+            Err(e) => {
+                if !url.starts_with("local://") {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(id) {
+                        item.push_log(&format!(
+                            "Subtitle fetch failed in subtitles_only mode: {e}; skipping transcription."
+                        ));
+                    }
+                    drop(_slot);
+                    inner.wake.notify_waiters();
+                    return Ok(None);
+                } else {
+                    return Err(e);
+                }
+            }
         },
         _ => {
             // "subtitles_whisper_gemini" (default fallback pipeline)
@@ -2058,10 +2202,18 @@ async fn run_transcribe_stage(
                         origin: sub_res.origin.as_str().to_string(),
                         used_cpu_fallback: false,
                         hallucination_warning: None,
+                        gemini_truncated: false,
+                        gemini_duration_warning: false,
                     });
                 }
                 Ok(None) => {}
                 Err(e) => {
+                    let mut state = lock(&inner.state);
+                    if let Some(item) = state.item_mut(id) {
+                        item.push_log(&format!(
+                            "Subtitle fetch failed: {e}; falling back to next engine."
+                        ));
+                    }
                     last_error = Some(e);
                 }
             }
@@ -2075,9 +2227,17 @@ async fn run_transcribe_stage(
                             origin: "whisper".to_string(),
                             used_cpu_fallback: whisper_res.used_cpu_fallback,
                             hallucination_warning: whisper_res.hallucination_warning,
+                            gemini_truncated: false,
+                            gemini_duration_warning: false,
                         });
                     }
                     Err(e) => {
+                        let mut state = lock(&inner.state);
+                        if let Some(item) = state.item_mut(id) {
+                            item.push_log(&format!(
+                                "Whisper transcription failed: {e}; falling back to next engine."
+                            ));
+                        }
                         last_error = Some(e);
                     }
                 }
@@ -2093,12 +2253,14 @@ async fn run_transcribe_stage(
 
                 if has_gemini_key || last_error.is_none() {
                     match try_gemini().await {
-                        Ok(txt_path) => {
+                        Ok(gemini_res) => {
                             outcome = Some(TranscribeStageOutcome {
-                                transcript_files: vec![txt_path],
+                                transcript_files: vec![gemini_res.txt_path],
                                 origin: "gemini".to_string(),
                                 used_cpu_fallback: false,
                                 hallucination_warning: None,
+                                gemini_truncated: gemini_res.truncated,
+                                gemini_duration_warning: gemini_res.duration_warning,
                             });
                         }
                         Err(e) => {
@@ -2123,59 +2285,78 @@ async fn run_transcribe_stage(
     // Optional summarization step (spec §10.4)
     let should_summarize = options.summarize.unwrap_or(environment.default_summarize);
     if should_summarize {
-        let txt_file = stage_outcome
+        // Prefer timed transcript file (.srt or .vtt) so Gemini can extract
+        // chapter timestamps (spec §10.4), falling back to plain .txt.
+        let transcript_text = stage_outcome
             .transcript_files
             .iter()
-            .find(|f| f.extension().is_some_and(|ext| ext == "txt"))
-            .cloned();
+            .find(|f| f.extension().is_some_and(|ext| ext == "srt"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .or_else(|| {
+                stage_outcome
+                    .transcript_files
+                    .iter()
+                    .find(|f| f.extension().is_some_and(|ext| ext == "vtt"))
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+            })
+            .or_else(|| {
+                stage_outcome
+                    .transcript_files
+                    .iter()
+                    .find(|f| f.extension().is_some_and(|ext| ext == "txt"))
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+            });
 
-        if let Some(txt_path) = txt_file {
-            if let Ok(transcript_text) = std::fs::read_to_string(&txt_path) {
-                let api_key = environment
-                    .config_dir
-                    .as_ref()
-                    .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd));
+        if let Some(transcript_text) = transcript_text {
+            let api_key = environment
+                .config_dir
+                .as_ref()
+                .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd));
 
-                if let Some(api_key) = api_key {
-                    on_transcribe_progress(inner, id, 95.0, Some("Generating summary..."));
-                    let sum_req = crate::services::transcribe::summary::SummaryRequest {
-                        transcript_text,
-                        language: options
-                            .summary_language
-                            .clone()
-                            .or_else(|| environment.default_summary_language.clone()),
-                        model: options
-                            .gemini_model
-                            .clone()
-                            .or_else(|| environment.default_gemini_model.clone()),
-                        api_key,
-                        output_dir: options.output_dir.clone(),
-                        base_filename: base_filename.clone(),
-                        transcripts_subfolder,
-                        base_url: None,
-                    };
+            if let Some(api_key) = api_key {
+                on_transcribe_progress(inner, id, 95.0, Some("queue.status.generatingSummary"));
+                let sum_req = crate::services::transcribe::summary::SummaryRequest {
+                    transcript_text,
+                    language: options
+                        .summary_language
+                        .clone()
+                        .or_else(|| environment.default_summary_language.clone()),
+                    model: options
+                        .gemini_model
+                        .clone()
+                        .or_else(|| environment.default_gemini_model.clone()),
+                    api_key,
+                    output_dir: options.output_dir.clone(),
+                    base_filename: base_filename.clone(),
+                    transcripts_subfolder,
+                    base_url: environment
+                        .config_dir
+                        .as_ref()
+                        .and_then(|cd| std::fs::read_to_string(cd.join("gemini_base_url")).ok())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                };
 
-                    match crate::services::transcribe::summary::generate_summary(
-                        sum_req,
-                        token.clone(),
-                    )
+                match crate::services::transcribe::summary::generate_summary(sum_req, token.clone())
                     .await
-                    {
-                        Ok(summary_path) => {
-                            stage_outcome.transcript_files.push(summary_path);
+                {
+                    Ok(summary_path) => {
+                        stage_outcome.transcript_files.push(summary_path);
+                    }
+                    Err(e) => {
+                        if token.is_cancelled() {
+                            return Err(e);
                         }
-                        Err(e) => {
-                            let mut state = lock(&inner.state);
-                            if let Some(item) = state.item_mut(id) {
-                                item.push_log(&format!("Summary generation warning: {e}"));
-                            }
+                        let mut state = lock(&inner.state);
+                        if let Some(item) = state.item_mut(id) {
+                            item.push_log(&format!("Summary generation warning: {e}"));
                         }
                     }
-                } else {
-                    let mut state = lock(&inner.state);
-                    if let Some(item) = state.item_mut(id) {
-                        item.push_log("Gemini API key is not configured; summary skipped.");
-                    }
+                }
+            } else {
+                let mut state = lock(&inner.state);
+                if let Some(item) = state.item_mut(id) {
+                    item.push_log("Gemini API key is not configured; summary skipped.");
                 }
             }
         }
@@ -2183,7 +2364,7 @@ async fn run_transcribe_stage(
 
     drop(_slot);
     inner.wake.notify_waiters();
-    Ok(stage_outcome)
+    Ok(Some(stage_outcome))
 }
 
 /// Read the item out of the state, resolve its tools and build the job request.
@@ -2280,9 +2461,17 @@ fn finish_item(inner: &Arc<Inner>, id: &str, outcome: JobOutcome) {
     let doomed = {
         let state = lock(&inner.state);
         state.item(id).and_then(|item| {
-            let doomed = matches!(item.control, ControlSignal::Cancel | ControlSignal::Remove)
-                || matches!(&outcome, JobOutcome::Cancelled);
-            doomed.then(|| item.temp_dir())
+            let paused = item.control == ControlSignal::Pause;
+            let retrying = match &outcome {
+                JobOutcome::Failed(error) if item.control == ControlSignal::None => {
+                    should_auto_retry(error.code, item.auto_retries)
+                        .then(|| item.backoff_for_next_retry())
+                        .flatten()
+                        .is_some()
+                }
+                _ => false,
+            };
+            (!paused && !retrying).then(|| item.temp_dir())
         })
     };
     if let Some(temp) = &doomed {
@@ -3216,5 +3405,25 @@ mod tests {
             item.transcript_preview, None,
             "transcript_preview must be cleared when item finishes"
         );
+    }
+
+    #[test]
+    fn transcription_error_outcome_maps_disk_full_and_network_errors() {
+        let disk_outcome = transcription_error_outcome(crate::error::AppError::DiskFull {
+            needed: 1000,
+            available: 100,
+        });
+        match disk_outcome {
+            JobOutcome::Failed(err) => assert_eq!(err.code, YtdlpErrorCode::DiskFull),
+            other => panic!("expected Failed(DiskFull), got {other:?}"),
+        }
+
+        let net_outcome = transcription_error_outcome(crate::error::AppError::Process(
+            "Network error contacting Gemini: connection refused".to_string(),
+        ));
+        match net_outcome {
+            JobOutcome::Failed(err) => assert_eq!(err.code, YtdlpErrorCode::Network),
+            other => panic!("expected Failed(Network), got {other:?}"),
+        }
     }
 }

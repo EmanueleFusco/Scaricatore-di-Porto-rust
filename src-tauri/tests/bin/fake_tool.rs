@@ -104,6 +104,22 @@ fn read_version() -> String {
 }
 
 fn run_ytdlp(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--skip-download") {
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        {
+            let calls_path = dir.join("fake-ytdlp.calls");
+            let count = std::fs::read_to_string(&calls_path)
+                .ok()
+                .and_then(|t| t.trim().parse::<u32>().ok())
+                .unwrap_or(0)
+                + 1;
+            let _ = std::fs::write(&calls_path, count.to_string());
+        }
+        return 0;
+    }
+
     match args.first().map(String::as_str) {
         Some("--version") => {
             println!("{}", read_version());
@@ -256,6 +272,11 @@ fn run_ffmpeg(args: &[String]) -> i32 {
         .find(|w| w[0] == "-c:v")
         .map(|w| w[1].as_str())
         .unwrap_or_default();
+    let a_codec = args
+        .windows(2)
+        .find(|w| w[0] == "-c:a")
+        .map(|w| w[1].as_str())
+        .unwrap_or_default();
 
     let fail_qv =
         read_flag("fail_qv.txt").is_some() || std::env::var("FAKE_FFMPEG_FAIL_QV").is_ok();
@@ -267,8 +288,11 @@ fn run_ffmpeg(args: &[String]) -> i32 {
     let fail_enc =
         read_flag("fail_encode.txt").or_else(|| std::env::var("FAKE_FFMPEG_FAIL_ENCODE").ok());
     if let Some(fail_enc) = fail_enc {
-        if fail_enc.split(',').any(|s| s.trim() == v_codec) {
-            eprintln!("fake ffmpeg: simulated encode failure for encoder {v_codec}");
+        if fail_enc
+            .split(',')
+            .any(|s| s.trim() == v_codec || (!a_codec.is_empty() && s.trim() == a_codec))
+        {
+            eprintln!("fake ffmpeg: simulated encode failure for encoder {v_codec}/{a_codec}");
             return 1;
         }
     }

@@ -33,7 +33,9 @@ use scaricatore_di_porto_lib::services::queue::model::{
     CookieChoice, ItemOptions, ItemState, Kind, QualityChoice, QueueSummary,
 };
 use scaricatore_di_porto_lib::services::transcribe::gemini::{
-    GeminiProgressSink, GeminiTranscribeRequest, list_gemini_models, run_gemini_transcription,
+    GeminiFileGuard, GeminiProgressSink, GeminiTranscribeOutcome, GeminiTranscribeRequest,
+    list_gemini_models, poll_file_active, prepare_audio_for_gemini, run_gemini_transcription,
+    upload_file_resumable,
 };
 use scaricatore_di_porto_lib::services::transcribe::subtitles::clean_subtitles;
 use scaricatore_di_porto_lib::services::transcribe::summary::{
@@ -83,6 +85,11 @@ enum MockBehavior {
     FailGenerateContent500,
     RateLimitOnceThenSucceed,
     SlowPoll,
+    PollFailed,
+    PollStuckProcessing,
+    HangGenerateContent,
+    TruncatedMaxTokens,
+    BlockedPromptFeedback,
 }
 
 struct MockGeminiServer {
@@ -242,8 +249,17 @@ fn serve_gemini_request(
         if cur_behavior == MockBehavior::SlowPoll {
             thread::sleep(Duration::from_millis(300));
         }
-        // Step 3: Polling file status -> ACTIVE
-        let json = r#"{"name":"files/mock-file-123","uri":"https://generativelanguage.googleapis.com/v1beta/files/mock-file-123","state":"ACTIVE"}"#;
+        let json = match cur_behavior {
+            MockBehavior::PollFailed => {
+                r#"{"name":"files/mock-file-123","uri":"https://generativelanguage.googleapis.com/v1beta/files/mock-file-123","state":"FAILED","error":{"code":400,"message":"Audio stream corrupted"}}"#
+            }
+            MockBehavior::PollStuckProcessing => {
+                r#"{"name":"files/mock-file-123","uri":"https://generativelanguage.googleapis.com/v1beta/files/mock-file-123","state":"PROCESSING"}"#
+            }
+            _ => {
+                r#"{"name":"files/mock-file-123","uri":"https://generativelanguage.googleapis.com/v1beta/files/mock-file-123","state":"ACTIVE"}"#
+            }
+        };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             json.len(),
@@ -291,7 +307,56 @@ fn serve_gemini_request(
                     let _ = stream.write_all(resp.as_bytes());
                 }
             }
-            MockBehavior::Normal | MockBehavior::SlowPoll => {
+            MockBehavior::HangGenerateContent => {
+                // Simulate a long-running in-flight HTTP request (e.g. 5 seconds)
+                thread::sleep(Duration::from_secs(5));
+                let json = r#"{"candidates":[{"content":{"parts":[{"text":"Late response"}]},"finishReason":"STOP"}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+            MockBehavior::TruncatedMaxTokens => {
+                let json = serde_json::json!({
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    { "text": "This is a partial transcript truncated by token limit." }
+                                ]
+                            },
+                            "finishReason": "MAX_TOKENS"
+                        }
+                    ]
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+            MockBehavior::BlockedPromptFeedback => {
+                let json = serde_json::json!({
+                    "promptFeedback": {
+                        "blockReason": "SAFETY"
+                    }
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+            MockBehavior::Normal
+            | MockBehavior::SlowPoll
+            | MockBehavior::PollFailed
+            | MockBehavior::PollStuckProcessing => {
                 // If it's a summary request or transcription request:
                 let body_str = String::from_utf8_lossy(&body);
                 let text_resp = if body_str.contains("summary") || body_str.contains("Riassumi") {
@@ -378,6 +443,8 @@ fn serve_gemini_request(
 struct Fixture {
     dir: TempDir,
     fake_ffmpeg: PathBuf,
+    #[allow(dead_code)]
+    fake_ffprobe: PathBuf,
 }
 
 impl Fixture {
@@ -393,15 +460,30 @@ impl Fixture {
         });
         fs::copy(fake_tool_source(), &fake_ffmpeg).expect("copy fake_tool as ffmpeg");
 
+        let fake_ffprobe = bin_dir.join(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        fs::copy(fake_tool_source(), &fake_ffprobe).expect("copy fake_tool as ffprobe");
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = fs::metadata(&fake_ffmpeg).expect("metadata").permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&fake_ffmpeg, perms).expect("chmod +x");
+
+            let mut probe_perms = fs::metadata(&fake_ffprobe).expect("metadata").permissions();
+            probe_perms.set_mode(0o755);
+            fs::set_permissions(&fake_ffprobe, probe_perms).expect("chmod +x");
         }
 
-        Self { dir, fake_ffmpeg }
+        Self {
+            dir,
+            fake_ffmpeg,
+            fake_ffprobe,
+        }
     }
 
     fn create_dummy_media(&self, name: &str) -> PathBuf {
@@ -480,6 +562,7 @@ async fn gemini_transcription_end_to_end_with_mock_server_and_raii_delete_guard(
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let token = CancellationToken::new();
@@ -519,6 +602,54 @@ async fn gemini_transcription_end_to_end_with_mock_server_and_raii_delete_guard(
 }
 
 #[tokio::test]
+async fn gemini_transcription_maps_iso_code_to_full_language_name_in_prompt() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_it.mp4");
+    let server = MockGeminiServer::start(MockBehavior::Normal);
+
+    let output_dir = fix.dir.path().join("out_it");
+    fs::create_dir_all(&output_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp_it");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media,
+        temp_dir: temp_dir.clone(),
+        output_dir: output_dir.clone(),
+        base_filename: "sample_it".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-123".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: Some("it".to_string()),
+        base_url: Some(server.base_url()),
+        poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
+    };
+
+    let token = CancellationToken::new();
+    let res = run_gemini_transcription(req, token, None).await;
+    assert!(res.is_ok(), "transcription should succeed: {:?}", res.err());
+
+    let requests = server.recorded_requests();
+    let gen_req = requests
+        .iter()
+        .find(|r| r.method == "POST" && r.path.contains(":generateContent"))
+        .expect("generateContent request must be recorded");
+
+    let body_json: serde_json::Value =
+        serde_json::from_slice(&gen_req.body).expect("parse generateContent JSON");
+    let prompt_text = body_json["contents"][0]["parts"][0]["text"]
+        .as_str()
+        .expect("prompt text string");
+
+    assert_eq!(
+        prompt_text,
+        "Transcribe the following audio file, and then translate the entire transcription into Italian."
+    );
+}
+
+#[tokio::test]
 async fn gemini_raii_delete_guard_on_generation_error() {
     let fix = Fixture::new();
     let media = fix.create_dummy_media("sample_error.mp4");
@@ -541,6 +672,7 @@ async fn gemini_raii_delete_guard_on_generation_error() {
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let token = CancellationToken::new();
@@ -587,6 +719,7 @@ async fn gemini_raii_delete_guard_on_cancellation() {
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let res = run_gemini_transcription(req, token, None).await;
@@ -627,6 +760,7 @@ async fn gemini_429_quota_backoff_retry_succeeds() {
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let token = CancellationToken::new();
@@ -661,6 +795,7 @@ async fn gemini_retired_model_404_returns_model_not_found() {
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let token = CancellationToken::new();
@@ -750,6 +885,71 @@ async fn gemini_summary_single_and_map_reduce() {
     assert_eq!(long_path.file_name().unwrap(), "long_test.summary.md");
 }
 
+#[tokio::test]
+async fn gemini_summary_splits_whisper_single_newline_and_requests_chapters() {
+    let fix = Fixture::new();
+    let server = MockGeminiServer::start(MockBehavior::Normal);
+
+    let output_dir = fix.dir.path().join("summary_whisper_out");
+    fs::create_dir_all(&output_dir).expect("summary out");
+
+    // 1. Whisper transcript without "\n\n" exceeding MAX_SUMMARY_CHUNK_CHARS
+    let line = "00:01:00 Questo è un segmento whisper senza doppi ritorni a capo.\n";
+    let repeats = (MAX_SUMMARY_CHUNK_CHARS / line.len()) + 5;
+    let whisper_transcript = line.repeat(repeats);
+
+    let chunks = split_text_into_chunks(&whisper_transcript, MAX_SUMMARY_CHUNK_CHARS);
+    assert!(
+        chunks.len() >= 2,
+        "whisper transcript with single newlines must be split into >= 2 chunks"
+    );
+    for chunk in &chunks {
+        assert!(chunk.len() <= MAX_SUMMARY_CHUNK_CHARS);
+    }
+
+    let req = SummaryRequest {
+        transcript_text: whisper_transcript,
+        language: Some("it".to_string()),
+        model: Some("gemini-flash-latest".to_string()),
+        api_key: "fake-key".to_string(),
+        output_dir: output_dir.clone(),
+        base_filename: "whisper_summary".to_string(),
+        transcripts_subfolder: false,
+        base_url: Some(server.base_url()),
+    };
+
+    let token = CancellationToken::new();
+    let path = generate_summary(req, token)
+        .await
+        .expect("generate summary for whisper transcript");
+    assert!(path.is_file());
+    assert_eq!(path.file_name().unwrap(), "whisper_summary.summary.md");
+
+    // Verify recorded prompt asks for Chapters with timestamps
+    let requests = server.recorded_requests();
+    let gen_reqs: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method == "POST" && r.path.contains(":generateContent"))
+        .collect();
+    assert!(gen_reqs.len() >= 2, "must perform map-reduce requests");
+
+    // Map prompt must ask to preserve timestamps
+    let first_body = String::from_utf8_lossy(&gen_reqs[0].body);
+    assert!(
+        first_body.contains("timestamps"),
+        "map prompt should mention timestamps: {}",
+        first_body
+    );
+
+    // Reduce prompt must request # Chapters
+    let reduce_body = String::from_utf8_lossy(&gen_reqs.last().unwrap().body);
+    assert!(
+        reduce_body.contains("# Chapters"),
+        "reduce prompt should include # Chapters: {}",
+        reduce_body
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Engine ordering test
 // ---------------------------------------------------------------------------
@@ -758,6 +958,7 @@ struct QueueFakeTools {
     whisper: Option<PathBuf>,
     ffmpeg: PathBuf,
     models_dir: PathBuf,
+    config_dir: Option<PathBuf>,
     default_model: String,
     private_temp: Option<PathBuf>,
 }
@@ -771,7 +972,7 @@ impl ToolProvider for QueueFakeTools {
             ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
             whisper: self.whisper.clone(),
             models_dir: Some(self.models_dir.clone()),
-            config_dir: None,
+            config_dir: self.config_dir.clone(),
             whisper_threads: 2,
             skip_silence_vad: false,
             default_whisper_model: Some(self.default_model.clone()),
@@ -809,6 +1010,7 @@ async fn queue_engine_fails_subtitles_only_when_local_or_no_subs() {
         whisper: None,
         ffmpeg: fix.fake_ffmpeg.clone(),
         models_dir: fix.dir.path().join("models"),
+        config_dir: None,
         default_model: "large-v3-turbo-q5_0".to_string(),
         private_temp: None,
     });
@@ -895,6 +1097,7 @@ async fn transcription_and_summary_do_not_overwrite_existing_files() {
         target_language: None,
         base_url: Some(server.base_url()),
         poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: None,
     };
 
     let token = CancellationToken::new();
@@ -935,4 +1138,717 @@ async fn transcription_and_summary_do_not_overwrite_existing_files() {
     assert_eq!(summary_path, out_dir.join("lecture (1).summary.md"));
     assert!(txt_path.is_file());
     assert!(summary_path.is_file());
+}
+
+#[tokio::test]
+async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_summary_cancel() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("hang_cancel.mp4");
+    let server = MockGeminiServer::start(MockBehavior::HangGenerateContent);
+
+    let out_dir = fix.dir.path().join("out_hang");
+    fs::create_dir_all(&out_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp_hang");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    // Part 1: Cancelling an in-flight generateContent HTTP request must abort within <= 2s
+    // (server sleeps 5s before responding).
+    let token = CancellationToken::new();
+    let cancel_token = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        cancel_token.cancel();
+    });
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media.clone(),
+        temp_dir: temp_dir.clone(),
+        output_dir: out_dir.clone(),
+        base_filename: "hang_cancel".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-hang".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: None,
+        base_url: Some(server.base_url()),
+        poll_interval: Some(Duration::from_millis(20)),
+        duration_sec: None,
+    };
+
+    let start = tokio::time::Instant::now();
+    let res = run_gemini_transcription(req, token, None).await;
+    let elapsed = start.elapsed();
+
+    assert!(res.is_err(), "cancelled transcription must return Err");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "in-flight HTTP request must abort within <= 2s on cancel, took {:?}",
+        elapsed
+    );
+
+    // Part 2: Cancelling summary generation in the queue engine must not be swallowed as a warning
+    // that marks the item Done (e.g. when shutdown() cancels running tokens during summary).
+    let bin_dir = fix.dir.path().join("bin");
+    let fake_whisper = bin_dir.join(if cfg!(windows) {
+        "sdp-whisper.exe"
+    } else {
+        "sdp-whisper"
+    });
+    fs::copy(&fix.fake_ffmpeg, &fake_whisper).expect("copy sdp-whisper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_whisper).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_whisper, perms).expect("chmod +x");
+    }
+    fs::write(bin_dir.join("fake_whisper_sleep.txt"), "150").expect("write whisper sleep");
+
+    let models_dir = fix.dir.path().join("models");
+    fs::create_dir_all(&models_dir).expect("models dir");
+    fs::write(
+        models_dir.join("ggml-large-v3-turbo-q5_0.bin"),
+        b"fake model",
+    )
+    .expect("write model");
+
+    let config_dir = fix.dir.path().join("config");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(
+        config_dir.join("gemini_api_key"),
+        "fake-gemini-key-for-summary",
+    )
+    .expect("write key");
+
+    let queue_path = fix.dir.path().join("queue_cancel_summary.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: Some(fake_whisper),
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir,
+        config_dir: Some(config_dir),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let config = EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    };
+
+    let engine = QueueEngine::open(config);
+    engine.start();
+
+    let add_req = AddRequest {
+        url: format!("local://{}", media.display()),
+        title: Some("Cancel During Summary".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(10),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: out_dir.clone(),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            transcribe: true,
+            transcription_engine: Some("whisper_only".to_string()),
+            summarize: Some(true),
+            summary_language: None,
+            // Pass a model name with an embedded space so the local URL fails immediately without hitting the network.
+            gemini_model: Some("invalid model for offline test".to_string()),
+            ..ItemOptions::default()
+        },
+        group_id: None,
+        file: Some(media),
+    };
+
+    let outcome = engine.add(vec![add_req], true);
+    let item_id = outcome.added[0].clone();
+
+    // Wait until Whisper finishes and item enters "Generating summary...", then call shutdown()
+    // which cancels running tokens without setting item.control = Cancel.
+    // Without the fix in engine.rs:2167, Err(e) during summary is caught as a warning and
+    // run_transcribe_stage returns Ok, turning the cancelled item into Done!
+    let mut shutdown_sent = false;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if item.progress.percent == Some(95.0) {
+                assert_eq!(
+                    item.transcript_preview.as_deref(),
+                    Some("queue.status.generatingSummary"),
+                    "transcript_preview during summary must use i18n key queue.status.generatingSummary rather than hard-coded English"
+                );
+                engine.shutdown();
+                shutdown_sent = true;
+                break;
+            }
+        }
+    }
+    if !shutdown_sent {
+        let snapshot = engine.snapshot();
+        let item = snapshot.items.iter().find(|i| i.id == item_id);
+        panic!(
+            "item did not reach Generating summary... stage, got: {:?}",
+            item
+        );
+    }
+
+    let mut final_state = None;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let snapshot = engine.snapshot();
+        if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
+            if matches!(
+                item.state,
+                ItemState::Cancelled | ItemState::Done | ItemState::Failed
+            ) {
+                final_state = Some(item.state);
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        final_state,
+        Some(ItemState::Cancelled),
+        "cancelling during summary generation must transition item to Cancelled, not Done"
+    );
+}
+
+#[tokio::test]
+async fn gemini_audio_prep_falls_back_to_flac_when_opus_and_mp3_fail() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample.mp4");
+    let temp_dir = fix.dir.path().join("tmp_prep_flac");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    // Make fake ffmpeg fail for libopus and libmp3lame
+    let bin_dir = fix.fake_ffmpeg.parent().unwrap();
+    fs::write(bin_dir.join("fail_encode.txt"), "libopus,libmp3lame")
+        .expect("write fail_encode.txt");
+
+    let token = CancellationToken::new();
+    let res = prepare_audio_for_gemini(&fix.fake_ffmpeg, &media, &temp_dir, token).await;
+
+    let (audio_file, mime) = res.expect("audio prep should succeed with flac fallback");
+    assert_eq!(mime, "audio/flac", "MIME type for FLAC must be audio/flac");
+    assert_eq!(
+        audio_file.file_name().and_then(|n| n.to_str()),
+        Some("gemini_audio.flac"),
+        "audio file must be gemini_audio.flac"
+    );
+    assert!(audio_file.is_file(), "flac output file must exist on disk");
+}
+
+#[tokio::test]
+async fn gemini_audio_prep_checks_disk_space_and_fails_with_disk_full() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample.mp4");
+    let temp_dir = fix.dir.path().join("tmp_prep_disk");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    // Configure fake ffprobe to report a massive duration (e.g. 100,000,000s -> ~4 TB needed)
+    let bin_dir = fix.fake_ffmpeg.parent().unwrap();
+    fs::write(bin_dir.join("fake_ffprobe_duration.txt"), "100000000.0")
+        .expect("write fake_ffprobe_duration");
+
+    let token = CancellationToken::new();
+    let res = prepare_audio_for_gemini(&fix.fake_ffmpeg, &media, &temp_dir, token).await;
+
+    match res {
+        Err(AppError::DiskFull { needed, available }) => {
+            assert!(
+                needed > available,
+                "needed space ({needed}) must exceed available space ({available})"
+            );
+        }
+        other => panic!("expected AppError::DiskFull, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn gemini_audio_prep_rejects_audio_exceeding_gemini_duration_limit() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_oversized.mp4");
+    let temp_dir = fix.dir.path().join("tmp_prep_oversized");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    // Configure fake ffprobe to report 35,000s (> 9.5 hours = 34,200s)
+    let bin_dir = fix.fake_ffmpeg.parent().unwrap();
+    fs::write(bin_dir.join("fake_ffprobe_duration.txt"), "35000.0")
+        .expect("write fake_ffprobe_duration");
+
+    let token = CancellationToken::new();
+    let res = prepare_audio_for_gemini(&fix.fake_ffmpeg, &media, &temp_dir, token).await;
+
+    match res {
+        Err(AppError::Process(msg)) => {
+            assert!(
+                msg.contains("9.5-hour limit") || msg.contains("exceeds"),
+                "expected duration limit error message, got: {msg}"
+            );
+        }
+        other => panic!(
+            "expected AppError::Process rejecting audio > 9.5 hours, got: {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn gemini_handles_max_tokens_truncation_and_long_audio_warning() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_trunc.mp4");
+    let server = MockGeminiServer::start(MockBehavior::TruncatedMaxTokens);
+
+    let output_dir = fix.dir.path().join("out_trunc");
+    fs::create_dir_all(&output_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp_trunc");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media,
+        temp_dir: temp_dir.clone(),
+        output_dir: output_dir.clone(),
+        base_filename: "sample_trunc".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-123".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: None,
+        base_url: Some(server.base_url()),
+        poll_interval: Some(Duration::from_millis(50)),
+        duration_sec: Some(4000.0), // > 60 minutes (3600s)
+    };
+
+    let token = CancellationToken::new();
+    let res = run_gemini_transcription(req, token, None).await;
+    assert!(res.is_ok(), "transcription should succeed: {:?}", res.err());
+
+    let outcome: GeminiTranscribeOutcome = res.unwrap();
+    assert!(
+        outcome.truncated,
+        "outcome must be marked truncated when finishReason is MAX_TOKENS"
+    );
+    assert_eq!(outcome.finish_reason.as_deref(), Some("MAX_TOKENS"));
+    assert!(
+        outcome.duration_warning,
+        "duration_warning must be true for audio > 60 minutes"
+    );
+    assert!(outcome.txt_path.is_file(), "output .txt file must exist");
+}
+
+#[tokio::test]
+async fn gemini_poll_failed_and_timeout_trigger_raii_delete_cleanup() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_poll_fail.mp4");
+
+    // 1. Remote file state == "FAILED" during polling
+    let server_failed = MockGeminiServer::start(MockBehavior::PollFailed);
+    let out_dir = fix.dir.path().join("out_poll_fail");
+    fs::create_dir_all(&out_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp_poll_fail");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media.clone(),
+        temp_dir: temp_dir.clone(),
+        output_dir: out_dir,
+        base_filename: "sample_poll_fail".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-poll-fail".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: None,
+        base_url: Some(server_failed.base_url()),
+        poll_interval: Some(Duration::from_millis(20)),
+        duration_sec: None,
+    };
+
+    let token = CancellationToken::new();
+    let res = run_gemini_transcription(req, token.clone(), None).await;
+    match res {
+        Err(AppError::Process(msg)) => {
+            assert!(
+                msg.contains("Gemini cloud audio processing failed"),
+                "expected FAILED polling error message, got: {msg}"
+            );
+        }
+        other => panic!(
+            "expected AppError::Process on FAILED poll state, got: {:?}",
+            other
+        ),
+    }
+
+    assert!(
+        server_failed.wait_for_delete(Duration::from_secs(1)).await,
+        "DELETE must be called by RAII guard when poll_file_active sees FAILED state"
+    );
+    let temp_entries: Vec<_> = fs::read_dir(&temp_dir).unwrap().collect();
+    assert!(
+        temp_entries.is_empty(),
+        "temp audio file must be deleted synchronously on FAILED poll state"
+    );
+
+    // 2. Polling timeout while state stays "PROCESSING" still triggers RAII guard DELETE
+    let server_timeout = MockGeminiServer::start(MockBehavior::PollStuckProcessing);
+    let temp_timeout_dir = fix.dir.path().join("tmp_poll_timeout");
+    fs::create_dir_all(&temp_timeout_dir).expect("tmp timeout dir");
+    let temp_audio = temp_timeout_dir.join("gemini_audio.ogg");
+    fs::write(&temp_audio, b"OggS...fake...").expect("write temp audio");
+
+    let client = reqwest::Client::new();
+    let base_url = server_timeout.base_url();
+    let api_key = "test-fake-key-poll-timeout";
+    let poll_res = {
+        let mut guard = GeminiFileGuard::new(client.clone(), &base_url, api_key);
+        guard.set_temp_audio_file(temp_audio.clone());
+        let uploaded = upload_file_resumable(
+            &client,
+            &base_url,
+            api_key,
+            &temp_audio,
+            "audio/ogg",
+            &token,
+        )
+        .await
+        .expect("upload before poll timeout");
+        guard.set_remote_file(uploaded.name.clone());
+
+        poll_file_active(
+            &client,
+            &base_url,
+            api_key,
+            &uploaded.name,
+            Duration::from_millis(25),
+            Duration::from_millis(100),
+            &token,
+        )
+        .await
+    };
+
+    match poll_res {
+        Err(AppError::Process(msg)) => {
+            assert!(
+                msg.contains("timed out"),
+                "expected polling timeout error, got: {msg}"
+            );
+        }
+        other => panic!("expected polling timeout error, got: {:?}", other),
+    }
+
+    assert!(
+        server_timeout.wait_for_delete(Duration::from_secs(1)).await,
+        "DELETE must be called by RAII guard when poll_file_active times out"
+    );
+    assert!(
+        !temp_audio.exists(),
+        "temp audio file must be deleted when RAII guard drops on poll timeout"
+    );
+}
+
+#[tokio::test]
+async fn gemini_handles_block_reason_and_max_tokens_truncation_in_queue() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("sample_blocked.mp4");
+
+    // 1. promptFeedback.blockReason -> AppError::GeminiBlocked("SAFETY") + RAII DELETE
+    let server_blocked = MockGeminiServer::start(MockBehavior::BlockedPromptFeedback);
+    let out_dir = fix.dir.path().join("out_blocked");
+    fs::create_dir_all(&out_dir).expect("out dir");
+    let temp_dir = fix.dir.path().join("tmp_blocked");
+    fs::create_dir_all(&temp_dir).expect("tmp dir");
+
+    let req = GeminiTranscribeRequest {
+        ffmpeg_path: fix.fake_ffmpeg.clone(),
+        input_media: media.clone(),
+        temp_dir: temp_dir.clone(),
+        output_dir: out_dir.clone(),
+        base_filename: "sample_blocked".to_string(),
+        transcripts_subfolder: false,
+        api_key: "test-fake-key-blocked".to_string(),
+        model: "gemini-flash-latest".to_string(),
+        target_language: None,
+        base_url: Some(server_blocked.base_url()),
+        poll_interval: Some(Duration::from_millis(20)),
+        duration_sec: None,
+    };
+
+    let token = CancellationToken::new();
+    let res = run_gemini_transcription(req, token, None).await;
+    match res {
+        Err(AppError::GeminiBlocked(reason)) => {
+            assert_eq!(reason, "SAFETY");
+        }
+        other => panic!(
+            "expected AppError::GeminiBlocked(\"SAFETY\"), got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        server_blocked.wait_for_delete(Duration::from_secs(3)).await,
+        "DELETE must be called by RAII guard when promptFeedback.blockReason blocks generation"
+    );
+
+    // 2. MAX_TOKENS truncation surfaces user-visible warning in queue item log
+    let server_trunc = MockGeminiServer::start(MockBehavior::TruncatedMaxTokens);
+    let config_dir = fix.dir.path().join("config_trunc");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(config_dir.join("gemini_api_key"), "test-fake-key-trunc").expect("write key");
+    fs::write(config_dir.join("gemini_base_url"), server_trunc.base_url()).expect("write base_url");
+
+    let queue_path = fix.dir.path().join("queue_trunc.json");
+    let tools = Arc::new(QueueFakeTools {
+        whisper: None,
+        ffmpeg: fix.fake_ffmpeg.clone(),
+        models_dir: fix.dir.path().join("models_trunc"),
+        config_dir: Some(config_dir),
+        default_model: "large-v3-turbo-q5_0".to_string(),
+        private_temp: None,
+    });
+
+    let engine = QueueEngine::open(EngineConfig {
+        path: queue_path,
+        provider: tools,
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    });
+    engine.start();
+
+    let add_req = AddRequest {
+        url: format!("local://{}", media.display()),
+        title: Some("Truncated Gemini".to_string()),
+        site: Some("local".to_string()),
+        duration_sec: Some(4000),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: out_dir.clone(),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            transcribe: true,
+            transcription_engine: Some("gemini_only".to_string()),
+            ..ItemOptions::default()
+        },
+        group_id: None,
+        file: Some(media),
+    };
+
+    let item_id = engine.add(vec![add_req], true).added[0].clone();
+    let mut final_item = None;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let snap = engine.snapshot();
+        if let Some(it) = snap.items.iter().find(|i| i.id == item_id) {
+            if matches!(it.state, ItemState::Done | ItemState::Failed) {
+                final_item = Some(it.clone());
+                break;
+            }
+        }
+    }
+
+    let item = final_item.expect("queue item should finish");
+    assert_eq!(item.state, ItemState::Done, "item failed: {:?}", item.error);
+    assert_eq!(item.transcript_origin.as_deref(), Some("gemini"));
+    assert!(
+        item.log_tail
+            .iter()
+            .any(|l| l.contains("truncated by the model output limit")),
+        "queue item log_tail must contain truncation warning, got: {:?}",
+        item.log_tail
+    );
+}
+
+#[tokio::test]
+async fn queue_engine_falls_back_subtitles_to_whisper_to_gemini() {
+    let fix = Fixture::new();
+    let media = fix.create_dummy_media("fallback_video.mp4");
+    let server = MockGeminiServer::start(MockBehavior::Normal);
+
+    let bin_dir = fix.dir.path().join("bin");
+    let fake_ytdlp = bin_dir.join(if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    });
+    fs::copy(fake_tool_source(), &fake_ytdlp).expect("copy fake_tool as yt-dlp");
+    let fake_whisper = bin_dir.join(if cfg!(windows) {
+        "sdp-whisper.exe"
+    } else {
+        "sdp-whisper"
+    });
+    fs::copy(fake_tool_source(), &fake_whisper).expect("copy fake_tool as sdp-whisper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [&fake_ytdlp, &fake_whisper] {
+            let mut perms = fs::metadata(p).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(p, perms).expect("chmod +x");
+        }
+    }
+
+    // Force Whisper to fail so the engine must fall back from Whisper to Gemini
+    fs::write(bin_dir.join("fail_whisper_all.txt"), "1").expect("write fail_whisper_all");
+
+    let models_dir = fix.dir.path().join("models_fb");
+    fs::create_dir_all(&models_dir).expect("models dir");
+    fs::write(
+        models_dir.join("ggml-large-v3-turbo-q5_0.bin"),
+        b"fake model",
+    )
+    .expect("write model");
+
+    let config_dir = fix.dir.path().join("config_fb");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(config_dir.join("gemini_api_key"), "test-fake-key-fallback").expect("write key");
+    fs::write(config_dir.join("gemini_base_url"), server.base_url()).expect("write base_url");
+
+    let out_dir = fix.dir.path().join("out_fb");
+    fs::create_dir_all(&out_dir).expect("out dir");
+
+    struct FallbackFakeTools {
+        ytdlp: PathBuf,
+        whisper: PathBuf,
+        ffmpeg: PathBuf,
+        models_dir: PathBuf,
+        config_dir: PathBuf,
+    }
+
+    impl ToolProvider for FallbackFakeTools {
+        fn environment(
+            &self,
+            options: ItemOptions,
+        ) -> BoxFuture<Result<JobEnvironment, ErrorInfo>> {
+            fs::create_dir_all(&options.output_dir).ok();
+            let env = JobEnvironment {
+                ytdlp: self.ytdlp.clone(),
+                ffmpeg: Some(self.ffmpeg.clone()),
+                ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(
+                    &self.ffmpeg,
+                    None,
+                ),
+                whisper: Some(self.whisper.clone()),
+                models_dir: Some(self.models_dir.clone()),
+                config_dir: Some(self.config_dir.clone()),
+                whisper_threads: 2,
+                skip_silence_vad: false,
+                default_whisper_model: Some("large-v3-turbo-q5_0".to_string()),
+                default_transcript_language: None,
+                default_transcription_engine_order: None,
+                default_gemini_model: None,
+                default_summarize: false,
+                default_summary_language: None,
+                runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
+                    mode: JsRuntimeMode::QuickJsOnly,
+                    qjs: None,
+                    deno: None,
+                    ytdlp_version: "2026.01.01".to_string(),
+                },
+                memory: Arc::new(RuntimeMemoryStore::load(self.models_dir.join("mem.json"))),
+                private_temp: None,
+                youtube_clients: None,
+            };
+            Box::pin(std::future::ready(Ok(env)))
+        }
+    }
+
+    let engine = QueueEngine::open(EngineConfig {
+        path: fix.dir.path().join("queue_fb.json"),
+        provider: Arc::new(FallbackFakeTools {
+            ytdlp: fake_ytdlp,
+            whisper: fake_whisper,
+            ffmpeg: fix.fake_ffmpeg.clone(),
+            models_dir,
+            config_dir,
+        }),
+        sink: Arc::new(|_update| {}),
+        lanes: scaricatore_di_porto_lib::services::queue::model::LaneConfig::default(),
+        notify_on_idle: false,
+        notifier: Some(Arc::new(DummyNotifier)),
+    });
+    engine.start();
+
+    let add_req = AddRequest {
+        url: "https://www.youtube.com/watch?v=fallback123".to_string(),
+        title: Some("Fallback Test Video".to_string()),
+        site: Some("youtube".to_string()),
+        duration_sec: Some(30),
+        options: ItemOptions {
+            kind: Kind::Video,
+            quality: QualityChoice::Best,
+            output_dir: out_dir.clone(),
+            cookies: CookieChoice::None,
+            runtime_mode: JsRuntimeMode::QuickJsOnly,
+            transcribe: true,
+            transcription_engine: Some("subtitles_whisper_gemini".to_string()),
+            ..ItemOptions::default()
+        },
+        group_id: None,
+        file: Some(media),
+    };
+
+    let item_id = engine.add(vec![add_req], true).added[0].clone();
+    let mut final_item = None;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let snap = engine.snapshot();
+        if let Some(it) = snap.items.iter().find(|i| i.id == item_id) {
+            if matches!(it.state, ItemState::Done | ItemState::Failed) {
+                final_item = Some(it.clone());
+                break;
+            }
+        }
+    }
+
+    let item = final_item.expect("fallback item should finish");
+    assert_eq!(
+        item.state,
+        ItemState::Done,
+        "Subtitles -> Whisper -> Gemini fallback should succeed via Gemini, got error: {:?}",
+        item.error
+    );
+
+    // 1. Subtitles were attempted first via yt-dlp --skip-download (manual + auto = 2 calls)
+    let ytdlp_calls: u32 = fs::read_to_string(bin_dir.join("fake-ytdlp.calls"))
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert!(
+        ytdlp_calls >= 1,
+        "Subtitles step must have invoked yt-dlp before falling back to Whisper"
+    );
+
+    // 2. Whisper was attempted second (with CPU retry when first attempt fails)
+    let whisper_calls: u32 = fs::read_to_string(bin_dir.join("fake-whisper.calls"))
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert!(
+        whisper_calls >= 1,
+        "Whisper step must have been attempted before falling back to Gemini"
+    );
+    assert!(
+        item.log_tail
+            .iter()
+            .any(|l| l.contains("Whisper transcription failed")),
+        "item log_tail should record Whisper failure before falling back to Gemini, got: {:?}",
+        item.log_tail
+    );
+
+    // 3. Gemini succeeded as the final fallback
+    assert_eq!(item.transcript_origin.as_deref(), Some("gemini"));
+    assert_eq!(item.transcript_files.len(), 1);
+    assert!(item.transcript_files[0].is_file());
+    let txt = fs::read_to_string(&item.transcript_files[0]).expect("read gemini transcript");
+    assert!(txt.contains("This is the transcribed text from mock Gemini API."));
 }
