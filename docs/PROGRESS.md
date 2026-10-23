@@ -4312,3 +4312,41 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): D125 updated in-place to correct inaccurate claims per review B6.
 - Next step: Address remaining review items.
+
+## 2026-10-23 — M7 / Polish and release
+- Done:
+  - **On-demand tools.** Added `ArchiveKind::Gz` and a generic `tools::install_tool` for plain, `.gz`, `.zip`, `.tar.gz` and `.tar.xz` assets; ffmpeg/ffprobe are pinned to 7.0.2 from `eugeneware/ffmpeg-static` b6.1.1 with all ten SHA-256 values computed from the real assets. Installing ffmpeg also installs its ffprobe companion. `sdp-whisper` remains installable from a user path; its manifest entries are null because `whisper-v1.9.5` is still 404. Committed as `ed015ad`.
+  - **Setup wizard.** Real install/retry/cancel for missing tools, batch install, recommended Whisper model download/cancel/resume, engine order, output-folder picker, focus trap, and close/backdrop/Escape counted as completed.
+  - **Queue and keyboard.** Filter (`Ctrl/Cmd+F`), row checkboxes, Shift-click range selection, select-all-shown, bulk pause/resume/cancel/remove, `Ctrl/Cmd+,`, and typing-vs-interactive target handling. Committed as `d317306`.
+  - **About and updates.** About page, daily update check, check/install/relaunch UI, diagnostics copy, open logs/folders, licences list. Rust side: `commands/app.rs`, `services/logging.rs`, `services/diagnostics.rs`, `ErrorCode::Update`, updater/process plugins, capabilities.
+  - **Updater and CI.** `createUpdaterArtifacts: true`, generated public key and GitHub `releases/latest/download/latest.json` endpoint. `scripts/generate-latest-json.mjs` builds the four-platform manifest from the real `.sig` files; CI checks the signing secret before building, uploads Windows/macOS signatures, generates the manifest and guards the release assets. A local signed Linux build produced `.deb.sig`, `.rpm.sig` and `.AppImage.sig`; the manifest generator accepted the real AppImage signature.
+  - **User docs and licence.** English `README.md`, Italian `README.it.md`, `docs/SUPPORTED_SITES*.md`, `docs/TROUBLESHOOTING*.md`, and an MIT `LICENSE`. Bilingual user docs are the deliberate exception recorded in D129.
+  - **Polish.** Localized error banner first with collapsed technical detail, wizard layout fixes, queue compaction, `ToolSource::PathEnv` serialization fix (`path`), and `docs/ACCEPTANCE.md` with the full §15 status.
+  - **Size and memory measurements.** App binary **8,890,880 bytes (8.5 MiB)**, `.deb` **43.2 MiB**, `.rpm` **43.2 MiB**, AppImage **148.9 MiB**. Installers are intentionally larger than 15 MiB because they carry yt-dlp (~38.6 MiB) and qjs; there is no hard installer-size gate (D132). Idle main process: **191,920 kB RSS / 87,832 kB PSS / 44,628 kB RssAnon**; the 30 MB target is not met on Linux (D133).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → **436 unit + 193 integration = 629 passed, 0 failed, 4 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 333 tests passed**.
+  - `npm run build` → pass.
+  - `npm run check:ci` → 24 run blocks valid.
+  - `npm run check:runners`, `npm run check:tools`, `npm run check:release -- v0.1.0` → pass.
+  - `npx tauri build` with the local updater key → signed Linux bundle, sizes above; public key in `tauri.conf.json` matches the generated public key.
+  - `node scripts/generate-latest-json.mjs ...` → four platform entries with percent-encoded URLs and real signatures.
+  - `cargo test --test real_selftest the_self_test_passes_with_the_bundled_tools -- --ignored --nocapture` → **pass**: bundled yt-dlp 2026.08.19, QuickJS, 24 formats, heights `[240, 144]`, 2137 ms.
+  - `cargo test --test real_selftest a_real_inspection_and_download_end_to_end -- --ignored --nocapture` → **pass**: "Me at the zoo" inspected in 2093 ms, `.mkv` downloaded in 2835 ms, `.opus` produced.
+  - Manual Linux/KDE Wayland checks: queue filter/selection/bulk/shortcuts, wizard tool install and model download, local-file transcription, Gemini error banner, language/theme switching, About/diagnostics, update error.
+- Not verified / stubbed:
+  - Windows 10/11 x64 and macOS 13+ manual acceptance (no hardware); no macOS notarization or Windows code signing.
+  - Public 1080p/4K/Shorts download, 100-item playlist, non-YouTube/HLS/cookies/live/DRM, and a real Gemini request (no API key here).
+  - `sdp-whisper` sidecar install and every Whisper model size / >2 h chunking end-to-end: the release assets are still 404.
+  - A real in-app update: `releases/latest` still points at the old `v2.5`, which has no `latest.json`; a signed M7 release must exist first.
+  - The idle-RSS target of spec §15 item 1 is **not met** on Linux (D133); `docs/ACCEPTANCE.md` records the item as open, not waived.
+- Spec items marked "verify" that I checked:
+  - Tauri v2 updater artifacts → a local Linux build with `createUpdaterArtifacts: true` produces the raw `.AppImage` + `.AppImage.sig`, not `.AppImage.tar.gz`; macOS produces `*.app.tar.gz` + `.sig`, Windows NSIS `*-setup.exe` + `.sig`. The `.tar.gz` wrapper is only for deprecated v1-compatible mode (D127).
+  - `eugeneware/ffmpeg-static` b6.1.1 → all ten `.gz` assets exist, their SHA-256 values were computed locally, and the Linux x64 ffmpeg/ffprobe binaries run and report 7.0.2.
+  - `sdp-whisper` `whisper-v1.9.5` → HTTP 404 on 2026-10-23; the manifest keeps the shape with null URLs/checksums and the UI reports it as unavailable.
+  - Tauri updater/process plugin versions → `tauri-plugin-updater 2.14.0`, `tauri-plugin-process 2.4.0`; the JS updater package is not used.
+- Decisions/deviations (also in DECISIONS.md): D126 tools, D127 updater/artifact behavior and MSRV 1.90, D128 diagnostics/logging, D129 bilingual docs, D130 UI, D131 MIT licence, D132 installer measurements without a hard gate, D133 Linux idle-RSS finding.
+- Next step: human prerequisites for a release: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub secrets, publish the `sdp-whisper` assets, publish a signed M7 release with `latest.json`, and run the Tier 1 manual acceptance on Windows/macOS. Decide whether to accept or investigate the Linux RSS deviation (D133).

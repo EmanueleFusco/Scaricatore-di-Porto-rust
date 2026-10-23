@@ -3410,3 +3410,85 @@ Phase M6 implements subtitles-first transcript extraction, the Gemini cloud tran
 
 
 
+
+### D126 — M7: on-demand ffmpeg/ffprobe provisioning and the unavailable Whisper sidecar (spec §5.1, §5.2)
+
+M7 closes the "everything downloadable from inside the app" gap without bundling anything beyond yt-dlp and qjs (spec §0.7, §5.2.1):
+
+1. **Source and version.** ffmpeg and ffprobe are pinned to **7.0.2** from `eugeneware/ffmpeg-static` release **b6.1.1**, which republishes the johnvansickle (Linux), evermeet (macOS) and Gyan/BtbN (Windows) builds. The release ships one `.gz` per executable and platform; all ten SHA-256 values in `tools.manifest.json` were computed locally from the downloaded assets. The Linux x64 binaries were executed: `ffmpeg -version` reports 7.0.2 and `-encoders` lists `libopus`, `libmp3lame` and `libx264`. The other nine binaries were checked for the expected ELF/PE/Mach-O format but not executed (no hardware for the other platforms).
+2. **No new archive dependency.** A single gzip stream is not a `.tar.gz`, so `ArchiveKind::Gz` and `extract_gz` were added. `tools::install_tool` is now generic over plain assets, `.gz`, `.zip`, `.tar.gz` and `.tar.xz`: it downloads to `.<exe>.download` (plain) or `unpack-<version>` (archive), verifies SHA-256, extracts with the existing path-traversal guard, renames atomically and sets the executable bit on Unix. `extract_archive` deliberately refuses `Gz`; `download()` handles that case before it.
+3. **ffprobe is a companion, not a second button.** Installing `ffmpeg` also installs `ffprobe`, because duration probing needs both. `tools_status` no longer lists ffprobe twice, and the wizard's "Install missing tools" only asks for ffmpeg.
+4. **Platform gaps are explicit.** `eugeneware/ffmpeg-static` has no `win32-arm64` asset, so that platform is absent from the manifest and the UI reports "not available on this platform" instead of offering a 404. The same rule applies to `sdp-whisper`: on 2026-10-23 the expected `whisper-v1.9.5` release answered 404, so every `url`/`sha256` is `null`, the Tools row explains that no release is published yet, and **Use my own path** still works. The manifest shape is ready for the day `whisper-sidecar.yml` publishes the assets.
+5. **Verification.** The ignored integration test `the_ffmpeg_install_downloads_verifies_and_runs` downloads both binaries, verifies their checksums, runs `ffmpeg -version` and removes the temp tree. It passed locally but is not part of `cargo test` because it needs the network; the normal suite uses the existing fake tools.
+
+### D127 — M7: in-app updates, signed updater manifest and the MSRV bump (spec §13.4)
+
+1. **Plugins and key handling.** `tauri-plugin-updater` **2.14.0** and `tauri-plugin-process` **2.4.0** are Rust-side dependencies. The JS updater package was installed during the spike and then removed: the frontend only calls `app_update_check` / `app_update_install`, and `@tauri-apps/plugin-process` is used solely for `relaunch()`. The public key is in `tauri.conf.json`; the private key was generated outside the repository (`/tmp/opencode/updater.key`, password empty) and only the public half was copied into the config. A human must add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to the repository secrets before a signed release can be built.
+2. **Endpoint and artifacts.** `bundle.createUpdaterArtifacts = true`; the endpoint is `https://github.com/EmanueleFusco/ScaricatoreDiPorto/releases/latest/download/latest.json`. The local Linux bundle build on 2026-10-23 produced `*.deb.sig`, `*.rpm.sig` and **`*.AppImage.sig`**, with no `.AppImage.tar.gz`: with the v2 (`true`) mode the updater installs the raw AppImage, and the `.tar.gz` wrapper only exists in the deprecated v1-compatible mode. The local `tauri-bundler` 2.10.4 source confirms that macOS always archives the `.app` as `*.app.tar.gz` and signs it, and that Windows NSIS produces `*-setup.exe` + `.sig`. Platform keys are `linux-x86_64`, `windows-x86_64`, `darwin-aarch64` and `darwin-x86_64`. `scripts/generate-latest-json.mjs` prefers an `.AppImage.tar.gz` if a legacy build ever supplies one, otherwise it points Linux at the raw `.AppImage`.
+3. **Linux scope.** Only the AppImage can replace itself. `.deb` and `.rpm` installs show "new version available" plus a link to the releases page (`canSelfUpdate()` in `src/lib/about.ts`), matching spec §13.4.
+4. **Static `latest.json`.** `scripts/generate-latest-json.mjs` builds the manifest from the files actually collected in the release job: URLs are percent-encoded, signatures are inlined, and the script fails when a platform, a signature or an expected artifact is missing. The release job runs it after flattening the artifacts, and the release guard rejects anything that is not an installer/updater file. On macOS the universal `.app.tar.gz` is used for both `darwin-*` keys; the native macOS bundle deliberately does not upload its own updater archive, because two files with the same name would collide in the merged artifact directory.
+5. **UX.** The About page checks at most once every 24 hours, stores the timestamp in `localStorage` (no settings schema bump), and never installs without a click. Installing is refused while the queue is active. The update progress arrives through the `update:progress` event; after installation the page offers a relaunch.
+6. **MSRV and Clippy.** `rust-version` moved from 1.85 to **1.90** because the updater requires it (local toolchain 1.95.0). The higher floor enables let-chain rewrites in code unrelated to M7, so `clippy::collapsible_if` is allowed at crate level and in the four affected integration-test binaries. This is a deliberate, reviewable exception, not a blanket lint disable.
+7. **Size.** The binary measured by `scripts/report-bundle-sizes.mjs` after a full local `npx tauri build` is **8,890,880 bytes (8.5 MiB)**, against 6.9 MiB before M7 (about +1.6 MiB, +23%). `cargo tree -d` shows why: the app keeps `reqwest 0.12.28` and the updater brings `reqwest 0.13.5`, both rustls-based. The binary remains well under the 15 MB target of spec §15. The same build produced a **43.2 MiB `.deb`**, a **43.2 MiB `.rpm`** and a **148.9 MiB AppImage** (excluded from the budget by spec §1). These are local Linux numbers; the CI runner may differ and reports its own.
+8. **Verified locally.** `npx tauri build` with the generated private key produced `.deb.sig`, `.rpm.sig` and `.AppImage.sig`, and `scripts/generate-latest-json.mjs` read the real `.AppImage.sig` into a four-platform `latest.json` with percent-encoded URLs. The public key in `tauri.conf.json` matches `/tmp/opencode/updater.key.pub`.
+9. **Not verified.** A real update cannot be exercised until a signed M7 release with `latest.json` exists; `releases/latest` currently resolves to the old `v2.5`, which has no manifest. Windows and macOS updater behaviour is likewise unverified on hardware.
+
+### D128 — M7: diagnostics and a minimal log without `tauri-plugin-log` (spec §11.8)
+
+1. **Logging.** `services/logging.rs` writes one append-only file at `<app log dir>/scaricatore-di-porto.log`. Each line is `[unix-seconds] LEVEL: message`; embedded newlines are replaced so a log entry can never forge a second line. Logging is best effort and must never make an operation fail. The file is capped only when read: **Copy diagnostics** keeps the last 80 lines.
+2. **Why no plugin.** `tauri-plugin-log` would add a dependency tree for a feature that is one `OpenOptions::append` away. The app needs a support file, not structured logging, rotation or a remote sink.
+3. **Diagnostics.** `services/diagnostics.rs` is a pure builder: app name/version, OS/arch, target triple, bundle type, settings/tools/bundled/temp/models/log paths, one row per tool (version, source, path) and the log tail. It is explicitly tested to contain no `api_key`, `AIza` or `cookie` strings. The frontend copies the text and can reveal the log file in the system file manager.
+4. **Privacy.** The report contains local paths, which is why both READMEs tell the user to read it before posting it publicly. It never contains API keys, cookies or URLs from the queue.
+
+### D129 — M7: bilingual user documentation (deliberate exception to the English-only rule)
+
+The repository rule says everything published to GitHub is in English. M7 adds **Italian user documentation** anyway, because the application itself ships Italian and English and a user who chooses Italian should not be sent to an English-only guide:
+
+- `README.md` (English) and `README.it.md` (Italian);
+- `docs/SUPPORTED_SITES.md` / `.it.md`;
+- `docs/TROUBLESHOOTING.md` / `.it.md`.
+
+English is the source of truth; the Italian files are maintained translations and must be updated in the same commit as their English counterpart. This exception covers **user-facing documentation only**. Code comments, commit messages, CI text, `docs/PROGRESS.md`, `docs/DECISIONS.md` and `docs/RUST_PORT_GUIDELINES.md` remain English. The historical Italian content inventoried in D77 is a separate translation task and is not changed here.
+
+### D130 — M7: UI quality-of-life, keyboard shortcuts and honest error banners (spec §11.5, §11.9)
+
+1. **Queue.** Added a find-as-you-type filter (`Ctrl/Cmd+F`), row checkboxes, Shift-click range selection, select-all-shown, and an inline bulk bar for pause/resume/cancel/remove. The list stays virtualised; the 5,000-item arithmetic test still renders fewer than 20 nodes.
+2. **Shortcuts.** `shortcuts.ts` distinguishes `isTypingTarget` (text-consuming inputs, textareas, selects, contenteditable) from `isInteractiveTarget` (any input, button or link). `Ctrl/Cmd+F` therefore still works after clicking a checkbox, while `Delete` and `Space` do not steal keys from a button or a link. `Ctrl/Cmd+,` opens Settings. The bug was found by manual testing and covered by the 10 shortcut tests.
+3. **Setup wizard.** The Tools step performs real installs with retry/cancel, can install all missing required tools in one action, and shows per-tool state. The Transcription step downloads/cancels/resumes the recommended Whisper model and chooses the engine order. The last step picks an output folder. The dialog traps focus, and closing it with the X, the backdrop or Escape counts as completed, so it does not reappear on every launch.
+4. **Errors.** Error banners show the localized `message_key` first; raw provider/technical detail sits in a collapsed `<details>` (`common.technicalDetails`). A Gemini JSON error no longer fills the page.
+5. **Layout.** The wizard has a fixed header/footer and a scrollable body. The queue was compacted so the add bar, filter, bulk bar, list and footer all fit the default 980×680 window; the empty state is centred.
+6. **Contract fix.** `ToolSource::PathEnv` serializes as `path` (not the camelCased `pathEnv`), matching what the frontend already switched on. A regression test locks the five source names.
+7. **Verification.** Manual checks on Linux/KDE Wayland covered the queue, filter, selection, bulk actions, shortcuts, wizard, tool install, model download, local-file transcription, Gemini error, language/theme switching, About, diagnostics and update error. Windows and macOS were not manually tested.
+
+### D131 — M7: MIT licence file
+
+Added a root `LICENSE` (MIT, Copyright (c) 2026 Emanuele Fusco) to match the `license = "MIT"` already declared in `package.json` and `src-tauri/Cargo.toml`. The Tauri bundle metadata now also says MIT. Third-party components keep their own licences, listed in **Settings → About → Licences** and in `tools.manifest.json`; the GPL-3.0-or-later status of ffmpeg is called out explicitly.
+
+### D132 — M7: installer size measurements, without a hard gate (spec §1, §15 item 1)
+
+Spec §1 fixes the **application binary** at ≤ 15 MB and asks for the installer size to be measured and reported; the AppImage is excluded because it embeds WebKitGTK. M7 records the Linux numbers so a future regression is visible:
+
+| artifact | local Linux build, 2026-10-23 | note |
+| :-- | --: | :-- |
+| application binary | 8.5 MiB | under the spec §1 binary target of ≤ 15 MB |
+| `.deb` | 43.2 MiB | includes the bundled yt-dlp (~38.6 MiB) and qjs |
+| `.rpm` | 43.2 MiB | same contents as the `.deb` |
+| AppImage | 148.9 MiB | excluded by spec §1 (embeds WebKitGTK) |
+| Windows NSIS | not measured locally | to be reported by the first CI bundle |
+| macOS universal `.dmg` / `.app.zip` | not measured locally | to be reported by the first CI bundle |
+
+The installers are deliberately larger than 15 MiB: yt-dlp alone is about 38.6 MiB, and shipping it is what makes the first run work offline (D30). There is **no hard installer-size gate**: `scripts/report-bundle-sizes.mjs` reports the measured numbers on every bundle job, but does not fail a release for being large. The 15 MB figure remains the spec target for the application binary only, and the measured 8.5 MiB is comfortably below it. Windows and macOS numbers are unknown until CI runs on those runners; they are not guessed here.
+
+### D133 — M7: idle memory on Linux and the 30 MB target (spec §15 item 1)
+
+Spec §15 item 1 asks for "idle RSS of the Rust process ≲ 30 MB (tree measured separately)". Measured on 2026-10-23 on Linux x64 / CachyOS / KDE Wayland, using the release binary after the window had been idle for 30 seconds, with no queue activity:
+
+| process | VmRSS | PSS | RssAnon |
+| :-- | --: | --: | --: |
+| `scaricatore-di-porto` (Rust process) | 191,920 kB | 87,832 kB | 44,628 kB |
+| `WebKitNetworkProcess` | 65,464 kB | 32,685 kB | 22,700 kB |
+| `WebKitWebProcess` | 160,060 kB | 110,289 kB | 42,924 kB |
+
+The Rust process's RSS is dominated by file-backed shared library mappings, not by the application's own heap: `libnvidia-gpucomp.so` 27.8 MB, `libLLVM.so` 26.3 MB, `libwebkit2gtk` 19.7 MB, `libjavascriptcoregtk` 12.5 MB, `[anon:WKFastMalloc]` 11.4 MB, and the application binary itself 7.7 MB. Its private anonymous memory (`RssAnon`, equal to `Private_Dirty` here) is 43.6 MiB, so the 30 MB target is **not met** even when "Rust process" is read as private memory rather than raw RSS. The tree (main + network + web process) is about 408 MiB RSS and 226 MiB PSS, measured separately as the spec asks.
+
+No memory optimisation was attempted in M7. This is a WebKitGTK/GPU-driver baseline rather than a small allocation that a code change can remove, and the correct next step is to repeat the measurement on a clean VM without the NVIDIA/LLVM stack before changing the target or the application. The item remains **open**, not waived: M7 does not claim that spec §15 item 1 fully passes.
