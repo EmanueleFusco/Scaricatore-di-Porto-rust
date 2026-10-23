@@ -214,6 +214,8 @@
   "tools.state.notInstalled": "Not found",
   "tools.state.belowMinVersion": "Too old",
   "tools.state.notAvailable": "Not available on this system",
+  "tools.state.notYetAvailable": "Not available yet",
+  "tools.install.unavailable": "No release is published for this tool yet. You can still use your own copy.",
   "tools.source.override": "Your own path",
   "tools.source.appData": "In the app data folder",
   "tools.source.bundled": "Bundled in the installer",

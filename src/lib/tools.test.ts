@@ -71,12 +71,30 @@ describe("toolState()", () => {
     expect(info.problem).toBe(false);
   });
 
+  it("distinguishes a declared tool whose release is not published yet", () => {
+    // sdp-whisper is in the manifest but its release tag is still 404: the row
+    // must say "not available yet", never offer a download that fails.
+    const info = toolState(
+      tool({
+        name: "sdp-whisper",
+        bundled: false,
+        installable: false,
+        path: null,
+        source: null,
+        version: null,
+      }),
+    );
+    expect(info.state).toBe("notYetAvailable");
+    expect(info.problem).toBe(false);
+  });
+
   it("names an i18n key that exists in both dictionaries", () => {
     for (const candidate of [
       tool(),
       tool({ path: null }),
       tool({ meetsMinVersion: false }),
       tool({ availableOnPlatform: false }),
+      tool({ name: "sdp-whisper", bundled: false, installable: false, path: null }),
     ]) {
       const key = toolState(candidate).key;
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
@@ -244,8 +262,22 @@ describe("readyToolCount() and wizardToolNames()", () => {
 
 describe("optional tools never look like a problem", () => {
   it("a missing Deno is not a problem; a missing ffmpeg is", () => {
-    const deno = tool({ name: "deno", bundled: false, source: null, path: null, version: null });
-    const ffmpeg = tool({ name: "ffmpeg", bundled: false, source: null, path: null, version: null });
+    const deno = tool({
+      name: "deno",
+      bundled: false,
+      installable: true,
+      source: null,
+      path: null,
+      version: null,
+    });
+    const ffmpeg = tool({
+      name: "ffmpeg",
+      bundled: false,
+      installable: true,
+      source: null,
+      path: null,
+      version: null,
+    });
     expect(toolState(deno)).toEqual({
       state: "notInstalled",
       key: "tools.state.notInstalled",
@@ -254,6 +286,23 @@ describe("optional tools never look like a problem", () => {
     expect(toolState(ffmpeg).problem).toBe(true);
     expect(hasToolProblem([deno])).toBe(false);
     expect(hasToolProblem([deno, ffmpeg])).toBe(true);
+  });
+
+  it("a missing sdp-whisper is optional and its unpublished release is not a defect", () => {
+    const whisper = tool({
+      name: "sdp-whisper",
+      bundled: false,
+      installable: false,
+      source: null,
+      path: null,
+      version: null,
+    });
+    expect(toolState(whisper)).toEqual({
+      state: "notYetAvailable",
+      key: "tools.state.notYetAvailable",
+      problem: false,
+    });
+    expect(hasToolProblem([whisper])).toBe(false);
   });
 
   it("an installed Deno is simply ok", () => {

@@ -120,7 +120,8 @@ export type ToolState =
   | "ok"
   | "belowMinVersion"
   | "notInstalled"
-  | "notAvailable";
+  | "notAvailable"
+  | "notYetAvailable";
 
 export interface ToolStateInfo {
   state: ToolState;
@@ -132,11 +133,12 @@ export interface ToolStateInfo {
 
 /**
  * Tools that are **optional by design**: not being installed is a normal state,
- * not a problem. Deno is the automatic fallback runtime (spec §5.3): it is
- * never bundled and only downloaded on demand, so a red "needs attention" dot
- * for its absence would light up the footer on every fresh install.
+ * not a problem. Deno is the automatic fallback runtime (spec §5.3) and
+ * sdp-whisper only matters when the user chooses local Whisper transcription.
+ * Neither is bundled, so a red "needs attention" dot for their absence would
+ * light up the footer on every fresh install.
  */
-export const OPTIONAL_TOOLS: readonly string[] = ["deno"];
+export const OPTIONAL_TOOLS: readonly string[] = ["deno", "sdp-whisper"];
 
 /**
  * Classify a tool for the status cell.
@@ -144,13 +146,22 @@ export const OPTIONAL_TOOLS: readonly string[] = ["deno"];
  * Order matters and is deliberate:
  * 1. not available on this platform — nothing the user can do (spec §1.1: say
  *    so plainly instead of failing silently);
- * 2. below `minVersion` — found and running, but too old for the flags we need;
- * 3. not installed — nothing was found anywhere;
- * 4. ok.
+ * 2. declared but with no published release yet — the row exists so the tool
+ *    is visible, but there is no button that would download a 404;
+ * 3. below `minVersion` — found and running, but too old for the flags we need;
+ * 4. not installed — nothing was found anywhere;
+ * 5. ok.
  */
 export function toolState(tool: ToolStatus): ToolStateInfo {
   if (!tool.availableOnPlatform) {
     return { state: "notAvailable", key: "tools.state.notAvailable", problem: false };
+  }
+  if (!tool.path && !tool.installable && !tool.bundled) {
+    return {
+      state: "notYetAvailable",
+      key: "tools.state.notYetAvailable",
+      problem: false,
+    };
   }
   if (!tool.path) {
     return {

@@ -34,19 +34,18 @@ pub struct ToolsView {
     pub setup_wizard_completed: bool,
 }
 
-/// Every tool the app knows about: the ones in the manifest, plus the ones it
-/// only detects (`ffmpeg`, `ffprobe` — spec §5 prefers the system install).
+/// Every tool the app knows about, in manifest order.
+///
+/// ffmpeg and ffprobe are in the manifest like every other on-demand tool: the
+/// app still prefers a system install (lookup order #4/#5), but the manifest is
+/// what makes "Install for me" possible when there is none.
 fn tool_names(context: &crate::state::ToolContext) -> Vec<String> {
-    let mut names: Vec<String> = context
+    context
         .manifest()
         .tools
         .iter()
         .map(|tool| tool.name.clone())
-        .collect();
-    for extra in tools::extra_tools() {
-        names.push((*extra).to_owned());
-    }
-    names
+        .collect()
 }
 
 /// Resolve every tool and report on it.
@@ -218,11 +217,12 @@ pub fn tools_complete_setup(state: State<'_, AppState>) -> AppResult<()> {
 
 /// Install a tool on demand (spec §5.2, §5.2.1, §5.3.2).
 ///
-/// Deno is the one installable tool of M1: it is never bundled, and it is
-/// downloaded only when the user presses the button after a fallback needed it.
-/// ffmpeg stays "later" for the same reason as in M0-C: it is an M4 decision
-/// with licence and size consequences, and a button that silently does nothing
-/// would be worse than the words.
+/// One generic path for every non-bundled tool. ffmpeg is the only name that
+/// expands to a second download: duration probing needs ffprobe, and a user who
+/// asked for "media processing" should not have to discover that separately.
+/// The companion is installed only when the requested tool succeeded, and the
+/// call is idempotent, so a failed second download can be retried without
+/// fetching ffmpeg again.
 #[tauri::command]
 pub async fn tools_install<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -230,39 +230,49 @@ pub async fn tools_install<R: tauri::Runtime>(
     tool: String,
 ) -> AppResult<ToolStatus> {
     let name = tool.trim().to_ascii_lowercase();
-    if name != manifest::DENO {
-        return Err(refuse(format!(
-            "{name} cannot be installed by the app yet: Deno is the only on-demand \
-             install of M1; ffmpeg, the Whisper sidecar and the models come with \
-             later phases."
-        )));
+    if name.is_empty() {
+        return Err(refuse("tools_install: the tool name is empty"));
     }
 
     let context = state.tools();
     let token = state.start_install();
-    let events = app.clone();
-    let tool_name = name.clone();
-    // `tool:progress` (spec §3): the download callback is synchronous, so the
-    // event is emitted from the same thread that is reading the body.
-    let on_progress = move |progress: crate::services::download::DownloadProgress| {
-        let _ = events.emit(
-            "tool:progress",
-            ToolProgressEvent {
-                tool: tool_name.clone(),
-                received: progress.received,
-                total: progress.total,
-            },
-        );
+    // ffmpeg and ffprobe come from the same release; installing one without the
+    // other would leave duration probing broken with no obvious explanation.
+    let requested: Vec<&str> = if name == tools::FFMPEG {
+        vec![tools::FFMPEG, "ffprobe"]
+    } else {
+        vec![name.as_str()]
     };
 
-    let installed = tools::install_deno(
-        context.manifest(),
-        context.triple(),
-        context.tools_dir(),
-        &token,
-        on_progress,
-    )
-    .await;
+    let mut installed: Result<PathBuf, crate::error::AppError> = Ok(PathBuf::new());
+    for tool_name in &requested {
+        let events = app.clone();
+        let event_name = (*tool_name).to_owned();
+        // `tool:progress` (spec §3): the download callback is synchronous, so
+        // the event is emitted from the same thread that is reading the body.
+        let on_progress = move |progress: crate::services::download::DownloadProgress| {
+            let _ = events.emit(
+                "tool:progress",
+                ToolProgressEvent {
+                    tool: event_name.clone(),
+                    received: progress.received,
+                    total: progress.total,
+                },
+            );
+        };
+        installed = tools::install_tool(
+            context.manifest(),
+            tool_name,
+            context.triple(),
+            context.tools_dir(),
+            &token,
+            on_progress,
+        )
+        .await;
+        if installed.is_err() {
+            break;
+        }
+    }
     state.finish_install();
     installed.map_err(|err| err.to_error_info())?;
     // A tool just appeared where the lookup was not looking before.

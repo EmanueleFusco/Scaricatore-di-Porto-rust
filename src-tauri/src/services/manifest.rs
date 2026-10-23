@@ -70,6 +70,8 @@ pub enum ArchiveKind {
     TarGz,
     /// What BtbN publishes for Linux ffmpeg builds.
     TarXz,
+    /// A single executable compressed with gzip, as `ffmpeg-static` publishes.
+    Gz,
 }
 
 impl ArchiveKind {
@@ -669,12 +671,15 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback() {
+    fn the_manifest_carries_every_on_demand_tool() {
         // Spec §0.7, §5.4: bundled: only yt-dlp and qjs ship in the installer;
-        // Deno and sdp-whisper are downloaded on demand.
+        // Deno, ffmpeg/ffprobe and sdp-whisper are downloaded on demand.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec![YTDLP, DENO, QJS, SDP_WHISPER]);
+        assert_eq!(
+            names,
+            vec![YTDLP, DENO, QJS, "ffmpeg", "ffprobe", SDP_WHISPER]
+        );
 
         let whisper = manifest
             .tool(SDP_WHISPER)
@@ -691,8 +696,8 @@ mod tests {
             .expect("a linux x64 sdp-whisper asset");
         assert_eq!(whisper_entry.archive_kind, ArchiveKind::None);
         assert!(
-            whisper_entry.is_installable(),
-            "sdp-whisper must carry url + sha256 so the lazy install works"
+            !whisper_entry.is_installable(),
+            "the whisper-v1.9.5 release does not exist yet: the UI must say so"
         );
 
         let deno = manifest.tool(DENO).expect("deno is in the manifest");
@@ -726,7 +731,10 @@ mod tests {
     }
 
     #[test]
-    fn whisper_sidecar_asset_has_url_and_checksum_where_pinned() {
+    fn whisper_sidecar_stays_uninstallable_until_its_release_exists() {
+        // Verified on 2026-10-23: the tag whisper-v1.9.5 answers 404. A
+        // declared-but-unpublished release must report "not available", never
+        // offer a button that downloads a 404 (spec §1.1).
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let whisper = manifest.tool(SDP_WHISPER).expect("sdp-whisper");
         assert!(!whisper.platforms.is_empty());
@@ -737,19 +745,62 @@ mod tests {
             )
         );
 
-        let linux = whisper
-            .platforms
-            .get("x86_64-unknown-linux-gnu")
-            .expect("x86_64-unknown-linux-gnu entry");
-        assert_eq!(linux.archive_kind, ArchiveKind::None);
-        assert!(
-            linux.url.is_some() && linux.sha256.is_some(),
-            "linux whisper asset must carry url and sha256"
-        );
-        assert!(
-            linux.is_installable(),
-            "x86_64-unknown-linux-gnu whisper asset must be installable, not an unpinned entry"
-        );
+        for (triple, entry) in &whisper.platforms {
+            assert_eq!(entry.archive_kind, ArchiveKind::None, "{triple}");
+            assert_eq!(entry.url, None, "{triple} has no published asset yet");
+            assert_eq!(entry.sha256, None, "{triple} has no published checksum yet");
+            assert!(!entry.is_installable(), "{triple}");
+        }
+    }
+
+    #[test]
+    fn ffmpeg_and_ffprobe_are_pinned_gzip_assets_with_checksums() {
+        // ffmpeg-static publishes one gzip per executable, not an archive.
+        // Both tools must be installable on every platform where an asset
+        // exists; Windows ARM64 has no asset and is deliberately absent.
+        let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
+        for name in ["ffmpeg", "ffprobe"] {
+            let tool = manifest.tool(name).expect(name);
+            assert!(!tool.bundled, "{name} is downloaded on demand");
+            assert_eq!(tool.version.as_deref(), Some("7.0.2"), "{name}");
+            for triple in [
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                "x86_64-pc-windows-msvc",
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+            ] {
+                let entry = manifest
+                    .entry(name, triple)
+                    .unwrap_or_else(|| panic!("{name} is missing its {triple} entry"));
+                assert_eq!(entry.archive_kind, ArchiveKind::Gz, "{name}/{triple}");
+                assert!(
+                    entry.asset.as_deref().is_some_and(|a| a.ends_with(".gz")),
+                    "{name}/{triple}: the asset is the gzip itself"
+                );
+                assert!(
+                    entry.is_installable(),
+                    "{name}/{triple} must be installable"
+                );
+                assert_eq!(
+                    entry.executable(),
+                    Some(if triple.contains("windows") {
+                        if name == "ffmpeg" {
+                            "ffmpeg.exe"
+                        } else {
+                            "ffprobe.exe"
+                        }
+                    } else {
+                        name
+                    }),
+                    "{name}/{triple}"
+                );
+            }
+            assert!(
+                !manifest.supports(name, "aarch64-pc-windows-msvc"),
+                "{name}: no win32-arm64 asset exists, so the platform must be absent"
+            );
+        }
     }
 
     #[test]

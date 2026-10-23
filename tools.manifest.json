@@ -207,6 +207,119 @@
       }
     },
     {
+      "name": "ffmpeg",
+      "role": "Media processing (merge, encode, trim)",
+      "bundled": false,
+      "license": "GPL-3.0-or-later",
+      "licenseUrl": "https://ffmpeg.org/legal.html",
+      "homepage": "https://ffmpeg.org",
+      "versioning": "pinned",
+      "version": "7.0.2",
+      "minVersion": "4.0.0",
+      "note": [
+        "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
+        "Static GPLv3 build from eugeneware/ffmpeg-static release b6.1.1,",
+        "which republishes johnvansickle (Linux), evermeet (macOS) and",
+        "Gyan/BtbN (Windows) builds. The Linux x64 binary was run on",
+        "2026-10-23: `ffmpeg -version` reports 7.0.2 and `-encoders` lists",
+        "libopus, libmp3lame and libx264 (spec §5 table). All ten .gz",
+        "checksums below were computed locally from that release.",
+        "Installing ffmpeg also installs ffprobe, which duration probing needs.",
+        "There is no win32-arm64 asset in this release: the platform is",
+        "deliberately absent so the UI says 'not available on this platform'."
+      ],
+      "platforms": {
+        "x86_64-unknown-linux-gnu": {
+          "asset": "ffmpeg-linux-x64.gz",
+          "executableName": "ffmpeg",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz",
+          "sha256": "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "ffmpeg-linux-arm64.gz",
+          "executableName": "ffmpeg",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-arm64.gz",
+          "sha256": "754a678672298bc68156adff58aa7385a592c2b30b1d0ae8750c45c915c4bac0"
+        },
+        "x86_64-pc-windows-msvc": {
+          "asset": "ffmpeg-win32-x64.gz",
+          "executableName": "ffmpeg.exe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
+          "sha256": "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77"
+        },
+        "aarch64-apple-darwin": {
+          "asset": "ffmpeg-darwin-arm64.gz",
+          "executableName": "ffmpeg",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
+          "sha256": "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa"
+        },
+        "x86_64-apple-darwin": {
+          "asset": "ffmpeg-darwin-x64.gz",
+          "executableName": "ffmpeg",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
+          "sha256": "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106"
+        }
+      }
+    },
+    {
+      "name": "ffprobe",
+      "role": "Media probing (duration and streams)",
+      "bundled": false,
+      "license": "GPL-3.0-or-later",
+      "licenseUrl": "https://ffmpeg.org/legal.html",
+      "homepage": "https://ffmpeg.org",
+      "versioning": "pinned",
+      "version": "7.0.2",
+      "minVersion": "4.0.0",
+      "note": [
+        "Companion of ffmpeg: same release, same licence, same platforms.",
+        "The app probes duration with ffprobe before trimming and encoding;",
+        "installing ffmpeg installs both in one action."
+      ],
+      "platforms": {
+        "x86_64-unknown-linux-gnu": {
+          "asset": "ffprobe-linux-x64.gz",
+          "executableName": "ffprobe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64.gz",
+          "sha256": "25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "ffprobe-linux-arm64.gz",
+          "executableName": "ffprobe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-arm64.gz",
+          "sha256": "2ab6aba60ee84412dff9188720703376cb4e7aaf7e0b5e43aa8249f2acae5bf8"
+        },
+        "x86_64-pc-windows-msvc": {
+          "asset": "ffprobe-win32-x64.gz",
+          "executableName": "ffprobe.exe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64.gz",
+          "sha256": "f309e6223ad89d2fe54bccd420a7709b66fd27540674e92309578ed491a43c8d"
+        },
+        "aarch64-apple-darwin": {
+          "asset": "ffprobe-darwin-arm64.gz",
+          "executableName": "ffprobe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64.gz",
+          "sha256": "d986a8ec7b030899fe66a8a288ed809a3543338705a3ce178cfb85869c5d80be"
+        },
+        "x86_64-apple-darwin": {
+          "asset": "ffprobe-darwin-x64.gz",
+          "executableName": "ffprobe",
+          "archiveKind": "gz",
+          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64.gz",
+          "sha256": "d4da574d6e2e197bd259b47d69cf262df9e312af24ad960444f6d806d3d4c186"
+        }
+      }
+    },
+    {
       "name": "sdp-whisper",
       "role": "Transcription engine (Whisper sidecar)",
       "bundled": false,
@@ -219,17 +332,21 @@
       "releaseUrl": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}",
       "note": [
         "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
-        "Built from pinned whisper.cpp tag v1.9.5 by .github/workflows/whisper-sidecar.yml.",
-        "Attached to releases as sdp-whisper-<target-triple>[.exe].",
-        "Checksum for x86_64-unknown-linux-gnu verified byte-for-byte from tag v1.9.5 build."
+        "The shape below is what .github/workflows/whisper-sidecar.yml publishes",
+        "as sdp-whisper-<target-triple>[.exe], but the release is not public yet:",
+        "on 2026-10-23 the tag whisper-v1.9.5 answered 404. Every url/sha256 is",
+        "therefore null on purpose, so the app says 'not available on this",
+        "platform yet' instead of offering a button that downloads a 404.",
+        "When the sidecar workflow has published the release, fill url + sha256",
+        "from the release's own checksums and the Install button starts working."
       ],
       "platforms": {
         "x86_64-unknown-linux-gnu": {
           "asset": "sdp-whisper-x86_64-unknown-linux-gnu",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-unknown-linux-gnu",
-          "sha256": "c0cc33d49a950ecda4089ba7448a576ab7286b950c48c2e718bd8913c97932eb"
+          "url": null,
+          "sha256": null
         },
         "aarch64-unknown-linux-gnu": {
           "asset": "sdp-whisper-aarch64-unknown-linux-gnu",

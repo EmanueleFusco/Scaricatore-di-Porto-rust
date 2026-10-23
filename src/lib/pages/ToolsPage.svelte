@@ -125,7 +125,7 @@
                   {tt("tools.action.update")}
                 </button>
               {/if}
-              {#if !tool.bundled && tool.installable && !tool.path}
+              {#if tool.installable && !tool.path}
                 <button
                   type="button"
                   class="btn"
@@ -149,6 +149,8 @@
                     {tt("tools.action.cancel")}
                   </button>
                 {/if}
+              {:else if state.state === "notYetAvailable"}
+                <span class="field__hint">{tt("tools.install.unavailable")}</span>
               {/if}
               <button
                 type="button"
