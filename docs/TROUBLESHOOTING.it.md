@@ -173,7 +173,9 @@ sola. Il timestamp è uno stato locale dell'interfaccia, non un'impostazione.
 ### Linux: la finestra è nera o va in crash su Wayland
 
 Alcune combinazioni WebKitGTK/GPU non riescono ad allocare i buffer DMA-BUF.
-Avvia con:
+Da questa versione l'app disabilita da sola il renderer DMA-BUF di WebKitGTK
+quando rileva una sessione Wayland su Linux, quindi il caso comune non ha
+bisogno di variabili d'ambiente. Se continua a chiudersi, avvia con:
 
 ```bash
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
@@ -185,9 +187,9 @@ Se la finestra continua a chiudersi, forza XWayland:
 GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
 ```
 
-Per il server di sviluppo, `npm run app` applica già entrambi i workaround su
-Wayland. I pacchetti installati hanno bisogno delle variabili nel launcher o
-nella voce del menu.
+Per le build più vecchie, `npm run app` applica già entrambi i workaround su
+Wayland. I pacchetti installati possono ancora avere bisogno delle variabili
+nel launcher o nella voce del menu.
 
 ### Linux: il selettore cartelle o "Apri file" non fa nulla
 

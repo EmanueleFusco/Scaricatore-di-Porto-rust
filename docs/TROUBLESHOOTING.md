@@ -162,7 +162,10 @@ itself. The timestamp is local UI state, not a setting.
 
 ### Linux: the window is black or crashes on Wayland
 
-Some WebKitGTK/GPU combinations cannot allocate DMA-BUF buffers. Launch with:
+Some WebKitGTK/GPU combinations cannot allocate DMA-BUF buffers. From this
+version the app disables WebKitGTK's DMA-BUF renderer itself when it detects a
+Wayland session on Linux, so the common case no longer needs environment
+variables. If it still crashes, launch with:
 
 ```bash
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
@@ -174,8 +177,8 @@ If the window still crashes, force XWayland:
 GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
 ```
 
-For the development server, `npm run app` already applies both workarounds on
-Wayland. Installed packages need the variables in the launcher or desktop entry.
+For older builds, `npm run app` applies both workarounds on Wayland. Installed
+packages may still need the variables in the launcher or desktop entry.
 
 ### Linux: the folder picker or "Open file" does nothing
 

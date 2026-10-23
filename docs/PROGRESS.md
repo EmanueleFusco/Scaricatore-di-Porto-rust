@@ -4378,3 +4378,22 @@ Branch `m4-media-processing`.
   - Tauri updater endpoint → corrected to the real repository; no `latest.json` release exists yet, so a live update check is still unverified.
 - Decisions/deviations (also in DECISIONS.md): D134 corrects D126/D127 and records the real sidecar release.
 - Next step: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub Actions secrets, then publish a signed M7 release with `latest.json` and run the remaining Tier 1 acceptance checks.
+
+## 2026-10-23 — M7 / Move the WebKitGTK Wayland DMA-BUF fallback into the app
+
+- Done:
+  - Reproduced `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display.` with `npm run tauri dev` on the owner's KDE Wayland / NVIDIA RTX 3080 session.
+  - Verified `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone keeps both the debug binary and the AppImage alive and removes the `Failed to create GBM buffer` messages. `WEBKIT_DISABLE_COMPOSITING_MODE=1` did not help, and `GDK_BACKEND=x11` was not needed once the DMA-BUF renderer was disabled.
+  - Added `is_wayland_session()` and `apply_webkit_dma_buf_fallback()` to `src-tauri/src/lib.rs`. On Linux, before Tauri creates the webview, the app now sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` when it detects a Wayland session and the user has not already set that variable.
+  - Added unit tests for `is_wayland_session()`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass.
+  - `( cd src-tauri && cargo test )` → 441 unit + 193 integration = 634 passed, 0 failed, 5 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND timeout --signal=TERM 25s npm run tauri dev` → no `Gdk-Message: Error 71`, no GBM warnings, process stayed alive until timeout.
+- Not verified / stubbed:
+  - The existing AppImage still uses the pre-fix binary and needs `WEBKIT_DISABLE_DMABUF_RENDERER=1` until it is rebuilt; newly built binaries apply the fallback automatically.
+  - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; the environment variable remains available as an override.
+- Decisions/deviations (also in DECISIONS.md): D135.
+- Next step: rebuild and publish a signed release so the AppImage inherits the fallback; otherwise document the environment variable for installed packages.

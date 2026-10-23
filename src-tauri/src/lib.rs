@@ -44,8 +44,39 @@ fn on_exit(app: &tauri::AppHandle) {
     process::kill_all_running();
 }
 
+/// WebKitGTK's default DMA-BUF renderer can die at startup on some Wayland
+/// compositors (for example KDE + NVIDIA) with
+/// `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display`.
+/// Spec §13.3 prescribes disabling it as the fallback. This is applied before the
+/// webview is created, and an explicit `WEBKIT_DISABLE_DMABUF_RENDERER` value is
+/// always respected.
+fn is_wayland_session(wayland_display: Option<&str>, xdg_session_type: Option<&str>) -> bool {
+    wayland_display.is_some_and(|value| !value.is_empty())
+        || xdg_session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+}
+
+#[cfg(target_os = "linux")]
+fn apply_webkit_dma_buf_fallback() {
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let user_override = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+
+    if user_override.is_none()
+        && is_wayland_session(wayland_display.as_deref(), xdg_session_type.as_deref())
+    {
+        // SAFETY: this runs before Tauri creates the GTK/WebKitGTK backend, and
+        // `set_var` is only called once on this startup path.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    apply_webkit_dma_buf_fallback();
+
     let builder = tauri::Builder::default()
         // Must be the FIRST plugin: a second launch has to be intercepted
         // before any other plugin starts doing work (spec §3 single-instance).
@@ -221,4 +252,34 @@ fn build_queue(handle: &tauri::AppHandle, state: &AppState) -> QueueEngine {
         notify_on_idle: settings.notify_on_idle,
         notifier: Some(notifier),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_wayland_session_from_display() {
+        assert!(is_wayland_session(Some("wayland-1"), None));
+    }
+
+    #[test]
+    fn is_wayland_session_from_xdg_type() {
+        assert!(is_wayland_session(None, Some("wayland")));
+    }
+
+    #[test]
+    fn is_wayland_session_is_case_insensitive() {
+        assert!(is_wayland_session(None, Some("Wayland")));
+    }
+
+    #[test]
+    fn is_wayland_session_rejects_empty_display() {
+        assert!(!is_wayland_session(Some(""), None));
+    }
+
+    #[test]
+    fn is_wayland_session_rejects_x11() {
+        assert!(!is_wayland_session(None, Some("x11")));
+    }
 }

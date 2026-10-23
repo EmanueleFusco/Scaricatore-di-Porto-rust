@@ -3498,3 +3498,34 @@ No memory optimisation was attempted in M7. This is a WebKitGTK/GPU-driver basel
 D126 item 4 and D127 item 2 used `EmanueleFusco/ScaricatoreDiPorto` for the release and updater URLs. That is **not this repository**: `origin` is `https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust.git`. The wrong slug made the `whisper-v1.9.5` API lookup, every sidecar asset URL and the updater endpoint answer 404. The sidecar release was not missing; the URL was wrong. This entry is a correction, not a rewrite of the historical records.
 
 The correct release exists: `whisper-v1.9.5`, published 2026-10-19, with seven assets and a `SHA256SUMS` file. `tools.manifest.json` now carries the real URL and SHA-256 for every platform, so the Install button is enabled instead of reporting "not available yet". The updater endpoint, the About/releases links, the README links and the URL tests now use the correct slug too. The Linux x64 asset was downloaded through `tools::install_tool`, its checksum matched, and the installed `sdp-whisper -h` ran (real ignored test, 2026-10-23). The other six assets answered HTTP 200; their checksum values were copied from the release's `SHA256SUMS` but those six files were not downloaded or executed.
+
+### D135 — Linux Wayland: move the WebKitGTK DMA-BUF fallback into the app (spec §13.3)
+
+On the owner's machine (`XDG_SESSION_TYPE=wayland`, KDE + NVIDIA RTX 3080,
+`webkit2gtk-4.1 2.54.1`) `npm run tauri dev` died immediately with
+`Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display.`
+and the AppImage did the same. The existing workaround lived only in
+`scripts/run.mjs`, so the direct Tauri command bypassed it.
+
+Verified in this step:
+
+- `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone is enough on this machine: both the
+  debug binary and the AppImage stay alive and emit no `Failed to create GBM
+  buffer` message. `WEBKIT_DISABLE_COMPOSITING_MODE=1` does not help, and
+  `GDK_BACKEND=x11` is not needed once the DMA-BUF renderer is disabled.
+- The WebKit bug is upstream (WebKit bug 280210); it is not our code.
+
+The fallback is now applied in `src-tauri/src/lib.rs` before the Tauri builder
+runs, on Linux only:
+
+- `is_wayland_session()` detects a Wayland session from `WAYLAND_DISPLAY` or
+  `XDG_SESSION_TYPE=wayland`;
+- `apply_webkit_dma_buf_fallback()` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+  only when the user has not already set it, so an explicit override always wins;
+- the helper is covered by unit tests in `lib.rs`.
+
+This supersedes the "launcher only" part of D10 for newly built binaries: the
+direct `npm run tauri dev` command now works, and release binaries/AppImages
+apply the same fallback. `scripts/run.mjs` is kept for older binaries and for
+forcing `GDK_BACKEND=x11` when a compositor still needs it. Binaries built
+before this change still need the environment variable until they are rebuilt.
