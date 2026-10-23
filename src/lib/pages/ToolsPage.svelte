@@ -276,7 +276,6 @@
 
   {#if wizardOpen}
     <SetupWizard
-      onclose={() => (wizardOpen = false)}
       onfinish={async () => {
         wizardOpen = false;
         await toolsStore.completeSetup();

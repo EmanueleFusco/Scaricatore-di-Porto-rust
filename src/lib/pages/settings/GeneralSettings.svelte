@@ -6,6 +6,8 @@
    */
   import { languageName, type LangPreference } from "$lib/i18n";
   import { onMount } from "svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import FolderOpenIcon from "lucide-svelte/icons/folder-open";
   import { AUDIO_CODEC_OPTIONS, SPONSORBLOCK_CATEGORY_KEYS } from "$lib/addbar";
   import { clampCap, isPlaylistUrlBehavior, type PlaylistUrlBehavior } from "$lib/settings";
   import { settingsStore, activeLang, tt } from "$lib/stores/settings.svelte";
@@ -50,6 +52,22 @@
     archiveEntries = view.entries;
     archiveCleared = true;
     setTimeout(() => (archiveCleared = false), 2500);
+  }
+
+  /** Pick the folder new queue items default to (spec §11.1, §11.8). */
+  async function chooseOutputDir(): Promise<void> {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: tt("settings.outputDir.chooseTitle"),
+    });
+    if (typeof picked === "string") {
+      await settingsStore.update({ defaultOutputDir: picked });
+    }
+  }
+
+  async function clearOutputDir(): Promise<void> {
+    await settingsStore.update({ defaultOutputDir: null });
   }
 
   /** What a number field can hand over, clamped (spec §7.2). */
@@ -103,6 +121,17 @@
     <output class="settings__value" aria-labelledby="label-output-dir">
       {settingsStore.settings.defaultOutputDir ?? tt("settings.outputDir.system")}
     </output>
+    <div class="settings__row">
+      <button type="button" class="btn" onclick={() => void chooseOutputDir()}>
+        <FolderOpenIcon size={16} aria-hidden="true" focusable="false" />
+        {tt("settings.outputDir.choose")}
+      </button>
+      {#if settingsStore.settings.defaultOutputDir}
+        <button type="button" class="btn" onclick={() => void clearOutputDir()}>
+          {tt("settings.outputDir.clear")}
+        </button>
+      {/if}
+    </div>
     <p class="field__hint">{tt("settings.outputDir.hint")}</p>
   </div>
 

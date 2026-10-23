@@ -36,7 +36,15 @@
   import { geminiModelsStore } from "$lib/gemini.svelte";
   import { router } from "$lib/router.svelte";
 
-  let { item }: { item: QueueItem } = $props();
+  let {
+    item,
+    selected = false,
+    onselect,
+  }: {
+    item: QueueItem;
+    selected?: boolean;
+    onselect?: (id: string, event: MouseEvent) => void;
+  } = $props();
 
   let expanded = $state(false);
   let copied = $state(false);
@@ -274,6 +282,7 @@
   class="item"
   class:item--expanded={expanded}
   class:item--new={queueStore.isFlashing(item.id)}
+  class:item--selected={selected}
   data-state={item.state}
   draggable="true"
   ondragstart={onDragStart}
@@ -281,6 +290,14 @@
   ondrop={onDrop}
 >
   <div class="item__head">
+    <label class="item__select">
+      <input
+        type="checkbox"
+        checked={selected}
+        onclick={(event) => onselect?.(item.id, event)}
+        aria-label={tt("queue.selection.select", { title: itemLabel(item) })}
+      />
+    </label>
     <span class="item__chip" data-state={item.state}>{tt(stageKey)}</span>
 
     <div class="item__title-block">
@@ -641,6 +658,17 @@
 
   .item--expanded {
     border-color: var(--border-strong);
+  }
+
+  .item--selected {
+    border-color: var(--accent);
+    background: var(--surface-2);
+  }
+
+  .item__select {
+    display: flex;
+    align-items: center;
+    flex: none;
   }
 
   /* Just added: a pulse the eye catches where the row appears (D104). */

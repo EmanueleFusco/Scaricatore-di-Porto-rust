@@ -7,10 +7,22 @@
   component only wires it to a scroll event.
 -->
 <script lang="ts">
+  import { onMount, untrack } from "svelte";
   import QueueGroups from "$lib/components/QueueGroups.svelte";
   import QueueItemRow from "$lib/components/QueueItem.svelte";
-  import { untrack } from "svelte";
-  import { itemsOutsideCollapsed, scrollOffsetFor, visibleItems, visibleRange } from "$lib/queue";
+  import {
+    actionsFor,
+    filterQueueItems,
+    itemsOutsideCollapsed,
+    scrollOffsetFor,
+    selectRange,
+    toggleSelected,
+    visibleItems,
+    visibleRange,
+    type ItemAction,
+    type QueueItem,
+  } from "$lib/queue";
+  import { isTypingTarget, shortcutAction } from "$lib/shortcuts";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
 
@@ -19,13 +31,29 @@
   const VIEWPORT_FALLBACK = 480;
 
   let scroller = $state<HTMLElement | null>(null);
+  let filterInput = $state<HTMLInputElement | null>(null);
   let scrollTop = $state(0);
   let viewportHeight = $state(VIEWPORT_FALLBACK);
   let rowHeight = $state(ROW_HEIGHT_FALLBACK);
 
   /** Groups the user folded away (spec §11.5): their items leave the list. */
   let collapsed = $state<Set<string>>(new Set());
-  const items = $derived(itemsOutsideCollapsed(queueStore.list, collapsed));
+  /** A find-as-you-type filter over the visible rows (spec §11.5). */
+  let filter = $state("");
+  let selectedIds = $state<Set<string>>(new Set());
+  let selectionAnchor = $state<string | null>(null);
+
+  const allItems = $derived(queueStore.list);
+  const matching = $derived(filterQueueItems(allItems, filter));
+  const items = $derived(itemsOutsideCollapsed(matching, collapsed));
+  const selectedItems = $derived(items.filter((item) => selectedIds.has(item.id)));
+  const allSelected = $derived(items.length > 0 && items.every((item) => selectedIds.has(item.id)));
+  const canPause = $derived(selectedItems.some((item) => hasAction(item, "pause")));
+  const canResume = $derived(selectedItems.some((item) => hasAction(item, "resume")));
+  const canCancel = $derived(selectedItems.some((item) => hasAction(item, "cancel")));
+
+  const range = $derived(visibleRange(scrollTop, viewportHeight, rowHeight, items.length));
+  const shown = $derived(visibleItems(items, range));
 
   function toggleGroup(id: string): void {
     const next = new Set(collapsed);
@@ -35,8 +63,95 @@
     scrollTop = 0;
     if (scroller !== null) scroller.scrollTop = 0;
   }
-  const range = $derived(visibleRange(scrollTop, viewportHeight, rowHeight, items.length));
-  const shown = $derived(visibleItems(items, range));
+
+  function resetScroll(): void {
+    scrollTop = 0;
+    if (scroller !== null) scroller.scrollTop = 0;
+  }
+
+  function onFilterInput(): void {
+    resetScroll();
+    selectionAnchor = null;
+  }
+
+  function onSelect(id: string, event: MouseEvent): void {
+    if (event.shiftKey && selectionAnchor !== null) {
+      selectedIds = selectRange(
+        selectedIds,
+        items.map((item) => item.id),
+        selectionAnchor,
+        id,
+      );
+    } else {
+      selectedIds = toggleSelected(selectedIds, id);
+    }
+    selectionAnchor = id;
+  }
+
+  function toggleSelectAll(): void {
+    selectedIds = allSelected ? new Set() : new Set(items.map((item) => item.id));
+    selectionAnchor = null;
+  }
+
+  function clearSelection(): void {
+    selectedIds = new Set();
+    selectionAnchor = null;
+  }
+
+  function hasAction(item: QueueItem, action: ItemAction): boolean {
+    return actionsFor(item.state, item.file !== null, !item.url.startsWith("local://")).includes(
+      action,
+    );
+  }
+
+  /** Apply one per-item action to every selected row that supports it. */
+  async function bulk(action: ItemAction): Promise<void> {
+    const targets = selectedItems.filter((item) => hasAction(item, action));
+    for (const item of targets) {
+      await queueStore.act(action, item.id);
+    }
+    if (action === "remove" || action === "cancel") clearSelection();
+  }
+
+  /** Space on a selection: resume parked rows, pause the running ones. */
+  async function togglePauseSelected(): Promise<void> {
+    const parked = selectedItems.every(
+      (item) => item.state === "paused" || item.state === "interrupted",
+    );
+    await bulk(parked ? "resume" : "pause");
+  }
+
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
+    const action = shortcutAction(event, isTypingTarget(event.target));
+    if (action === "filter") {
+      event.preventDefault();
+      filterInput?.focus();
+      filterInput?.select();
+    } else if (action === "removeSelected" && selectedItems.length > 0) {
+      event.preventDefault();
+      void bulk("remove");
+    } else if (action === "togglePause" && selectedItems.length > 0) {
+      event.preventDefault();
+      void togglePauseSelected();
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener("keydown", onWindowKeydown);
+    return () => window.removeEventListener("keydown", onWindowKeydown);
+  });
+
+  // Drop ids that left the queue (removed, cleared) so the bulk bar cannot
+  // keep acting on rows that no longer exist.
+  $effect(() => {
+    const live = new Set(allItems.map((item) => item.id));
+    const kept = [...selectedIds].filter((id) => live.has(id));
+    if (kept.length !== selectedIds.size) {
+      selectedIds = new Set(kept);
+      if (selectionAnchor !== null && !live.has(selectionAnchor)) selectionAnchor = null;
+    }
+  });
 
   function onScroll(): void {
     scrollTop = scroller?.scrollTop ?? 0;
@@ -111,17 +226,118 @@
 </script>
 
 <section class="list" aria-label={tt("a11y.queueList")}>
-  <QueueGroups {collapsed} ontoggle={toggleGroup} />
+  {#if allItems.length > 0}
+    <div class="list__toolbar">
+      <div class="list__filter">
+        <label class="visually-hidden" for="queue-filter">{tt("queue.filter.label")}</label>
+        <input
+          class="input list__filter-input"
+          id="queue-filter"
+          type="search"
+          bind:this={filterInput}
+          bind:value={filter}
+          oninput={onFilterInput}
+          placeholder={tt("queue.filter.placeholder")}
+          autocomplete="off"
+        />
+        {#if filter !== ""}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => {
+              filter = "";
+              onFilterInput();
+              filterInput?.focus();
+            }}
+          >
+            {tt("queue.filter.clear")}
+          </button>
+        {/if}
+      </div>
+      <div class="list__toolbar-actions">
+        <button
+          type="button"
+          class="btn btn--small"
+          disabled={items.length === 0}
+          onclick={toggleSelectAll}
+        >
+          {allSelected ? tt("queue.selection.clear") : tt("queue.selection.selectAll")}
+        </button>
+        {#if filter !== ""}
+          <span class="list__filter-count" role="status">
+            {tt("queue.filter.count", { shown: items.length, total: allItems.length })}
+          </span>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if selectedItems.length > 0}
+    <div class="list__bulk" role="toolbar" aria-label={tt("queue.selection.toolbar")}>
+      <span class="list__bulk-count" role="status">
+        {tt("queue.selection.count", { count: selectedItems.length })}
+      </span>
+      {#if canPause}
+        <button type="button" class="btn btn--small" onclick={() => void bulk("pause")}>
+          {tt("queue.selection.pause")}
+        </button>
+      {/if}
+      {#if canResume}
+        <button type="button" class="btn btn--small" onclick={() => void bulk("resume")}>
+          {tt("queue.selection.resume")}
+        </button>
+      {/if}
+      {#if canCancel}
+        <button type="button" class="btn btn--small" onclick={() => void bulk("cancel")}>
+          {tt("queue.selection.cancel")}
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="btn btn--small btn--danger"
+        onclick={() => void bulk("remove")}
+      >
+        {tt("queue.selection.remove")}
+      </button>
+      <button type="button" class="btn btn--small" onclick={clearSelection}>
+        {tt("queue.selection.clear")}
+      </button>
+    </div>
+  {/if}
+
+  <QueueGroups {collapsed} ontoggle={toggleGroup} items={matching} />
   <div class="list__viewport" bind:this={scroller} onscroll={onScroll} role="list">
-    {#if items.length === 0 && queueStore.list.length === 0}
+    {#if allItems.length === 0}
       <div class="list__empty">
         <p class="list__empty-title">{tt("queue.list.empty.title")}</p>
         <p class="field__hint">{tt("queue.list.empty.hint")}</p>
       </div>
+    {:else if items.length === 0}
+      <div class="list__empty">
+        <p class="list__empty-title">
+          {filter !== "" ? tt("queue.filter.empty") : tt("queue.list.allCollapsed")}
+        </p>
+        {#if filter !== ""}
+          <button
+            type="button"
+            class="btn"
+            onclick={() => {
+              filter = "";
+              onFilterInput();
+            }}
+          >
+            {tt("queue.filter.clear")}
+          </button>
+        {/if}
+      </div>
     {:else}
       <div class="list__pad" style:height={`${range.topPad}px`}></div>
       {#each shown as item (item.id)}
-        <QueueItemRow {item} />
+        <QueueItemRow
+          {item}
+          selected={selectedIds.has(item.id)}
+          onselect={onSelect}
+        />
       {/each}
       <div class="list__pad" style:height={`${range.bottomPad}px`}></div>
     {/if}
@@ -156,6 +372,56 @@
 
   .list__count {
     flex: none;
+  }
+
+  .list__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    flex: none;
+  }
+
+  .list__filter {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex: 1 1 240px;
+  }
+
+  .list__filter-input {
+    flex: 1 1 auto;
+    min-width: 120px;
+  }
+
+  .list__toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .list__filter-count {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .list__bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    flex: none;
+  }
+
+  .list__bulk-count {
+    font-weight: 600;
+    font-size: 12px;
   }
 
   .list__pad {

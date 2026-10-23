@@ -12,6 +12,7 @@
   import QueuePage from "$lib/pages/QueuePage.svelte";
   import SettingsPage from "$lib/pages/SettingsPage.svelte";
   import { router } from "$lib/router.svelte";
+  import { isTypingTarget, shortcutAction } from "$lib/shortcuts";
   import { isTauriRuntime, settingsStore, tt, activeLang } from "$lib/stores/settings.svelte";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
@@ -57,7 +58,16 @@
     // reads the queue, and a component that unmounts must not be able to lose a
     // completion event.
     void queueStore.start();
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      if (shortcutAction(event, isTypingTarget(event.target)) === "settings") {
+        event.preventDefault();
+        router.go("/settings");
+      }
+    };
+    window.addEventListener("keydown", onKeydown);
     return () => {
+      window.removeEventListener("keydown", onKeydown);
       void queueStore.stop();
     };
   });
@@ -85,7 +95,6 @@
 
 {#if wizardOpen}
   <SetupWizard
-    onclose={() => (wizardOpen = false)}
     onfinish={async () => {
       wizardOpen = false;
       await toolsStore.completeSetup();
