@@ -4397,3 +4397,13 @@ Branch `m4-media-processing`.
   - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; the environment variable remains available as an override.
 - Decisions/deviations (also in DECISIONS.md): D135.
 - Next step: rebuild and publish a signed release so the AppImage inherits the fallback; otherwise document the environment variable for installed packages.
+
+## 2026-10-23 — M7 / Restrict the Wayland DMA-BUF fallback to NVIDIA
+
+- Done:
+  - `apply_webkit_dma_buf_fallback()` now also checks for an NVIDIA proprietary driver (`/proc/driver/nvidia/version` or `/dev/nvidia0`) before setting `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+  - AMD/Intel Wayland systems keep WebKitGTK's default DMA-BUF renderer.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )`, `cargo clippy --all-targets -- -D warnings`, `cargo test` → pass (441 unit + 193 integration).
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND npm run tauri dev` on the owner's NVIDIA/KDE Wayland machine → no `Error 71`, no GBM warnings, process stayed alive.
+- Decisions/deviations (also in DECISIONS.md): D136.

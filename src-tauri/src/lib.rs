@@ -56,6 +56,15 @@ fn is_wayland_session(wayland_display: Option<&str>, xdg_session_type: Option<&s
 }
 
 #[cfg(target_os = "linux")]
+fn nvidia_driver_present() -> bool {
+    // The DMA-BUF crash tracked here is specific to NVIDIA's proprietary driver
+    // stack (WebKit bug 280210). Restricting the fallback to NVIDIA avoids
+    // disabling the faster renderer on AMD/Intel systems where it works.
+    std::path::Path::new("/proc/driver/nvidia/version").exists()
+        || std::path::Path::new("/dev/nvidia0").exists()
+}
+
+#[cfg(target_os = "linux")]
 fn apply_webkit_dma_buf_fallback() {
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let xdg_session_type = std::env::var("XDG_SESSION_TYPE").ok();
@@ -63,6 +72,7 @@ fn apply_webkit_dma_buf_fallback() {
 
     if user_override.is_none()
         && is_wayland_session(wayland_display.as_deref(), xdg_session_type.as_deref())
+        && nvidia_driver_present()
     {
         // SAFETY: this runs before Tauri creates the GTK/WebKitGTK backend, and
         // `set_var` is only called once on this startup path.

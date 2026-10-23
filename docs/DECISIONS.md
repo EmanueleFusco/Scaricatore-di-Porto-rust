@@ -3529,3 +3529,12 @@ direct `npm run tauri dev` command now works, and release binaries/AppImages
 apply the same fallback. `scripts/run.mjs` is kept for older binaries and for
 forcing `GDK_BACKEND=x11` when a compositor still needs it. Binaries built
 before this change still need the environment variable until they are rebuilt.
+
+### D136 — Restrict the Wayland DMA-BUF fallback to NVIDIA (spec §13.3)
+
+The fallback from D135 was applied on every Linux Wayland session, including
+AMD/Intel systems where the DMA-BUF renderer works. It now also requires an
+NVIDIA proprietary driver to be present (`/proc/driver/nvidia/version` or
+`/dev/nvidia0`). On non-NVIDIA Wayland systems the app keeps WebKitGTK's default
+renderer and its hardware-accelerated path; users on other affected GPUs can still
+force the fallback with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
