@@ -57,7 +57,7 @@ function build(overrides = {}) {
     assetsDir: dir,
     version: "0.1.0",
     tag: "v0.1.0",
-    repo: "EmanueleFusco/ScaricatoreDiPorto",
+    repo: "EmanueleFusco/Scaricatore-di-Porto-rust",
     now: new Date("2026-10-23T12:00:00Z"),
     ...overrides,
   });
@@ -105,7 +105,7 @@ describe("the updater manifest", () => {
     assets();
     const manifest = await build();
     expect(manifest.platforms["linux-x86_64"].url).toBe(
-      "https://github.com/EmanueleFusco/ScaricatoreDiPorto/releases/download/v0.1.0/" +
+      "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/v0.1.0/" +
         "Scaricatore%20Di%20Porto_0.1.0_amd64.AppImage.tar.gz",
     );
   });

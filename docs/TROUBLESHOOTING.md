@@ -29,10 +29,14 @@ If the download fails, use **Use my own path** and point the app at an existing
 ### "sdp-whisper sidecar is not installed" / Tools says "Not available yet"
 
 Offline transcription needs the `sdp-whisper` sidecar and a Whisper model. The
-sidecar is published separately from the app. If the Tools page says that no
-release is published yet, the app cannot download it: use **Use my own path** if
-you have a compatible `sdp-whisper` binary, or use Gemini for transcription
-until the sidecar release is available.
+sidecar is published separately from the app on the project's Releases page;
+the Tier 1 builds are available for Linux x64, Windows x64 and macOS. Install it
+from **Settings → Tools → sdp-whisper → Install**.
+
+If the download fails, check the network or proxy and retry. If the Tools page
+says **Not available yet**, that build has no published asset for your platform
+or CPU architecture: use **Use my own path** with a compatible `sdp-whisper`
+binary, or use Gemini for transcription.
 
 A missing **model** is a different problem: download one from **Settings →
 Transcription & Models**.

@@ -329,66 +329,63 @@
       "versioning": "pinned",
       "version": "1.9.5",
       "minVersion": "1.7.0",
-      "releaseUrl": "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}",
+      "releaseUrl": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/{asset}",
       "note": [
         "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
-        "The shape below is what .github/workflows/whisper-sidecar.yml publishes",
-        "as sdp-whisper-<target-triple>[.exe], but the release is not public yet:",
-        "on 2026-10-23 the tag whisper-v1.9.5 answered 404. Every url/sha256 is",
-        "therefore null on purpose, so the app says 'not available on this",
-        "platform yet' instead of offering a button that downloads a 404.",
-        "When the sidecar workflow has published the release, fill url + sha256",
-        "from the release's own checksums and the Install button starts working."
+        "Built by .github/workflows/whisper-sidecar.yml and published as",
+        "sdp-whisper-<target-triple>[.exe] on the whisper-v1.9.5 release.",
+        "Every url and sha256 below comes from that release's own SHA256SUMS,",
+        "verified on 2026-10-23 against the public GitHub assets."
       ],
       "platforms": {
         "x86_64-unknown-linux-gnu": {
           "asset": "sdp-whisper-x86_64-unknown-linux-gnu",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-unknown-linux-gnu",
+          "sha256": "0addfb2aa67079fdfd74f7ff0cb11f950347625fcc12f80e4326cc81cd66f2ce"
         },
         "aarch64-unknown-linux-gnu": {
           "asset": "sdp-whisper-aarch64-unknown-linux-gnu",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-aarch64-unknown-linux-gnu",
+          "sha256": "e74837d3ba2ae3735686da4a0edfb33b14a3d59ea2c62b141723543721139f05"
         },
         "x86_64-pc-windows-msvc": {
           "asset": "sdp-whisper-x86_64-pc-windows-msvc.exe",
           "executableName": "sdp-whisper.exe",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-pc-windows-msvc.exe",
+          "sha256": "0ca02f80dd4eb326218c22c4f8e272e3b1cf14ff3f0c40e48d4b1bce2e8f58b7"
         },
         "aarch64-pc-windows-msvc": {
           "asset": "sdp-whisper-aarch64-pc-windows-msvc.exe",
           "executableName": "sdp-whisper.exe",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-aarch64-pc-windows-msvc.exe",
+          "sha256": "6b258ee322ad303641d140643ef11b77335abf526836a42ac6271b5ec64e79da"
         },
         "x86_64-apple-darwin": {
           "asset": "sdp-whisper-x86_64-apple-darwin",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-x86_64-apple-darwin",
+          "sha256": "d1de729f0c795ee2b490a8273b804b253a8bf9f1e88bf73bedac69c714ee50b5"
         },
         "aarch64-apple-darwin": {
           "asset": "sdp-whisper-aarch64-apple-darwin",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-aarch64-apple-darwin",
+          "sha256": "f8be02da2c5c90cd00e0bc02b18f1639926c62240dac31dd1595f2d56ee1901c"
         },
         "universal-apple-darwin": {
           "asset": "sdp-whisper-universal-apple-darwin",
           "executableName": "sdp-whisper",
           "archiveKind": "none",
-          "url": null,
-          "sha256": null
+          "url": "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/sdp-whisper-universal-apple-darwin",
+          "sha256": "784bc365a4d5650f298d321a3d5fc267be0a301a9acd615da05de19f8b5ddd9d"
         }
       }
     }

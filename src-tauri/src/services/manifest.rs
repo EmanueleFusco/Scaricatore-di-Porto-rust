@@ -696,8 +696,8 @@ mod tests {
             .expect("a linux x64 sdp-whisper asset");
         assert_eq!(whisper_entry.archive_kind, ArchiveKind::None);
         assert!(
-            !whisper_entry.is_installable(),
-            "the whisper-v1.9.5 release does not exist yet: the UI must say so"
+            whisper_entry.is_installable(),
+            "the published whisper-v1.9.5 assets must be installable"
         );
 
         let deno = manifest.tool(DENO).expect("deno is in the manifest");
@@ -731,26 +731,55 @@ mod tests {
     }
 
     #[test]
-    fn whisper_sidecar_stays_uninstallable_until_its_release_exists() {
-        // Verified on 2026-10-23: the tag whisper-v1.9.5 answers 404. A
-        // declared-but-unpublished release must report "not available", never
-        // offer a button that downloads a 404 (spec §1.1).
+    fn whisper_sidecar_assets_are_installable_and_use_the_published_release() {
+        // The whisper-v1.9.5 release was published on 2026-10-19. Every
+        // platform entry must point at an asset of that release and carry the
+        // matching SHA-256, otherwise the Install button would be dead.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let whisper = manifest.tool(SDP_WHISPER).expect("sdp-whisper");
-        assert!(!whisper.platforms.is_empty());
+        let template = whisper.release_url.as_deref().expect("releaseUrl");
         assert_eq!(
-            whisper.release_url.as_deref(),
-            Some(
-                "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"
-            )
+            template,
+            "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/{asset}"
         );
+
+        let expected = [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "universal-apple-darwin",
+        ];
+        assert_eq!(whisper.platforms.len(), expected.len());
+        for triple in expected {
+            assert!(
+                whisper.platforms.contains_key(triple),
+                "missing sdp-whisper asset for {triple}"
+            );
+        }
 
         for (triple, entry) in &whisper.platforms {
             assert_eq!(entry.archive_kind, ArchiveKind::None, "{triple}");
-            assert_eq!(entry.url, None, "{triple} has no published asset yet");
-            assert_eq!(entry.sha256, None, "{triple} has no published checksum yet");
-            assert!(!entry.is_installable(), "{triple}");
+            let asset = entry.asset.as_deref().expect("asset");
+            let expected_url =
+                resolve_asset_url(template, asset).expect("the release template must resolve");
+            assert_eq!(
+                entry.url.as_deref(),
+                Some(expected_url.as_str()),
+                "{triple}"
+            );
+            assert!(entry.is_installable(), "{triple}");
         }
+
+        let linux = manifest
+            .entry(SDP_WHISPER, "x86_64-unknown-linux-gnu")
+            .expect("linux x64");
+        assert_eq!(
+            linux.sha256.as_deref(),
+            Some("0addfb2aa67079fdfd74f7ff0cb11f950347625fcc12f80e4326cc81cd66f2ce")
+        );
     }
 
     #[test]

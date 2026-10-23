@@ -53,7 +53,7 @@ export const LICENSES: readonly LicenseEntry[] = [
   {
     name: "Scaricatore Di Porto",
     license: "MIT",
-    url: "https://github.com/EmanueleFusco/ScaricatoreDiPorto/blob/main/LICENSE",
+    url: "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/blob/main/LICENSE",
     roleKey: "about.licenses.role.app",
   },
   {

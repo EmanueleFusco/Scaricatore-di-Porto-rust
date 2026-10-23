@@ -4350,3 +4350,31 @@ Branch `m4-media-processing`.
   - Tauri updater/process plugin versions → `tauri-plugin-updater 2.14.0`, `tauri-plugin-process 2.4.0`; the JS updater package is not used.
 - Decisions/deviations (also in DECISIONS.md): D126 tools, D127 updater/artifact behavior and MSRV 1.90, D128 diagnostics/logging, D129 bilingual docs, D130 UI, D131 MIT licence, D132 installer measurements without a hard gate, D133 Linux idle-RSS finding.
 - Next step: human prerequisites for a release: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub secrets, publish the `sdp-whisper` assets, publish a signed M7 release with `latest.json`, and run the Tier 1 manual acceptance on Windows/macOS. Decide whether to accept or investigate the Linux RSS deviation (D133).
+
+## 2026-10-23 — M7 / Correct repository slug and enable the published sdp-whisper sidecar
+- Done:
+  - Corrected the repository slug from `EmanueleFusco/ScaricatoreDiPorto` to `EmanueleFusco/Scaricatore-di-Porto-rust` in `tools.manifest.json`, the updater endpoint in `src-tauri/tauri.conf.json`, the About/releases and licence links, both READMEs and the URL tests.
+  - Confirmed that the `whisper-v1.9.5` release exists (published 2026-10-19) with all seven `sdp-whisper` assets and `SHA256SUMS`; the earlier 404 came from the wrong repository slug.
+  - Filled the real URL and SHA-256 for every `sdp-whisper` platform in `tools.manifest.json` (Linux x64/arm64, Windows x64/arm64, macOS x64/arm64/universal), so the Install button is enabled.
+  - Replaced the Rust test that expected the sidecar to be unpublished with `whisper_sidecar_assets_are_installable_and_use_the_published_release`, asserting the release template, all seven platform entries and the Linux x64 checksum. The generic "declared but unpublished" install test now uses a synthetic tool instead of `sdp-whisper`.
+  - Updated the frontend tool-state tests: `sdp-whisper` missing is an optional `notInstalled`, while a synthetic unpublished tool still reports `notYetAvailable`.
+  - Added the ignored real test `the_whisper_sidecar_install_downloads_verifies_and_runs` and updated the English/Italian troubleshooting guides plus `docs/ACCEPTANCE.md`.
+- Verified by running:
+  - `curl -I` on all seven release assets → HTTP 200; the published `SHA256SUMS` matches the manifest values.
+  - `cargo test --test real_selftest the_whisper_sidecar_install_downloads_verifies_and_runs -- --ignored --nocapture` → pass: 4,893,088 bytes downloaded, SHA-256 verified, installed binary ran `-h` and printed the whisper.cpp CLI help.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 436 unit + 193 integration = **629 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 333 tests passed**.
+  - `npm run build` → pass.
+  - `npm run check:ci` → 24 run blocks valid; `npm run check:runners`, `npm run check:tools`, `npm run check:release -- v0.1.0` → pass.
+- Not verified / stubbed:
+  - The Windows, macOS and ARM64 sidecar assets answered HTTP 200; their checksum values came from `SHA256SUMS`, but those six files were not downloaded or executed (no hardware).
+  - The Tools-page Install button was not clicked manually in this step; the same `install_tool` path was exercised by the real ignored test.
+  - A full transcription with the downloaded sidecar and a Whisper model was not re-run in this step.
+- Spec items marked "verify" that I checked:
+  - `whisper-v1.9.5` release and assets → published 2026-10-19 in `EmanueleFusco/Scaricatore-di-Porto-rust`; all seven URLs and `SHA256SUMS` verified.
+  - Tauri updater endpoint → corrected to the real repository; no `latest.json` release exists yet, so a live update check is still unverified.
+- Decisions/deviations (also in DECISIONS.md): D134 corrects D126/D127 and records the real sidecar release.
+- Next step: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub Actions secrets, then publish a signed M7 release with `latest.json` and run the remaining Tier 1 acceptance checks.

@@ -72,11 +72,11 @@ describe("toolState()", () => {
   });
 
   it("distinguishes a declared tool whose release is not published yet", () => {
-    // sdp-whisper is in the manifest but its release tag is still 404: the row
-    // must say "not available yet", never offer a download that fails.
+    // A future manifest entry may exist before its release does: the row must
+    // say "not available yet", never offer a download that fails.
     const info = toolState(
       tool({
-        name: "sdp-whisper",
+        name: "future-tool",
         bundled: false,
         installable: false,
         path: null,
@@ -94,7 +94,7 @@ describe("toolState()", () => {
       tool({ path: null }),
       tool({ meetsMinVersion: false }),
       tool({ availableOnPlatform: false }),
-      tool({ name: "sdp-whisper", bundled: false, installable: false, path: null }),
+      tool({ name: "future-tool", bundled: false, installable: false, path: null }),
     ]) {
       const key = toolState(candidate).key;
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
@@ -288,18 +288,18 @@ describe("optional tools never look like a problem", () => {
     expect(hasToolProblem([deno, ffmpeg])).toBe(true);
   });
 
-  it("a missing sdp-whisper is optional and its unpublished release is not a defect", () => {
+  it("a missing sdp-whisper is optional, not a defect", () => {
     const whisper = tool({
       name: "sdp-whisper",
       bundled: false,
-      installable: false,
+      installable: true,
       source: null,
       path: null,
       version: null,
     });
     expect(toolState(whisper)).toEqual({
-      state: "notYetAvailable",
-      key: "tools.state.notYetAvailable",
+      state: "notInstalled",
+      key: "tools.state.notInstalled",
       problem: false,
     });
     expect(hasToolProblem([whisper])).toBe(false);

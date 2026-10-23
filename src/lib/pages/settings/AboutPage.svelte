@@ -20,7 +20,8 @@
   import { aboutStore } from "$lib/stores/about.svelte";
   import { errorText, tt } from "$lib/stores/settings.svelte";
 
-  const RELEASES_URL = "https://github.com/EmanueleFusco/ScaricatoreDiPorto/releases/latest";
+  const RELEASES_URL =
+    "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/latest";
 
   const percent = $derived(aboutStore.progress ? updatePercent(aboutStore.progress) : null);
   const selfUpdate = $derived(canSelfUpdate(aboutStore.bundleType));

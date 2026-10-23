@@ -1661,22 +1661,23 @@ mod tests {
 
     #[tokio::test]
     async fn installing_a_declared_but_unpublished_tool_says_so_without_network() {
-        // sdp-whisper is the real case: the manifest knows its shape but the
-        // release does not exist yet. The error must be the UI's own wording,
-        // and no HTTP request may be attempted.
-        let manifest = ToolsManifest::embedded().expect("manifest");
+        // A manifest can declare a tool before its release exists. The error
+        // must be the UI's own wording, and no HTTP request may be attempted.
+        let raw = r#"{
+            "schemaVersion": 1,
+            "tools": [{
+                "name": "later", "role": "r", "license": "MIT", "versioning": "pinned",
+                "version": "1.0.0", "minVersion": "1.0",
+                "platforms": {"x86_64-unknown-linux-gnu": {
+                    "asset": "later", "executableName": "later", "archiveKind": "none"}}
+            }]
+        }"#;
+        let manifest = ToolsManifest::parse(raw).expect("manifest");
         let dir = TempDir::new().expect("temp dir");
         let token = CancellationToken::new();
-        let err = install_tool(
-            &manifest,
-            manifest::SDP_WHISPER,
-            LINUX,
-            dir.path(),
-            &token,
-            |_| {},
-        )
-        .await
-        .expect_err("unpublished tools cannot be installed");
+        let err = install_tool(&manifest, "later", LINUX, dir.path(), &token, |_| {})
+            .await
+            .expect_err("unpublished tools cannot be installed");
         assert!(
             err.to_string().contains("not available on this platform"),
             "{err}"

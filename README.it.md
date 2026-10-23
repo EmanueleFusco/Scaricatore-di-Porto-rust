@@ -42,7 +42,7 @@ account e non lascia servizi in background: fa qualcosa solo quando glielo chied
 ## Installazione
 
 Scarica l'ultima release dalla
-[pagina Releases](https://github.com/EmanueleFusco/ScaricatoreDiPorto/releases).
+[pagina Releases](https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases).
 
 | Sistema | File | Note |
 | :-- | :-- | :-- |

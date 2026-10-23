@@ -42,7 +42,7 @@ account, and no background service: it does something only when you ask.
 ## Install
 
 Download the latest release from the
-[Releases page](https://github.com/EmanueleFusco/ScaricatoreDiPorto/releases).
+[Releases page](https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases).
 
 | System | File | Notes |
 | :-- | :-- | :-- |

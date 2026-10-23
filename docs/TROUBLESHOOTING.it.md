@@ -29,10 +29,14 @@ Se il download fallisce, usa **Usa il mio percorso** e indica un binario
 ### "sdp-whisper sidecar is not installed" / Strumenti dice "Non ancora disponibile"
 
 La trascrizione offline richiede il sidecar `sdp-whisper` e un modello Whisper.
-Il sidecar viene pubblicato separatamente dall'app. Se la pagina Strumenti dice
-che non esiste ancora una release, l'app non può scaricarlo: usa **Usa il mio
-percorso** se hai un binario `sdp-whisper` compatibile, oppure usa Gemini per la
-trascrizione finché il sidecar non è disponibile.
+Il sidecar viene pubblicato separatamente dall'app nella pagina Releases del
+progetto; le build Tier 1 sono disponibili per Linux x64, Windows x64 e macOS.
+Installalo da **Impostazioni → Strumenti → sdp-whisper → Installa**.
+
+Se il download fallisce, controlla la rete o il proxy e riprova. Se la pagina
+Strumenti dice **Non ancora disponibile**, quella build non ha un asset
+pubblicato per la tua piattaforma o architettura: usa **Usa il mio percorso** con
+un binario `sdp-whisper` compatibile, oppure usa Gemini per la trascrizione.
 
 Un **modello** mancante è un problema diverso: scaricalo da **Impostazioni →
 Trascrizione e Modelli**.

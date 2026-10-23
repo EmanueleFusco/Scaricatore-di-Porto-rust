@@ -14,8 +14,8 @@ was available for manual testing here.
   service, live site, account or hardware was not exercised.
 - **Open** — not run here; needs Windows/macOS hardware, a live account, or a
   published release.
-- **Blocked** — an external prerequisite is missing (the `sdp-whisper` release,
-  a signed M7 release, or a Gemini API key).
+- **Blocked** — an external prerequisite is missing (a signed M7 release or a
+  Gemini API key).
 
 ## Checklist
 
@@ -29,7 +29,7 @@ was available for manual testing here.
 | 6 | Non-YouTube: generic page, HLS/direct, audio-only, cookies, live/DRM, impersonation retry | **Automated only** | Offline fake-tool tests cover the selectors, fallbacks and messages; no live non-YouTube source or cookies-protected page was tested in M7. |
 | 7 | Queue: parallel, per-host cap, pause/resume, retry, reorder, restart recovery | **Verified on Linux** | Integration tests pass and the queue, filter, selection, bulk actions and shortcuts were checked manually on Linux/KDE. Windows and macOS were not run. |
 | 8 | Encode/trim: audio formats, CPU/hardware encoders, fallback, trim tolerance, originals kept | **Automated only** | ffmpeg integration tests pass, including forced-failure fallback and trim validation. Hardware encoders were not available/tested; no real CPU encode was run manually in M7. |
-| 9 | Whisper: every model download/resume/verify/select/delete, IT/EN quality, SRT/VTT, >2 h chunking, import, cancel | **Partial / blocked** | Model download, resume, checksum and chunking tests pass; the wizard downloaded the recommended model and a local file was transcribed manually on Linux. The `sdp-whisper` release assets are still 404, so the sidecar install cannot be tested end-to-end, and not every model size or a >2 h file was exercised. |
+| 9 | Whisper: every model download/resume/verify/select/delete, IT/EN quality, SRT/VTT, >2 h chunking, import, cancel | **Partial** | Model download, resume, checksum and chunking tests pass; the wizard downloaded the recommended model and a local file was transcribed manually on Linux. The `whisper-v1.9.5` sidecar release exists; the real ignored test downloaded the Linux x64 asset, verified its SHA-256 and ran `sdp-whisper -h`. The UI install path and every model size, IT/EN quality and a >2 h file were not exercised end-to-end in M7. |
 | 10 | Subtitles-first: manual, auto captions, duplicate cleaning, Whisper fallback | **Automated only** | Subtitle cleaner and pipeline tests pass; no live YouTube subtitle download was run in M7. |
 | 11 | Gemini: keyring/0600 storage, dynamic models, retired model, cloud-file cleanup, summary | **Partial** | Storage, model filtering, cleanup-guard and summary tests pass; the invalid-key banner was checked manually. No live Gemini request was made (no API key available). |
 | 12 | Cancel kills the process tree within ~2 s; closing the app leaves no orphans | **Verified on Linux (automated)** | Process-tree, cancellation and orphan tests pass on Linux. The manual cancel path was not re-run in M7, and Windows Job Objects/macOS process groups were not exercised on hardware. |
@@ -46,7 +46,7 @@ These are the checks from the end of M7. Exact totals are repeated in the
 ```text
 ( cd src-tauri && cargo fmt --all -- --check )                  pass
 ( cd src-tauri && cargo clippy --all-targets -- -D warnings )   pass, 0 warnings
-( cd src-tauri && cargo test )                                  436 unit + 193 integration = 629 passed, 0 failed, 4 ignored
+( cd src-tauri && cargo test )                                  436 unit + 193 integration = 629 passed, 0 failed, 5 ignored
 npm run check                                                    0 errors, 0 warnings
 npm test -- --run                                                16 files, 333 tests passed
 npm run build                                                    pass
@@ -69,6 +69,10 @@ cargo test --test real_selftest a_real_inspection_and_download_end_to_end \
   -- --ignored --nocapture
   -> ok: "Me at the zoo" inspected in 2093 ms, .mkv downloaded in 2835 ms,
      .opus produced
+
+cargo test --test real_selftest \
+  the_whisper_sidecar_install_downloads_verifies_and_runs -- --ignored --nocapture
+  -> ok: downloaded 4,893,088 bytes, SHA-256 matched, `sdp-whisper -h` ran
 ```
 
 ## What is still needed for a full §15 sign-off
@@ -79,8 +83,8 @@ cargo test --test real_selftest a_real_inspection_and_download_end_to_end \
    five non-YouTube sources, a cookies-protected page and a live/DRM case.
 3. Test with a real Gemini API key, including a retired model name and cloud
    file deletion after success, error and cancel.
-4. Publish the `sdp-whisper` release assets, then install the sidecar from the
-   app and transcribe with every catalogue model.
+4. Install the published `sdp-whisper` sidecar from the app, then transcribe
+   with every catalogue model and check IT/EN quality and a >2 h file.
 5. Publish a signed M7 release with `latest.json`, then exercise the updater
    from an installed AppImage (and confirm the `.deb`/`.rpm` releases-link
    behaviour).
