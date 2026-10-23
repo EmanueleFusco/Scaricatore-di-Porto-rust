@@ -31,7 +31,7 @@
   } from "$lib/gemini.svelte";
   import { filterModels, formatBytes, formatWer, isLargeDownload, type ModelViewItem } from "$lib/models";
   import { modelsStore } from "$lib/stores/models.svelte";
-  import { settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
 
   let geminiStatus = $state<GeminiKeyStatus | null>(null);
   let geminiInputKey = $state("");
@@ -39,6 +39,7 @@
   let testingGeminiKey = $state(false);
   let geminiTestSuccess = $state<boolean | null>(null);
   let geminiTestMessage = $state<string | null>(null);
+  let geminiTestDetail = $state<string | null>(null);
 
   async function refreshGeminiStatus(): Promise<void> {
     try {
@@ -60,11 +61,13 @@
       geminiInputKey = "";
       geminiTestSuccess = null;
       geminiTestMessage = null;
+      geminiTestDetail = null;
       await refreshGeminiStatus();
       await refreshGeminiModels();
     } catch (e: any) {
       geminiTestSuccess = false;
       geminiTestMessage = e?.message ?? String(e);
+      geminiTestDetail = null;
     }
   }
 
@@ -74,10 +77,12 @@
       geminiInputKey = "";
       geminiTestSuccess = null;
       geminiTestMessage = null;
+      geminiTestDetail = null;
       await refreshGeminiStatus();
     } catch (e: any) {
       geminiTestSuccess = false;
       geminiTestMessage = e?.message ?? String(e);
+      geminiTestDetail = null;
     }
   }
 
@@ -85,6 +90,7 @@
     testingGeminiKey = true;
     geminiTestSuccess = null;
     geminiTestMessage = null;
+    geminiTestDetail = null;
     try {
       const ok = await testGeminiKey(geminiInputKey.trim() || undefined);
       geminiTestSuccess = ok;
@@ -94,7 +100,13 @@
       }
     } catch (e: any) {
       geminiTestSuccess = false;
-      geminiTestMessage = e?.detail ?? e?.message ?? String(e);
+      // The localized key is what the user reads; the raw provider response
+      // stays available under "Technical details" for support.
+      geminiTestMessage =
+        typeof e?.messageKey === "string"
+          ? errorText(e.messageKey, null)
+          : (e?.message ?? String(e));
+      geminiTestDetail = typeof e?.detail === "string" ? e.detail : null;
     } finally {
       testingGeminiKey = false;
     }
@@ -724,7 +736,15 @@
         class="banner {geminiTestSuccess ? 'banner--success' : 'banner--error'}"
         role="alert"
       >
-        <span>{geminiTestMessage}</span>
+        <div class="banner__body">
+          <span>{geminiTestMessage}</span>
+          {#if geminiTestDetail}
+            <details class="banner__details">
+              <summary>{tt("common.technicalDetails")}</summary>
+              <pre>{geminiTestDetail}</pre>
+            </details>
+          {/if}
+        </div>
       </div>
     {/if}
 

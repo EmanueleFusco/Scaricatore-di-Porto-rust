@@ -22,7 +22,7 @@
     type ItemAction,
     type QueueItem,
   } from "$lib/queue";
-  import { isTypingTarget, shortcutAction } from "$lib/shortcuts";
+  import { isInteractiveTarget, isTypingTarget, shortcutAction } from "$lib/shortcuts";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
 
@@ -123,7 +123,11 @@
 
   function onWindowKeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
-    const action = shortcutAction(event, isTypingTarget(event.target));
+    const action = shortcutAction(
+      event,
+      isTypingTarget(event.target),
+      isInteractiveTarget(event.target),
+    );
     if (action === "filter") {
       event.preventDefault();
       filterInput?.focus();
@@ -255,53 +259,53 @@
         {/if}
       </div>
       <div class="list__toolbar-actions">
-        <button
-          type="button"
-          class="btn btn--small"
-          disabled={items.length === 0}
-          onclick={toggleSelectAll}
-        >
-          {allSelected ? tt("queue.selection.clear") : tt("queue.selection.selectAll")}
-        </button>
+        {#if selectedItems.length > 0}
+          <div class="list__bulk" role="toolbar" aria-label={tt("queue.selection.toolbar")}>
+            <span class="list__bulk-count" role="status">
+              {tt("queue.selection.count", { count: selectedItems.length })}
+            </span>
+            {#if canPause}
+              <button type="button" class="btn btn--small" onclick={() => void bulk("pause")}>
+                {tt("queue.selection.pause")}
+              </button>
+            {/if}
+            {#if canResume}
+              <button type="button" class="btn btn--small" onclick={() => void bulk("resume")}>
+                {tt("queue.selection.resume")}
+              </button>
+            {/if}
+            {#if canCancel}
+              <button type="button" class="btn btn--small" onclick={() => void bulk("cancel")}>
+                {tt("queue.selection.cancel")}
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="btn btn--small btn--danger"
+              onclick={() => void bulk("remove")}
+            >
+              {tt("queue.selection.remove")}
+            </button>
+            <button type="button" class="btn btn--small" onclick={clearSelection}>
+              {tt("queue.selection.clear")}
+            </button>
+          </div>
+        {:else}
+          <button
+            type="button"
+            class="btn btn--small"
+            disabled={items.length === 0}
+            onclick={toggleSelectAll}
+          >
+            {allSelected ? tt("queue.selection.clear") : tt("queue.selection.selectAll")}
+          </button>
+        {/if}
         {#if filter !== ""}
           <span class="list__filter-count" role="status">
             {tt("queue.filter.count", { shown: items.length, total: allItems.length })}
           </span>
         {/if}
       </div>
-    </div>
-  {/if}
-
-  {#if selectedItems.length > 0}
-    <div class="list__bulk" role="toolbar" aria-label={tt("queue.selection.toolbar")}>
-      <span class="list__bulk-count" role="status">
-        {tt("queue.selection.count", { count: selectedItems.length })}
-      </span>
-      {#if canPause}
-        <button type="button" class="btn btn--small" onclick={() => void bulk("pause")}>
-          {tt("queue.selection.pause")}
-        </button>
-      {/if}
-      {#if canResume}
-        <button type="button" class="btn btn--small" onclick={() => void bulk("resume")}>
-          {tt("queue.selection.resume")}
-        </button>
-      {/if}
-      {#if canCancel}
-        <button type="button" class="btn btn--small" onclick={() => void bulk("cancel")}>
-          {tt("queue.selection.cancel")}
-        </button>
-      {/if}
-      <button
-        type="button"
-        class="btn btn--small btn--danger"
-        onclick={() => void bulk("remove")}
-      >
-        {tt("queue.selection.remove")}
-      </button>
-      <button type="button" class="btn btn--small" onclick={clearSelection}>
-        {tt("queue.selection.clear")}
-      </button>
     </div>
   {/if}
 
@@ -352,12 +356,12 @@
   .list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-1);
     flex: 1 1 auto;
     /* A floor, not a fixed height: on a window too small for everything, the
        page scrolls (see `.queue`) instead of the list painting over the
        actions below it. */
-    min-height: 104px;
+    min-height: 160px;
   }
 
   .list__viewport {
@@ -412,11 +416,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-2);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    flex: none;
   }
 
   .list__bulk-count {
@@ -431,6 +430,7 @@
   .list__empty {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: var(--space-1);
     padding: var(--space-6) var(--space-4);
     text-align: center;

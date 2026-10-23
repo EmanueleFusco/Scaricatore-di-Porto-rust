@@ -496,7 +496,10 @@
     gap: var(--space-4);
     width: min(600px, 100%);
     max-height: 100%;
-    overflow: auto;
+    padding: var(--space-5);
+    /* The card itself never scrolls: the header and the footer stay visible
+       and only the body moves (spec §11.1, §11.9). */
+    overflow: hidden;
   }
 
   .wizard:focus {
@@ -508,6 +511,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
+    flex: none;
   }
 
   .wizard__title {
@@ -529,6 +533,7 @@
     list-style: none;
     margin: 0;
     padding: 0;
+    flex: none;
   }
 
   .wizard__dot {
@@ -547,6 +552,10 @@
     flex-direction: column;
     gap: var(--space-3);
     font-size: 13px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: var(--space-1);
   }
 
   .wizard__grid {
@@ -671,5 +680,6 @@
     display: flex;
     gap: var(--space-2);
     justify-content: flex-end;
+    flex: none;
   }
 </style>
