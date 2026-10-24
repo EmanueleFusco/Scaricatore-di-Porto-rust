@@ -124,7 +124,12 @@ impl MockGeminiServer {
                     return;
                 }
                 let Ok(stream) = stream else { continue };
-                serve_gemini_request(stream, port, &t_requests, &t_behavior, &t_rate_limit);
+                let reqs = Arc::clone(&t_requests);
+                let beh = Arc::clone(&t_behavior);
+                let rl = Arc::clone(&t_rate_limit);
+                thread::spawn(move || {
+                    serve_gemini_request(stream, port, &reqs, &beh, &rl);
+                });
             }
         });
 
@@ -703,9 +708,20 @@ async fn gemini_raii_delete_guard_on_cancellation() {
     let token = CancellationToken::new();
     let cancel_token = token.clone();
 
-    // Cancel after 50ms so it cancels while polling ACTIVE
+    // Cancel as soon as the upload finishes and the server starts handling the poll request
+    let server_requests = Arc::clone(&server.requests);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            let has_polled =
+                server_requests.lock().unwrap().iter().any(|r| {
+                    r.method == "GET" && r.path.starts_with("/v1beta/files/mock-file-123")
+                });
+            if has_polled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         cancel_token.cancel();
     });
 
@@ -732,7 +748,7 @@ async fn gemini_raii_delete_guard_on_cancellation() {
     );
 
     // Verify DELETE was triggered on cancellation
-    let deleted = server.wait_for_delete(Duration::from_secs(1)).await;
+    let deleted = server.wait_for_delete(Duration::from_secs(3)).await;
     assert!(
         deleted,
         "DELETE must be called by RAII guard upon cancellation!"
@@ -1157,8 +1173,23 @@ async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_s
     // (server sleeps 5s before responding).
     let token = CancellationToken::new();
     let cancel_token = token.clone();
+    let server_requests = Arc::clone(&server.requests);
+    let cancel_sent_at = Arc::new(Mutex::new(None));
+    let cancel_sent_at_task = Arc::clone(&cancel_sent_at);
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            let in_flight = server_requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.method == "POST" && r.path.contains(":generateContent"));
+            if in_flight {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        *cancel_sent_at_task.lock().unwrap() = Some(tokio::time::Instant::now());
         cancel_token.cancel();
     });
 
@@ -1179,13 +1210,17 @@ async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_s
 
     let start = tokio::time::Instant::now();
     let res = run_gemini_transcription(req, token, None).await;
-    let elapsed = start.elapsed();
+    let cancel_elapsed = cancel_sent_at
+        .lock()
+        .unwrap()
+        .map(|t| t.elapsed())
+        .unwrap_or_else(|| start.elapsed());
 
     assert!(res.is_err(), "cancelled transcription must return Err");
     assert!(
-        elapsed < Duration::from_secs(2),
+        cancel_elapsed < Duration::from_secs(2),
         "in-flight HTTP request must abort within <= 2s on cancel, took {:?}",
-        elapsed
+        cancel_elapsed
     );
 
     // Part 2: Cancelling summary generation in the queue engine must not be swallowed as a warning
@@ -1221,6 +1256,7 @@ async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_s
         "fake-gemini-key-for-summary",
     )
     .expect("write key");
+    fs::write(config_dir.join("gemini_base_url"), server.base_url()).expect("write base_url");
 
     let queue_path = fix.dir.path().join("queue_cancel_summary.json");
     let tools = Arc::new(QueueFakeTools {
@@ -1259,8 +1295,7 @@ async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_s
             transcription_engine: Some("whisper_only".to_string()),
             summarize: Some(true),
             summary_language: None,
-            // Pass a model name with an embedded space so the local URL fails immediately without hitting the network.
-            gemini_model: Some("invalid model for offline test".to_string()),
+            gemini_model: Some("gemini-flash-latest".to_string()),
             ..ItemOptions::default()
         },
         group_id: None,
@@ -1275,8 +1310,8 @@ async fn cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_s
     // Without the fix in engine.rs:2167, Err(e) during summary is caught as a warning and
     // run_transcribe_stage returns Ok, turning the cancelled item into Done!
     let mut shutdown_sent = false;
-    for _ in 0..200 {
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    for _ in 0..600 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
         let snapshot = engine.snapshot();
         if let Some(item) = snapshot.items.iter().find(|i| i.id == item_id) {
             if item.progress.percent == Some(95.0) {

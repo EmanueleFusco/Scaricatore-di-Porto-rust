@@ -4578,10 +4578,14 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: none.
 - Next step: unchanged.
 
-## 2026-10-24 — M7 / Fix macOS/Windows `gemini_pipeline` integration test key lookup and warnings
+## 2026-10-24 — M7 / Fix macOS/Windows `gemini_pipeline` integration test key lookup, Windows `CreateProcessW` cancellation race, and warnings
 
 - Done:
-  - Fixed the 3 `tests/gemini_pipeline.rs` failures on macOS (`process tests (macos-arm64)`) and Windows: in `src-tauri/src/services/secrets.rs`, `get_gemini_api_key_with()` and `get_gemini_key_status_with()` gated the `<config_dir>/gemini_api_key` fallback file behind `#[cfg(any(target_os = "linux", test))]`. Because Cargo compiles the library crate with `cfg(test)` disabled when linking integration tests in `tests/`, non-Linux runners ignored the test's temporary `<config_dir>/gemini_api_key` file and failed with `GEMINI_KEY_MISSING`. Removed the `#[cfg(any(target_os = "linux", test))]` gate on the read path (`set_gemini_api_key_with` still restricts fallback writes to Linux/unit-test).
+  - Fixed the 3 shared `tests/gemini_pipeline.rs` failures on macOS (`process tests (macos-arm64)`) and Windows (`process tests (windows-x64)`): in `src-tauri/src/services/secrets.rs`, `get_gemini_api_key_with()` and `get_gemini_key_status_with()` gated the `<config_dir>/gemini_api_key` fallback file behind `#[cfg(any(target_os = "linux", test))]`. Because Cargo compiles the library crate with `cfg(test)` disabled when linking integration tests in `tests/`, non-Linux runners ignored the test's temporary `<config_dir>/gemini_api_key` file and failed with `GEMINI_KEY_MISSING`. Removed the `#[cfg(any(target_os = "linux", test))]` gate on the read path (`set_gemini_api_key_with` still restricts fallback writes to Linux/unit-test).
+  - Fixed the 4th Windows-only failure in `tests/gemini_pipeline.rs` (`gemini_raii_delete_guard_on_cancellation`):
+    - Replaced the blind `tokio::time::sleep(Duration::from_millis(50))` before `cancel_token.cancel()` with deterministic synchronization that waits until the mock server records the `GET /v1beta/files/mock-file-123` poll request (on Windows CI, spawning `fake_ffmpeg.exe` via `CreateProcessW` + Job Object took > 50 ms, so the cancellation fired before the file upload finished and before `GeminiFileGuard::set_remote_file` was armed).
+    - Made `MockGeminiServer` handle incoming connections concurrently (`thread::spawn` per stream) so `SlowPoll` (300 ms) and `HangGenerateContent` (5 s) do not block the accept loop from receiving the subsequent `DELETE` or summary request.
+    - Hardened `cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_summary_cancel` to synchronize cancellation on the in-flight `:generateContent` request and route Part 2 summary cancellation through the local `MockGeminiServer`.
   - Removed the two `unused variable: config_dir` warnings in `secrets.rs` and added `#[cfg(any(target_os = "linux", test))]` to `is_wayland_session()` in `src-tauri/src/lib.rs` to eliminate the `dead_code` warning on macOS and Windows.
 - Verified by running:
   - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
