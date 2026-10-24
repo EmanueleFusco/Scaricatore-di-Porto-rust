@@ -17,6 +17,7 @@
 // riga per riga. `bash -n` resta come controllo secondario.
 //
 //   npm run check:ci
+import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -116,11 +117,12 @@ for (const file of await workflowFiles()) {
       console.error(`\n${file}: blocco run: | alla riga ${block.startLine}\n  ${problem}`);
     }
 
-    const res = spawnSync("bash", ["-n"], { input: block.body, encoding: "utf8" });
+    const bashCmd = process.platform === "win32" && existsSync("C:\\Program Files\\Git\\bin\\bash.exe") ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+    const res = spawnSync(bashCmd, ["-n"], { input: block.body, encoding: "utf8" });
     if (res.status !== 0) {
       failures++;
       fileFailed++;
-      console.error(`\n${file}: blocco run: | alla riga ${block.startLine}: sintassi non valida\n${res.stderr.trim()}`);
+      console.error(`\n${file}: blocco run: | alla riga ${block.startLine}: sintassi non valida\n${(res.stderr || res.error?.message || "").trim()}`);
     }
   }
   console.log(
