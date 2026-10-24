@@ -4539,3 +4539,16 @@ Branch `m4-media-processing`.
   only source is 256 px, so the 512/1024 sizes (macOS Retina, `icon.png`) are
   upscaled and slightly soft; a vector or 1024 px master would fix that.
 - Next step: unchanged.
+
+## 2026-10-24 — M7 / App icon from the 1024 px master
+
+- Done: regenerated `src-tauri/icons/` from `original_python/images/icona_1024.png`
+  (opaque square, no rounding). Windows/Linux master: full bleed, rounded with the
+  same corner ratio as the old 256 px icon (96/1024), faint dark outline so the
+  light background stays visible on light desktops. macOS `icon.icns`: Apple grid
+  (824 px body centred on 1024, 185 px corners, soft shadow). Anti-aliased masks
+  (4× supersampling). Replaces the upscaled 256 px icons of the previous step.
+- Verified by running: `npx tauri icon`, `cargo check` → OK; visual check of the
+  1024, 256 and 32 px renders on a light background.
+- Not verified / stubbed: not seen on a real Windows/macOS desktop or dock.
+- Next step: unchanged.
