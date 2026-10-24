@@ -4523,3 +4523,19 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: none new in this step.
 - Decisions/deviations (also in DECISIONS.md): none new (follows spec §11 and §13.4).
 - Next step: back up the updater signing key, configure GitHub Actions secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publish the signed release.
+
+## 2026-10-24 — M7 / App icon from the original app
+
+- Done: replaced the default Tauri icons in `src-tauri/icons/` with the original
+  app's artwork (`original_python/images/Win_icon.ico`, 256×256, full-bleed
+  rounded square, already centred). Upscaled to 1024 px (Lanczos) and ran
+  `npx tauri icon`. `icon.icns` was generated from a separate source with the
+  artwork scaled to 824/1024 and centred, following the macOS icon grid, so it
+  does not look oversized in the Dock. Removed the generated `android/` and
+  `ios/` folders (not targets). `tauri.conf.json` already lists the right files.
+- Verified by running: `cargo check` → OK; alpha bounding boxes of the PNGs are
+  symmetric (centred).
+- Not verified / stubbed: not looked at on a real Windows/macOS desktop. The
+  only source is 256 px, so the 512/1024 sizes (macOS Retina, `icon.png`) are
+  upscaled and slightly soft; a vector or 1024 px master would fix that.
+- Next step: unchanged.
