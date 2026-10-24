@@ -4407,3 +4407,26 @@ Branch `m4-media-processing`.
   - `( cd src-tauri && cargo fmt --all -- --check )`, `cargo clippy --all-targets -- -D warnings`, `cargo test` → pass (441 unit + 193 integration).
   - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND npm run tauri dev` on the owner's NVIDIA/KDE Wayland machine → no `Error 71`, no GBM warnings, process stayed alive.
 - Decisions/deviations (also in DECISIONS.md): D136.
+
+## 2026-10-24 — M7 / Verify the Wayland DMA-BUF fallback and rebuild the AppImage
+
+- Done:
+  - Confirmed the committed fallback from D135/D136 is active on this machine: `npm run tauri dev` with both `WEBKIT_DISABLE_DMABUF_RENDERER` and `GDK_BACKEND` unset stayed alive for 22 seconds and printed no `Gdk-Message: Error 71` or `Failed to create GBM buffer` line.
+  - Rebuilt the Linux AppImage from the same commit with the fallback included:
+    `npx tauri build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'`.
+    The resulting `Scaricatore Di Porto_0.1.0_amd64.AppImage` is 148.94 MiB.
+  - Ran the rebuilt AppImage with the same environment variables unset. It stayed alive, rendered the queue window on native Wayland, and produced no `Error 71` or GBM warnings. A real desktop screenshot (2560×1440, mean brightness 0.118439) confirmed that the window is not black.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass.
+  - `( cd src-tauri && cargo test )` → **441 unit + 193 integration = 634 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 16 files, **333 tests passed**.
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND npm run tauri dev` → process alive after 22 s, no GDK/GBM errors.
+  - Rebuilt AppImage, same unset environment → process alive, visible window, no GDK/GBM errors.
+- Not verified / stubbed:
+  - The rebuilt AppImage is **unsigned**: `/tmp/opencode/updater.key` no longer exists (the temporary directory was cleared), so `createUpdaterArtifacts` was disabled only for this local build and no `.sig` was produced. A human must restore the original updater private key, or deliberately generate a new key pair and replace the public key before publishing a signed release.
+  - The old pre-fix AppImage still needs `WEBKIT_DISABLE_DMABUF_RENDERER=1`; the rebuilt one does not.
+  - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; that environment variable remains available as an override.
+- Decisions/deviations (also in DECISIONS.md): none; this step verifies D135/D136.
+- Next step: restore the updater signing key and publish a signed release, or keep using the unsigned local AppImage for testing only.
