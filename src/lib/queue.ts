@@ -71,6 +71,10 @@ export interface ItemOptions {
   transcriptLanguage: string | null;
   translateToEnglish: boolean | null;
   transcriptsSubfolder: boolean | null;
+  transcriptionEngine: string | null;
+  geminiModel: string | null;
+  summarize: boolean | null;
+  summaryLanguage: string | null;
 }
 
 /** Mirror of the backend's `EncoderInfo` (spec §9.3). */
@@ -128,6 +132,7 @@ export interface QueueItem {
   finishedAt: number | null;
   transcriptFiles: string[];
   transcriptPreview: string | null;
+  transcriptOrigin: string | null;
 }
 
 /** Mirror of `services::queue::model::QueueSummary`. */
@@ -260,6 +265,10 @@ export interface AddItemRequest {
   transcriptLanguage?: string | null;
   translateToEnglish?: boolean | null;
   transcriptsSubfolder?: boolean | null;
+  transcriptionEngine?: string | null;
+  geminiModel?: string | null;
+  summarize?: boolean | null;
+  summaryLanguage?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +396,10 @@ export function normaliseItem(raw: unknown): QueueItem {
       transcriptLanguage: asNullableString(options.transcriptLanguage),
       translateToEnglish: typeof options.translateToEnglish === "boolean" ? options.translateToEnglish : null,
       transcriptsSubfolder: typeof options.transcriptsSubfolder === "boolean" ? options.transcriptsSubfolder : null,
+      transcriptionEngine: asNullableString(options.transcriptionEngine),
+      geminiModel: asNullableString(options.geminiModel),
+      summarize: typeof options.summarize === "boolean" ? options.summarize : null,
+      summaryLanguage: asNullableString(options.summaryLanguage),
     },
     groupId: asNullableString(value.groupId),
     progress: {
@@ -424,6 +437,7 @@ export function normaliseItem(raw: unknown): QueueItem {
       ? value.transcriptFiles.filter((f): f is string => typeof f === "string")
       : [],
     transcriptPreview: asNullableString(value.transcriptPreview),
+    transcriptOrigin: asNullableString(value.transcriptOrigin),
   };
 }
 

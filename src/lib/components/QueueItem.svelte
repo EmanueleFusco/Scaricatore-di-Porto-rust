@@ -33,11 +33,14 @@
   import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { modelsStore } from "$lib/stores/models.svelte";
+  import { geminiModelsStore } from "$lib/gemini.svelte";
+  import { router } from "$lib/router.svelte";
 
   let { item }: { item: QueueItem } = $props();
 
   let expanded = $state(false);
   let copied = $state(false);
+  let pendingGeminiTranscribe = $state<"transcribe" | "gemini_only" | "whisper_only" | null>(null);
 
   const hasFile = $derived(item.file !== null);
   const isRemoteUrl = $derived(!item.url.startsWith("local://"));
@@ -62,11 +65,20 @@
    * full text lives in the details panel; this line is clamped with a `title`
    * for the same reason.
    */
+  $effect(() => {
+    if (item.state === "failed" && item.error?.code === "GEMINI_MODEL_NOT_FOUND") {
+      void geminiModelsStore.refresh();
+    }
+  });
+
   const statusKind = $derived(statusKindFor(item));
   const stage = $derived(stageDetail(item));
   const statusText = $derived.by(() => {
     if (statusKind === "error" && item.error !== null) {
-      return errorText(item.error.messageKey, null);
+      return errorText(
+        item.error.messageKey,
+        item.error.code === "GEMINI_MODEL_NOT_FOUND" ? item.error.detail : null,
+      );
     }
     if (statusKind === "warning" && warning !== null) {
       return tt("queue.warning.heightLower.short", {
@@ -81,7 +93,7 @@
         eta !== null ? tt("queue.eta", { value: eta }) : null,
         {
           isTranscribing: item.state === "transcribing",
-          transcriptPreview: item.transcriptPreview,
+          transcriptPreview: item.transcriptPreview ? tt(item.transcriptPreview) : null,
           waitingDataText: tt("queue.status.waitingData"),
         },
       );
@@ -175,6 +187,19 @@
       case "openPage":
         await openUrl(item.url).catch(() => {});
         return;
+      case "transcribe": {
+        const engine = settingsStore.settings.transcriptionEngineOrder;
+        const usesGemini =
+          engine === "gemini_only" ||
+          engine === "subtitles_whisper_gemini" ||
+          settingsStore.settings.defaultSummarize;
+        if (!settingsStore.settings.geminiPrivacyHintDismissed && usesGemini) {
+          pendingGeminiTranscribe = "transcribe";
+          return;
+        }
+        await queueStore.act(action, item.id);
+        return;
+      }
       default:
         await queueStore.act(action, item.id);
     }
@@ -185,6 +210,42 @@
     await navigator.clipboard.writeText(detailsText(item, message)).catch(() => {});
     copied = true;
     setTimeout(() => (copied = false), 1500);
+  }
+
+  async function retranscribe(engine: "whisper_only" | "gemini_only"): Promise<void> {
+    const usesGemini = engine === "gemini_only" || settingsStore.settings.defaultSummarize;
+    if (!settingsStore.settings.geminiPrivacyHintDismissed && usesGemini) {
+      pendingGeminiTranscribe = engine;
+      return;
+    }
+    await runRetranscribe(engine);
+  }
+
+  async function runRetranscribe(engine: "whisper_only" | "gemini_only"): Promise<void> {
+    await queueStore.transcribeItem(item.id, {
+      transcriptionEngine: engine,
+      whisperModel: settingsStore.settings.activeWhisperModel ?? undefined,
+      transcriptLanguage:
+        settingsStore.settings.defaultTranscriptLanguage !== "auto"
+          ? settingsStore.settings.defaultTranscriptLanguage
+          : undefined,
+      summarize: settingsStore.settings.defaultSummarize,
+      summaryLanguage:
+        settingsStore.settings.defaultSummaryLanguage !== "auto"
+          ? settingsStore.settings.defaultSummaryLanguage
+          : undefined,
+    });
+  }
+
+  async function confirmGeminiPrivacyForItem(): Promise<void> {
+    const pending = pendingGeminiTranscribe;
+    pendingGeminiTranscribe = null;
+    await settingsStore.update({ geminiPrivacyHintDismissed: true });
+    if (pending === "transcribe") {
+      await queueStore.act("transcribe", item.id);
+    } else if (pending === "gemini_only" || pending === "whisper_only") {
+      await runRetranscribe(pending);
+    }
   }
 
   /** Drag and drop to reorder (spec §7.3), pointer-free on touch. */
@@ -429,6 +490,29 @@
     </div>
   {/if}
 
+  {#if pendingGeminiTranscribe !== null}
+    <div class="item__offer" role="alert">
+      <p class="item__offer-body">{tt("transcription.gemini.privacyNotice")}</p>
+      <p class="item__offer-body">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+      <div class="item__offer-actions">
+        <button
+          type="button"
+          class="btn btn--small"
+          onclick={() => void confirmGeminiPrivacyForItem()}
+        >
+          {tt("common.confirm")}
+        </button>
+        <button
+          type="button"
+          class="btn btn--small"
+          onclick={() => { pendingGeminiTranscribe = null; }}
+        >
+          {tt("common.cancel")}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#if expanded}
     <div class="item__details">
       <dl class="item__facts">
@@ -445,6 +529,22 @@
         {#if size !== null}
           <dt>{tt("queue.item.size")}</dt>
           <dd>{size}</dd>
+        {/if}
+        {#if item.transcriptOrigin !== null}
+          <dt>{tt("queue.item.transcriptOrigin")}</dt>
+          <dd>
+            <span class="item__origin-badge">
+              {item.transcriptOrigin === "subtitles_manual"
+                ? tt("queue.origin.subtitlesManual")
+                : item.transcriptOrigin === "subtitles_auto"
+                  ? tt("queue.origin.subtitlesAuto")
+                  : item.transcriptOrigin === "whisper"
+                    ? tt("queue.origin.whisper")
+                    : item.transcriptOrigin === "gemini"
+                      ? tt("queue.origin.gemini")
+                      : item.transcriptOrigin}
+            </span>
+          </dd>
         {/if}
         {#if item.transcriptFiles.length > 0}
           <dt>{tt("transcribe.outputFiles")}</dt>
@@ -467,6 +567,17 @@
         <p class="item__note item__note--error">
           {errorText(item.error.messageKey, item.error.detail)}
         </p>
+        {#if item.error.code === "GEMINI_KEY_MISSING" || item.error.code === "GEMINI_MODEL_NOT_FOUND"}
+          <div>
+            <button
+              type="button"
+              class="btn btn--small btn--secondary"
+              onclick={() => router.go("/settings/transcription")}
+            >
+              {tt("queue.action.openTranscriptionSettings")}
+            </button>
+          </div>
+        {/if}
       {/if}
 
       {#if warning !== null}
@@ -484,6 +595,31 @@
       {/if}
 
       <div class="item__details-actions">
+        {#if item.error?.code === "GEMINI_KEY_MISSING" || item.error?.code === "GEMINI_MODEL_NOT_FOUND"}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => router.go("/settings/transcription")}
+          >
+            {tt("queue.action.openTranscriptionSettings")}
+          </button>
+        {/if}
+        {#if item.file !== null && item.state === "done"}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void retranscribe("whisper_only")}
+          >
+            {tt("queue.action.retranscribeWhisper")}
+          </button>
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => void retranscribe("gemini_only")}
+          >
+            {tt("queue.action.retranscribeGemini")}
+          </button>
+        {/if}
         <button type="button" class="btn btn--small" onclick={() => void copyDetails()}>
           {#if copied}{tt("queue.copied")}{:else}{tt("queue.copyDetails")}{/if}
         </button>
@@ -733,6 +869,17 @@
 
   .item__path {
     font-family: var(--font-mono);
+  }
+
+  .item__origin-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
   }
 
   .item__log-label {

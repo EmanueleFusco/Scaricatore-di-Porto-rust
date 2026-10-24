@@ -89,6 +89,16 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # the 0.62 one spec §4.2 needs; they are independent crates and coexist.
 tauri-plugin-notification = "2.4"
 
+# Keyring for Gemini API key storage (spec §10.5).
+# Pinned to 3.6 to respect rust-version = 1.85 and pure Rust crypto without OpenSSL.
+keyring = { version = "3.6", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+    "linux-native",
+] }
+
 [target.'cfg(unix)'.dependencies]
 # killpg() for the process-group tree-kill of spec §4.2. Not used on Windows,
 # where the same job is done with the `windows` crate below.

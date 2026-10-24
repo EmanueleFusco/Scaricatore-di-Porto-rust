@@ -163,6 +163,9 @@ export function ttCount(key: string, count: number, params?: Params): string {
 
 /** Translate an i18n key coming from the backend (`error.*`, …). */
 export function errorText(messageKey: string, detail: string | null): string {
-  const message = t(activeLang(), messageKey);
-  return detail ? `${message}: ${detail}` : message;
+  const message = t(activeLang(), messageKey, detail ? { model: detail, detail } : undefined);
+  if (detail && !message.includes(detail)) {
+    return `${message}: ${detail}`;
+  }
+  return message;
 }

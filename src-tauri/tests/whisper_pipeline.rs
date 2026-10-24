@@ -418,10 +418,15 @@ impl ToolProvider for QueueFakeTools {
             ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
             whisper: self.whisper.clone(),
             models_dir: Some(self.models_dir.clone()),
+            config_dir: None,
             whisper_threads: 2,
             skip_silence_vad: true,
             default_whisper_model: Some(self.default_model.clone()),
             default_transcript_language: Some("it".to_string()),
+            default_transcription_engine_order: None,
+            default_gemini_model: None,
+            default_summarize: false,
+            default_summary_language: None,
             runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
                 mode: JsRuntimeMode::QuickJsOnly,
                 qjs: None,
@@ -507,6 +512,7 @@ async fn queue_engine_transcribes_local_media_end_to_end() {
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),
@@ -736,6 +742,7 @@ async fn queue_engine_transcribe_uses_job_temp_dir_not_shared_private_temp() {
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),
@@ -948,6 +955,7 @@ async fn queue_engine_fails_with_whisper_model_missing_when_model_not_installed(
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),
@@ -1053,6 +1061,7 @@ async fn queue_engine_fails_with_whisper_missing_when_sidecar_not_found() {
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),
@@ -1157,6 +1166,7 @@ async fn local_media_with_none_duration_probes_ffprobe_and_chunks() {
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),
@@ -1291,10 +1301,15 @@ impl ToolProvider for MutableWhisperTools {
             ffprobe: scaricatore_di_porto_lib::services::ffmpeg::find_ffprobe(&self.ffmpeg, None),
             whisper,
             models_dir: Some(self.models_dir.clone()),
+            config_dir: None,
             whisper_threads: 2,
             skip_silence_vad: true,
             default_whisper_model: Some(self.default_model.clone()),
             default_transcript_language: Some("it".to_string()),
+            default_transcription_engine_order: None,
+            default_gemini_model: None,
+            default_summarize: false,
+            default_summary_language: None,
             runtimes: scaricatore_di_porto_lib::services::inspect::Runtimes {
                 mode: JsRuntimeMode::QuickJsOnly,
                 qjs: None,
@@ -1376,6 +1391,7 @@ async fn queue_engine_updates_item_file_after_encoding_before_transcribe_stage()
             transcript_language: Some("it".to_string()),
             translate_to_english: Some(false),
             transcripts_subfolder: Some(false),
+            ..ItemOptions::default()
         },
         group_id: None,
         file: Some(local_file.clone()),

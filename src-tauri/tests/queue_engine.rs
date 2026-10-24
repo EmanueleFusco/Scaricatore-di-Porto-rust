@@ -108,10 +108,15 @@ impl ToolProvider for FakeTools {
             ffprobe: None,
             whisper: None,
             models_dir: None,
+            config_dir: None,
             whisper_threads: 0,
             skip_silence_vad: true,
             default_whisper_model: None,
             default_transcript_language: None,
+            default_transcription_engine_order: None,
+            default_gemini_model: None,
+            default_summarize: false,
+            default_summary_language: None,
             runtimes: Runtimes {
                 mode: JsRuntimeMode::QuickJsOnly,
                 qjs: Some(ResolvedRuntime {
@@ -1521,4 +1526,100 @@ fn a_group_is_upserted_and_survives_the_file() {
     let groups = reopened.snapshot().groups;
     assert_eq!(groups.len(), 1, "an upsert replaces, it does not append");
     assert_eq!(groups[0].title, "A playlist, renamed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_engine_persists_item_file_without_encode_before_transcribe_failure() {
+    let fx = fixture();
+    let engine = fx.engine();
+    let mut req = fx.request("https://a.example/test-transcribe-fail-1");
+    req.options.transcribe = true;
+    req.options.transcription_engine = Some("gemini_only".to_string());
+    let id = engine.add(vec![req], false).added[0].clone();
+
+    let snapshot = wait_for(
+        &engine,
+        "the item to fail at transcribe stage",
+        |snapshot| state_of(snapshot, &id) == Some(ItemState::Failed),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let item = snapshot.items.iter().find(|i| i.id == id).unwrap();
+    assert!(
+        item.file.is_some(),
+        "item.file must be preserved even if transcribe stage fails"
+    );
+    assert!(item.file.as_ref().unwrap().is_file());
+    engine.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_engine_succeeds_without_subtitles_in_subtitles_only_mode_for_download() {
+    let fx = fixture();
+    let engine = fx.engine();
+    let mut req = fx.request("https://a.example/test-subs-only-1");
+    req.options.transcribe = true;
+    req.options.transcription_engine = Some("subtitles_only".to_string());
+    let id = engine.add(vec![req], false).added[0].clone();
+
+    let snapshot = wait_for(
+        &engine,
+        "the item to complete as Done without failing",
+        |snapshot| state_of(snapshot, &id) == Some(ItemState::Done),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let item = snapshot.items.iter().find(|i| i.id == id).unwrap();
+    assert_eq!(
+        item.state,
+        ItemState::Done,
+        "subtitles_only mode on video download must complete as Done when subtitles are missing"
+    );
+    assert!(item.file.is_some(), "item.file must be present");
+    assert!(item.file.as_ref().unwrap().is_file());
+    assert!(
+        item.transcript_files.is_empty(),
+        "no transcript files should be present"
+    );
+    assert!(
+        item.log_tail
+            .iter()
+            .any(|l| l.contains("subtitles") || l.contains("Subtitles")),
+        "warning about missing subtitles must be logged on the item"
+    );
+
+    engine.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_engine_cleans_up_temp_dir_on_normal_completion() {
+    let fx = fixture();
+    let engine = fx.engine();
+    let id = engine
+        .add(vec![fx.request("https://a.example/test-clean-1")], false)
+        .added[0]
+        .clone();
+
+    // Create the item's temp directory simulating tool usage during download/transcription
+    let temp = fx.out.join(format!(".sdp-tmp-{id}"));
+    fs::create_dir_all(&temp).expect("create temp dir");
+    fs::write(temp.join("orphan.tmp"), b"leftover").expect("write file");
+    assert!(temp.exists());
+
+    let snapshot = wait_for(
+        &engine,
+        "the item to complete",
+        |snapshot| state_of(snapshot, &id) == Some(ItemState::Done),
+        Duration::from_secs(30),
+    )
+    .await;
+    assert_eq!(snapshot.summary.done, 1);
+
+    assert!(
+        !temp.exists(),
+        "the .sdp-tmp-<id> directory must be cleaned up on normal completion"
+    );
+    engine.shutdown();
 }

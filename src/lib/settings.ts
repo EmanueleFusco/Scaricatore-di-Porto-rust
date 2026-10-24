@@ -103,6 +103,14 @@ export interface Settings {
   transcriptionEngineOrder: string;
   /** Spec §10, §11.6: Put transcript outputs in a transcripts/ subfolder. */
   transcriptsSubfolder: boolean;
+  /** Spec §10.3, §11.6: Selected default Gemini model. */
+  defaultGeminiModel: string;
+  /** Spec §10.4, §11.6: Default summarize toggle (default false). */
+  defaultSummarize: boolean;
+  /** Spec §10.4, §11.6: Default summary language (default "auto"). */
+  defaultSummaryLanguage: string;
+  /** Spec §10.4: Whether the cost/privacy hint for Gemini has been dismissed. */
+  geminiPrivacyHintDismissed: boolean;
 }
 
 /** SponsorBlock mode (spec §8.4): mark as chapters vs remove cuts. */
@@ -180,6 +188,10 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultTranscriptLanguage: "auto",
   transcriptionEngineOrder: "subtitles_whisper_gemini",
   transcriptsSubfolder: false,
+  defaultGeminiModel: "gemini-flash-latest",
+  defaultSummarize: false,
+  defaultSummaryLanguage: "auto",
+  geminiPrivacyHintDismissed: false,
 };
 
 /**
@@ -375,6 +387,16 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
         ? raw.transcriptionEngineOrder
         : DEFAULT_SETTINGS.transcriptionEngineOrder,
     transcriptsSubfolder: raw?.transcriptsSubfolder === true,
+    defaultGeminiModel:
+      typeof raw?.defaultGeminiModel === "string" && raw.defaultGeminiModel.trim() !== ""
+        ? raw.defaultGeminiModel.trim()
+        : DEFAULT_SETTINGS.defaultGeminiModel,
+    defaultSummarize: raw?.defaultSummarize === true,
+    defaultSummaryLanguage:
+      typeof raw?.defaultSummaryLanguage === "string" && raw.defaultSummaryLanguage.trim() !== ""
+        ? raw.defaultSummaryLanguage.trim().toLowerCase()
+        : DEFAULT_SETTINGS.defaultSummaryLanguage,
+    geminiPrivacyHintDismissed: raw?.geminiPrivacyHintDismissed === true,
   };
 }
 

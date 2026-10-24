@@ -76,6 +76,10 @@ export interface AddRow {
   transcriptLanguageOverridden: boolean;
   translateToEnglish: boolean;
   transcriptsSubfolder: boolean;
+  transcriptionEngine: string | null;
+  geminiModel: string | null;
+  summarize: boolean;
+  summaryLanguage: string | null;
 }
 
 const MAX_ROWS = 500;
@@ -199,6 +203,10 @@ class AddBarStore {
         transcriptLanguageOverridden: false,
         translateToEnglish: settingsStore.settings.whisperTranslateToEnglish,
         transcriptsSubfolder: settingsStore.settings.transcriptsSubfolder,
+        transcriptionEngine: settingsStore.settings.transcriptionEngineOrder,
+        geminiModel: settingsStore.settings.defaultGeminiModel,
+        summarize: settingsStore.settings.defaultSummarize,
+        summaryLanguage: settingsStore.settings.defaultSummaryLanguage,
       };
     });
     if (rows.length === 0) return;
@@ -375,6 +383,10 @@ class AddBarStore {
         | "transcriptLanguageOverridden"
         | "translateToEnglish"
         | "transcriptsSubfolder"
+        | "transcriptionEngine"
+        | "geminiModel"
+        | "summarize"
+        | "summaryLanguage"
       >
     >,
   ): void {
@@ -488,6 +500,10 @@ class AddBarStore {
         }),
         translateToEnglish: row.translateToEnglish,
         transcriptsSubfolder: row.transcriptsSubfolder,
+        transcriptionEngine: row.transcriptionEngine,
+        geminiModel: row.geminiModel,
+        summarize: row.summarize,
+        summaryLanguage: row.summaryLanguage,
       };
     });
   }

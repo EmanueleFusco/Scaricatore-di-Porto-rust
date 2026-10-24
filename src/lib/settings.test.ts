@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { t } from "$lib/i18n";
 import {
   DEFAULT_SETTINGS,
   isLangPreference,
@@ -151,3 +154,76 @@ describe("type guards", () => {
     expect(isThemePreference("sepia")).toBe(false);
   });
 });
+
+describe("Gemini model selector and 404 handling (spec §10.3 item 6, §11.6, M7)", () => {
+  it("formats actionable error message with retired model name and suggestion", () => {
+    expect(t("en", "error.ytdlp.geminiModelNotFound", { model: "gemini-2.5-flash" })).toBe(
+      "Model gemini-2.5-flash is no longer available on Gemini. Select another model (for example gemini-flash-latest) in Settings → Transcription.",
+    );
+  });
+
+  it("verifies TranscriptionSettings uses an editable combobox and QueueItem has settings action", () => {
+    const transcriptionSrc = readFileSync(
+      join(__dirname, "pages/settings/TranscriptionSettings.svelte"),
+      "utf-8",
+    );
+    expect(transcriptionSrc).not.toContain('<select id="setting-gemini-model"');
+    expect(transcriptionSrc).toContain('list="gemini-models-list"');
+    expect(transcriptionSrc).toContain('<datalist id="gemini-models-list"');
+
+    const queueItemSrc = readFileSync(
+      join(__dirname, "components/QueueItem.svelte"),
+      "utf-8",
+    );
+    expect(queueItemSrc).toContain("openTranscriptionSettings");
+  });
+});
+
+describe("Gemini privacy and cost notice (spec §10.3 item 8, §10.4, M11)", () => {
+  it("renders summary privacy hint in TranscriptionSettings and gates first-use Gemini/summary notice on geminiPrivacyHintDismissed", () => {
+    expect(t("en", "settings.transcription.geminiSummaryPrivacyHint")).toContain("Gemini API");
+    expect(t("it", "settings.transcription.geminiSummaryPrivacyHint")).toContain("API Gemini");
+
+    const transcriptionSrc = readFileSync(
+      join(__dirname, "pages/settings/TranscriptionSettings.svelte"),
+      "utf-8",
+    );
+    expect(transcriptionSrc).toContain("settings.transcription.geminiSummaryPrivacyHint");
+
+    const addBarSrc = readFileSync(
+      join(__dirname, "components/AddBar.svelte"),
+      "utf-8",
+    );
+    expect(addBarSrc).toContain("geminiPrivacyHintDismissed");
+    expect(addBarSrc).toContain("settings.transcription.geminiSummaryPrivacyHint");
+
+    const queueItemSrc = readFileSync(
+      join(__dirname, "components/QueueItem.svelte"),
+      "utf-8",
+    );
+    expect(queueItemSrc).toContain("geminiPrivacyHintDismissed");
+  });
+});
+
+describe("No hard-coded English strings in TranscriptionSettings and engine (m1)", () => {
+  it("uses i18n keys for show/hide key aria-labels in TranscriptionSettings", () => {
+    const transcriptionSrc = readFileSync(
+      join(__dirname, "pages/settings/TranscriptionSettings.svelte"),
+      "utf-8",
+    );
+    expect(transcriptionSrc).not.toContain('"Hide key"');
+    expect(transcriptionSrc).not.toContain('"Show key"');
+    expect(transcriptionSrc).toContain("transcription.gemini.hideKey");
+    expect(transcriptionSrc).toContain("transcription.gemini.showKey");
+  });
+
+  it("provides translations for queue.status.generatingSummary and gemini key aria-labels in en and it", () => {
+    expect(t("en", "transcription.gemini.showKey")).toBe("Show key");
+    expect(t("en", "transcription.gemini.hideKey")).toBe("Hide key");
+    expect(t("it", "transcription.gemini.showKey")).toBe("Mostra chiave");
+    expect(t("it", "transcription.gemini.hideKey")).toBe("Nascondi chiave");
+    expect(t("en", "queue.status.generatingSummary")).toBe("Generating summary…");
+    expect(t("it", "queue.status.generatingSummary")).toBe("Generazione riassunto…");
+  });
+});
+

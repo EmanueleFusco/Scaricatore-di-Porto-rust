@@ -277,6 +277,10 @@ class QueueStore {
       transcriptLanguage?: string;
       translateToEnglish?: boolean;
       transcriptsSubfolder?: boolean;
+      transcriptionEngine?: string;
+      geminiModel?: string;
+      summarize?: boolean;
+      summaryLanguage?: string;
     },
   ): Promise<boolean> {
     if (!isTauriRuntime()) return false;
@@ -287,6 +291,10 @@ class QueueStore {
         transcriptLanguage: options?.transcriptLanguage ?? null,
         translateToEnglish: options?.translateToEnglish ?? null,
         transcriptsSubfolder: options?.transcriptsSubfolder ?? null,
+        transcriptionEngine: options?.transcriptionEngine ?? null,
+        geminiModel: options?.geminiModel ?? null,
+        summarize: options?.summarize ?? null,
+        summaryLanguage: options?.summaryLanguage ?? null,
       });
     } catch (err) {
       this.#fail(err);
@@ -302,6 +310,10 @@ class QueueStore {
       transcriptLanguage?: string;
       translateToEnglish?: boolean;
       transcriptsSubfolder?: boolean;
+      transcriptionEngine?: string;
+      geminiModel?: string;
+      summarize?: boolean;
+      summaryLanguage?: string;
     },
   ): Promise<string | null> {
     if (!isTauriRuntime()) return null;
@@ -312,6 +324,10 @@ class QueueStore {
         transcriptLanguage: options?.transcriptLanguage ?? null,
         translateToEnglish: options?.translateToEnglish ?? null,
         transcriptsSubfolder: options?.transcriptsSubfolder ?? null,
+        transcriptionEngine: options?.transcriptionEngine ?? null,
+        geminiModel: options?.geminiModel ?? null,
+        summarize: options?.summarize ?? null,
+        summaryLanguage: options?.summaryLanguage ?? null,
       });
       await this.load();
       if (id) {

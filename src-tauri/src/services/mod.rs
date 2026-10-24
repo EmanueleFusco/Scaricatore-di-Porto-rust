@@ -15,6 +15,7 @@ pub mod notify;
 pub mod paths;
 pub mod process;
 pub mod queue;
+pub mod secrets;
 pub mod tools;
 pub mod transcribe;
 pub mod ytdlp;

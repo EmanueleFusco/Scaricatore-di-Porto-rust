@@ -10,6 +10,8 @@
   import AlertTriangleIcon from "lucide-svelte/icons/alert-triangle";
   import CheckIcon from "lucide-svelte/icons/check";
   import DownloadIcon from "lucide-svelte/icons/download";
+  import EyeIcon from "lucide-svelte/icons/eye";
+  import EyeOffIcon from "lucide-svelte/icons/eye-off";
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
   import PauseIcon from "lucide-svelte/icons/pause";
   import PlayIcon from "lucide-svelte/icons/play";
@@ -19,12 +21,106 @@
   import XIcon from "lucide-svelte/icons/x";
   import { open } from "@tauri-apps/plugin-dialog";
 
+  import {
+    deleteGeminiKey,
+    geminiModelsStore,
+    getGeminiKeyStatus,
+    saveGeminiKey,
+    testGeminiKey,
+    type GeminiKeyStatus,
+  } from "$lib/gemini.svelte";
   import { filterModels, formatBytes, formatWer, isLargeDownload, type ModelViewItem } from "$lib/models";
   import { modelsStore } from "$lib/stores/models.svelte";
   import { settingsStore, tt } from "$lib/stores/settings.svelte";
 
+  let geminiStatus = $state<GeminiKeyStatus | null>(null);
+  let geminiInputKey = $state("");
+  let showGeminiKey = $state(false);
+  let testingGeminiKey = $state(false);
+  let geminiTestSuccess = $state<boolean | null>(null);
+  let geminiTestMessage = $state<string | null>(null);
+
+  async function refreshGeminiStatus(): Promise<void> {
+    try {
+      geminiStatus = await getGeminiKeyStatus();
+    } catch {
+      geminiStatus = null;
+    }
+  }
+
+  async function refreshGeminiModels(): Promise<void> {
+    await geminiModelsStore.refresh();
+  }
+
+  async function handleSaveGeminiKey(): Promise<void> {
+    const keyToSave = geminiInputKey.trim();
+    if (!keyToSave) return;
+    try {
+      await saveGeminiKey(keyToSave);
+      geminiInputKey = "";
+      geminiTestSuccess = null;
+      geminiTestMessage = null;
+      await refreshGeminiStatus();
+      await refreshGeminiModels();
+    } catch (e: any) {
+      geminiTestSuccess = false;
+      geminiTestMessage = e?.message ?? String(e);
+    }
+  }
+
+  async function handleDeleteGeminiKey(): Promise<void> {
+    try {
+      await deleteGeminiKey();
+      geminiInputKey = "";
+      geminiTestSuccess = null;
+      geminiTestMessage = null;
+      await refreshGeminiStatus();
+    } catch (e: any) {
+      geminiTestSuccess = false;
+      geminiTestMessage = e?.message ?? String(e);
+    }
+  }
+
+  async function handleTestGeminiKey(): Promise<void> {
+    testingGeminiKey = true;
+    geminiTestSuccess = null;
+    geminiTestMessage = null;
+    try {
+      const ok = await testGeminiKey(geminiInputKey.trim() || undefined);
+      geminiTestSuccess = ok;
+      if (ok) {
+        geminiTestMessage = tt("transcription.gemini.testSuccess");
+        void refreshGeminiModels();
+      }
+    } catch (e: any) {
+      geminiTestSuccess = false;
+      geminiTestMessage = e?.detail ?? e?.message ?? String(e);
+    } finally {
+      testingGeminiKey = false;
+    }
+  }
+
+  function onGeminiModelChange(event: Event): void {
+    const value = (event.currentTarget as HTMLInputElement).value.trim();
+    if (value) {
+      void settingsStore.update({ defaultGeminiModel: value });
+    }
+  }
+
+  function onDefaultSummarizeChange(event: Event): void {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    void settingsStore.update({ defaultSummarize: checked });
+  }
+
+  function onSummaryLanguageChange(event: Event): void {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    void settingsStore.update({ defaultSummaryLanguage: value });
+  }
+
   onMount(() => {
     void modelsStore.init();
+    void refreshGeminiStatus();
+    void refreshGeminiModels();
   });
 
   onDestroy(() => {
@@ -522,7 +618,191 @@
     </div>
   </section>
 
-  <!-- 3. Advanced Configuration Drawer -->
+  <!-- 3. Cloud Engine: Gemini & Summaries (spec §10.3, §10.4, §10.5, §11.6) -->
+  <section class="card settings__group" aria-labelledby="heading-gemini">
+    <div class="models-header">
+      <div class="models-header__title-block">
+        <h2 class="settings__group-title" id="heading-gemini">
+          {tt("transcription.section.gemini")}
+        </h2>
+        {#if geminiStatus?.hasKey}
+          <span class="badge badge--recommended">
+            {tt("transcription.gemini.statusConfigured", {
+              source:
+                geminiStatus.source === "environment"
+                  ? tt("transcription.gemini.sourceEnv")
+                  : geminiStatus.source === "keyring"
+                    ? tt("transcription.gemini.sourceKeyring")
+                    : tt("transcription.gemini.sourceFile"),
+            })}
+          </span>
+        {:else}
+          <span class="badge badge--muted">
+            {tt("transcription.gemini.statusNotConfigured")}
+          </span>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Privacy Notice -->
+    <div class="banner banner--info" role="note">
+      <p>{tt("transcription.gemini.privacyNotice")}</p>
+    </div>
+
+    {#if geminiStatus?.hasKey && geminiStatus.source === "file"}
+      <div class="banner banner--info" role="note">
+        <p>{tt("transcription.gemini.keyringFallbackNote")}</p>
+      </div>
+    {/if}
+
+    <!-- API Key Input & Actions -->
+    <div class="field">
+      <label class="field__label" for="setting-gemini-key">
+        {tt("transcription.gemini.keyInput")}
+      </label>
+      <div class="input-action-group">
+        <div class="password-wrapper">
+          <input
+            id="setting-gemini-key"
+            type={showGeminiKey ? "text" : "password"}
+            class="input input--password"
+            placeholder={geminiStatus?.hasKey
+              ? "••••••••••••••••••••••••••••••••"
+              : tt("transcription.gemini.keyInputPlaceholder")}
+            bind:value={geminiInputKey}
+          />
+          <button
+            type="button"
+            class="btn-icon"
+            onclick={() => (showGeminiKey = !showGeminiKey)}
+            aria-label={showGeminiKey
+              ? tt("transcription.gemini.hideKey")
+              : tt("transcription.gemini.showKey")}
+          >
+            {#if showGeminiKey}
+              <EyeOffIcon size={16} aria-hidden="true" />
+            {:else}
+              <EyeIcon size={16} aria-hidden="true" />
+            {/if}
+          </button>
+        </div>
+
+        <button
+          type="button"
+          class="btn btn--secondary"
+          disabled={!geminiInputKey.trim()}
+          onclick={handleSaveGeminiKey}
+        >
+          {tt("transcription.gemini.saveKey")}
+        </button>
+
+        <button
+          type="button"
+          class="btn btn--secondary"
+          disabled={testingGeminiKey || (!geminiInputKey.trim() && !geminiStatus?.hasKey)}
+          onclick={handleTestGeminiKey}
+        >
+          {tt("transcription.gemini.testKey")}
+        </button>
+
+        {#if geminiStatus?.hasKey}
+          <button
+            type="button"
+            class="btn btn--ghost text-danger"
+            onclick={handleDeleteGeminiKey}
+          >
+            <Trash2Icon size={16} aria-hidden="true" />
+            {tt("transcription.gemini.deleteKey")}
+          </button>
+        {/if}
+      </div>
+      <p class="field__hint">{tt("transcription.gemini.keyStorageNote")}</p>
+    </div>
+
+    {#if geminiTestMessage}
+      <div
+        class="banner {geminiTestSuccess ? 'banner--success' : 'banner--error'}"
+        role="alert"
+      >
+        <span>{geminiTestMessage}</span>
+      </div>
+    {/if}
+
+    <!-- Model selection -->
+    <div class="field">
+      <div class="field__header-row">
+        <label class="field__label" for="setting-gemini-model">
+          {tt("transcription.gemini.model")}
+        </label>
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          disabled={geminiModelsStore.loading || !geminiStatus?.hasKey}
+          onclick={refreshGeminiModels}
+          aria-label={tt("transcription.gemini.refreshModels")}
+        >
+          <RefreshCwIcon size={14} class={geminiModelsStore.loading ? "spin" : ""} aria-hidden="true" />
+          {tt("transcription.gemini.refreshModels")}
+        </button>
+      </div>
+
+      <div class="model-combobox-wrapper">
+        <input
+          id="setting-gemini-model"
+          type="text"
+          class="input"
+          list="gemini-models-list"
+          value={settingsStore.settings.defaultGeminiModel}
+          onchange={onGeminiModelChange}
+          placeholder="gemini-flash-latest"
+          autocomplete="off"
+        />
+        <datalist id="gemini-models-list">
+          {#each geminiModelsStore.models as model (model.id)}
+            <option value={model.id}>{model.displayName} ({model.id})</option>
+          {/each}
+        </datalist>
+      </div>
+      <p class="field__hint">{tt("transcription.gemini.modelHint")}</p>
+    </div>
+
+    <!-- Summaries Configuration -->
+    <div class="toggle-list">
+      <label class="toggle-item">
+        <input
+          type="checkbox"
+          checked={settingsStore.settings.defaultSummarize}
+          onchange={onDefaultSummarizeChange}
+        />
+        <div class="toggle-item__text">
+          <span class="toggle-item__title">{tt("transcription.gemini.defaultSummarize")}</span>
+          <span class="toggle-item__hint">{tt("transcription.gemini.defaultSummarizeHint")}</span>
+          <span class="toggle-item__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</span>
+        </div>
+      </label>
+    </div>
+
+    {#if settingsStore.settings.defaultSummarize}
+      <div class="field">
+        <label class="field__label" for="setting-summary-language">
+          {tt("transcription.gemini.summaryLanguage")}
+        </label>
+        <select
+          class="select"
+          id="setting-summary-language"
+          value={settingsStore.settings.defaultSummaryLanguage}
+          onchange={onSummaryLanguageChange}
+        >
+          {#each languageOptions as option (option.value)}
+            <option value={option.value}>{tt(option.key)}</option>
+          {/each}
+        </select>
+        <p class="field__hint">{tt("transcription.gemini.summaryLanguageHint")}</p>
+      </div>
+    {/if}
+  </section>
+
+  <!-- 4. Advanced Configuration Drawer -->
   <section class="card settings__group" aria-labelledby="heading-advanced">
     <h2 class="settings__group-title" id="heading-advanced">
       {tt("transcription.section.advanced")}
@@ -839,5 +1119,92 @@
 
   .text-muted {
     color: var(--text-muted);
+  }
+
+  .text-danger {
+    color: #ef4444;
+  }
+
+  .badge--muted {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+
+  .banner--info {
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    color: var(--text);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-3);
+    font-size: 13px;
+  }
+
+  .banner--success {
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #16a34a;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-3);
+    font-size: 13px;
+  }
+
+  .input-action-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .password-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 240px;
+  }
+
+  .input--password {
+    width: 100%;
+    padding-right: 36px;
+  }
+
+  .btn-icon {
+    position: absolute;
+    right: 8px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+  }
+
+  .btn-icon:hover {
+    color: var(--text);
+  }
+
+  .field__header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  :global(.spin) {
+    animation: spin 1s linear infinite;
   }
 </style>

@@ -3367,6 +3367,45 @@ In `.github/workflows/whisper-sidecar.yml`, the `Build whisper-cli (Windows ARM6
 2. **NTFS-safe `.part` file free space accounting in tests**:
    In `tests/models.rs:download_model_accounts_for_existing_part_file_in_disk_space_check`, querying `free_disk_space` before creating the `.part` file causes false `DiskFull` failures on Windows NTFS, because `File::set_len` physically reserves/allocates clusters and immediately decreases `GetDiskFreeSpaceExW` by the file size. Creating and sizing the 200 MiB `.part` file *before* querying `free_disk_space` ensures the initial allocation is already accounted for in `free_space`, and using a 140 MiB safety headroom (`model_size = free_space + safety_margin + 40 MiB`) protects against runner background disk jitter (OS paging, Defender, logs).
 
+### D125 — Transcription Phase M6: Subtitles-first pipeline, Gemini REST engine, summaries, and secret storage (spec §10.1, §10.3, §10.4, §10.5)
+
+Phase M6 implements subtitles-first transcript extraction, the Gemini cloud transcription engine, map-reduce summarization, and secure secret storage:
+
+1. **`keyring 3.6` dependency with zero OpenSSL**:
+   - `keyring` v3.6 is added with `default-features = false` and native backends: `apple-native`, `windows-native`, `sync-secret-service`, `crypto-rust`, `linux-native`.
+   - Verified that `cargo tree -i openssl-sys` produces 0 matches; the entire build remains strictly free of OpenSSL in adherence to spec §1.
+
+2. **Secret storage hierarchy & Linux fallback (spec §10.5)**:
+   - Priority: `GEMINI_API_KEY` environment variable -> OS Keyring (`service = "scaricatore-di-porto"`, `user = "gemini_api_key"`) -> local file fallback.
+   - On Linux systems where the D-Bus Secret Service daemon is unavailable (minimal window managers, headless CI, or containerized environments), falls back to `<app_config_dir>/gemini_api_key`.
+   - On Unix, the fallback file is created with strict `0600` permissions (`libc::S_IRUSR | libc::S_IWUSR`) using `OpenOptionsExt::mode(0o600)`.
+   - The key is never transmitted to the frontend or written to logs; IPC only exposes key presence and storage target (`has_key`, `source`).
+
+3. **Subtitle downloader and cleaner (spec §10.1)**:
+   - Uses `yt-dlp --write-subs --write-auto-subs --skip-download` to retrieve manual or automatic subtitles.
+   - `clean_subtitles` strips WebVTT headers, timestamp tags (`<00:00:00.000>`), styling/positioning metadata, and cue tags (`<c>`, `<b>`, `<i>`).
+   - Deduplicates rolling automatic caption loops where lines or word sequences repeat across sliding time windows.
+   - Automatically breaks continuous captions into readable paragraphs whenever speech pauses exceed 2.0 seconds.
+
+4. **Gemini Cloud Engine REST client (spec §10.3)**:
+   - Lightweight implementation over `reqwest` + `rustls-tls` without heavy Google Cloud SDKs.
+   - Audio preparation via ffmpeg transcode: 16 kHz mono Opus in an Ogg container (`-c:a libopus -b:a 24k -ar 16000 -ac 1`), with fallback to MP3 or WAV if Opus encoding is unavailable.
+   - Audio upload uses Google Files API Resumable Upload protocol streamed directly from disk (`POST /upload/v1beta/files` followed by streaming `POST` to upload URL), avoiding high RAM usage on large audio files.
+   - Polls for file state `ACTIVE` with exponential backoff, 10-minute timeout, and `CancellationToken` cancellation.
+   - RAII cleanup guard (`GeminiFileGuard`): issues `DELETE /v1beta/files/{name}` on task completion, error, or cancellation to avoid leaving orphaned media files on user quotas.
+   - Automatic backoff retry on HTTP 429 quota exhaustion.
+   - Dynamic model discovery from `GET /v1beta/models`, filtering for `generateContent` capabilities, sorting `-latest` aliases first, and falling back to pinned models when offline.
+
+5. **Map-reduce summarization (spec §10.4)**:
+   - For long transcripts exceeding `MAX_SUMMARY_CHUNK_CHARS` (50,000 characters), splits text along paragraph boundaries and summarizes individual sections before combining them in a final reduction pass.
+   - Produces `<name>.summary.md` alongside `<name>.txt` transcript.
+
+6. **Pipeline orchestration and error preservation (spec §10, §7)**:
+   - Configurable engine modes: `subtitles_whisper_gemini` (default), `whisper_only`, `gemini_only`, `subtitles_only`.
+   - Sets `QueueItem.transcript_origin` (`subtitles_manual`, `subtitles_auto`, `whisper`, `gemini`) upon completion.
+   - In fallback pipeline (`subtitles_whisper_gemini`), when offline Whisper fails (e.g. missing sidecar or model) and no Gemini key is configured, the actionable Whisper error is preserved instead of being overwritten with `GeminiKeyMissing`.
+
+
 
 
 

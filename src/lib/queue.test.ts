@@ -105,6 +105,10 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
       transcriptLanguage: null,
       translateToEnglish: null,
       transcriptsSubfolder: null,
+      transcriptionEngine: null,
+      geminiModel: null,
+      summarize: null,
+      summaryLanguage: null,
     },
     groupId: null,
     progress: { percent: null, speedBps: null, etaSec: null, label: "", subIndex: null, subTotal: null },
@@ -124,6 +128,7 @@ function item(overrides: Partial<QueueItem> = {}): QueueItem {
     finishedAt: null,
     transcriptFiles: [],
     transcriptPreview: null,
+    transcriptOrigin: null,
     ...overrides,
   };
 }
@@ -283,6 +288,42 @@ describe("normalising the backend payloads", () => {
     expect(modelMissingItem.error?.code).toBe("WHISPER_MODEL_MISSING");
     expect(modelMissingItem.error?.messageKey).toBe("error.ytdlp.whisperModelMissing");
     expect(modelMissingItem.error?.detail).toBe("small-q5_1");
+  });
+
+  it("preserves M6 transcription options and transcript origin", () => {
+    const parsed = normaliseItem({
+      id: "q_m6",
+      options: {
+        transcriptionEngine: "subtitles_whisper_gemini",
+        geminiModel: "gemini-flash-latest",
+        summarize: true,
+        summaryLanguage: "it",
+      },
+      transcriptFiles: ["/tmp/a.txt", "/tmp/a.summary.md"],
+      transcriptOrigin: "subtitles_manual",
+    });
+    expect(parsed.options.transcriptionEngine).toBe("subtitles_whisper_gemini");
+    expect(parsed.options.geminiModel).toBe("gemini-flash-latest");
+    expect(parsed.options.summarize).toBe(true);
+    expect(parsed.options.summaryLanguage).toBe("it");
+    expect(parsed.transcriptFiles).toEqual(["/tmp/a.txt", "/tmp/a.summary.md"]);
+    expect(parsed.transcriptOrigin).toBe("subtitles_manual");
+  });
+
+  it("preserves typed GEMINI_KEY_MISSING and NO_SUBTITLES error codes", () => {
+    const keyMissing = normaliseItem({
+      id: "q_gem",
+      state: "failed",
+      error: { code: "GEMINI_KEY_MISSING", messageKey: "error.ytdlp.geminiKeyMissing" },
+    });
+    expect(keyMissing.error?.code).toBe("GEMINI_KEY_MISSING");
+
+    const noSubs = normaliseItem({
+      id: "q_subs",
+      state: "failed",
+      error: { code: "NO_SUBTITLES", messageKey: "error.ytdlp.noSubtitles" },
+    });
+    expect(noSubs.error?.code).toBe("NO_SUBTITLES");
   });
 
   it("gives the summary the documented zeros rather than undefined", () => {

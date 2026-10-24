@@ -4113,3 +4113,202 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): None.
 - Next step: push commit to `origin/main` and verify `process-tests (macos-arm64)` on GitHub Actions.
 
+## 2026-10-20 — M6 / Subtitles-first pipeline, Gemini cloud transcription engine, map-reduce summaries, and secret storage (spec §10.1, §10.3, §10.4, §10.5)
+- Done:
+  - Subtitle downloader & cleaner (`src-tauri/src/services/transcribe/subtitles.rs`):
+    - Subtitle extraction using `yt-dlp` `--write-subs` and `--write-auto-subs` without media download.
+    - `clean_subtitles` strips WebVTT headers, timestamp tags, HTML formatting tags, and rolling auto-generated caption duplicates (both word-level and line-level overlaps).
+    - Groups text into readable paragraphs upon speech pauses >= 2.0s.
+    - Writes `<name>.txt` and timed `<name>.<lang>.srt` (or `<name>.<lang>.auto.srt`).
+  - Secrets storage (`src-tauri/src/services/secrets.rs`):
+    - Integrated `keyring` v3.6 without OpenSSL (`apple-native`, `windows-native`, `sync-secret-service`, `crypto-rust`, `linux-native`).
+    - Secret resolution order: `GEMINI_API_KEY` env var -> OS Keyring -> local file fallback `<config_dir>/gemini_api_key`.
+    - On Unix, file fallback enforces strict `0600` permissions.
+    - API keys are never exposed to the frontend or printed in logs.
+  - Gemini Cloud Engine (`src-tauri/src/services/transcribe/gemini.rs`):
+    - Direct REST client using `reqwest` + `rustls-tls` without heavy Google Cloud SDKs.
+    - Audio preparation via ffmpeg transcode: 16 kHz mono Opus in an Ogg container, with fallback to MP3 or WAV.
+    - Resumable upload streamed directly from disk via Google Files API (`POST /upload/v1beta/files` followed by streaming `POST` to upload URL).
+    - Polling for file state `ACTIVE` with exponential backoff, 10-minute timeout, and `CancellationToken` cancellation.
+    - Verbatim transcription prompt enforcing exact transcription without commentary (passed via contents parts without separate systemInstruction).
+    - RAII cleanup guard (`GeminiFileGuard`) issuing `DELETE /v1beta/files/{name}` on task completion, error, or cancellation.
+    - Automatic backoff retry on HTTP 429 quota exhaustion.
+    - Dynamic model discovery from `GET /v1beta/models`, filtering for `generateContent` capabilities, sorting `-latest` aliases first, and falling back to pinned models when offline.
+  - Summarization (`src-tauri/src/services/transcribe/summary.rs`):
+    - Map-reduce summarization for transcripts exceeding `MAX_SUMMARY_CHUNK_CHARS` (50,000 characters), splitting text along paragraph boundaries.
+    - Writes `<name>.summary.md` alongside transcript.
+  - Queue engine integration (`src-tauri/src/services/queue/engine.rs`):
+    - Engine modes: `subtitles_whisper_gemini` (default), `whisper_only`, `gemini_only`, `subtitles_only`.
+    - `item.transcript_origin` tracking (`subtitles_manual`, `subtitles_auto`, `whisper`, `gemini`).
+    - Error preservation in default pipeline: when Whisper fails (e.g. missing sidecar/model) and no Gemini key is set, the actionable Whisper error is preserved instead of being overwritten with `GeminiKeyMissing`.
+  - IPC commands (`src-tauri/src/commands/gemini.rs`):
+    - `gemini_key_get_status`, `gemini_key_save`, `gemini_key_delete`, `gemini_key_test`, `gemini_models_list`.
+  - Frontend integration:
+    - Added typed Gemini helper (`src/lib/gemini.ts`).
+    - Extended settings (`src/lib/settings.ts`) with `defaultGeminiModel`, `defaultSummarize`, `defaultSummaryLanguage` (and `geminiPrivacyHintDismissed` schema field; first-use privacy hint UI deferred).
+    - Extended queue items and store (`src/lib/queue.ts`, `src/lib/stores/queue.svelte.ts`, `src/lib/stores/addbar.svelte.ts`) with M6 options (`transcriptionEngine`, `geminiModel`, `summarize`, `summaryLanguage`, `transcriptOrigin`).
+    - Added UI components & controls (`src/lib/components/AddBar.svelte`, `src/lib/components/QueueItem.svelte`, `src/lib/pages/settings/TranscriptionSettings.svelte`): engine dropdown, summarize checkbox, transcript origin badge, re-transcribe actions, key management, model selector.
+    - Added i18n dictionary entries for all new keys in `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+  - Tests:
+    - Added 9 integration tests in `src-tauri/tests/gemini_pipeline.rs`.
+    - Added unit tests in `src/lib/queue.test.ts`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 393 unit + 178 integration = 571 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 13 test files, 287 passed, 0 failed.
+  - `npm run build` → dist/ built successfully.
+- Not verified / stubbed: Live Gemini API calls with real Google account (mock HTTP server used per AGENTS.md §6).
+- Spec items marked "verify" that I checked:
+  - `keyring` crate zero OpenSSL dependency checked via `cargo tree -i openssl-sys` (0 matches).
+  - Gemini Files API resumable upload endpoint: `POST https://generativelanguage.googleapis.com/upload/v1beta/files` (with `X-Goog-Upload-Protocol: resumable`).
+  - Gemini models API: `GET https://generativelanguage.googleapis.com/v1beta/models`.
+- Decisions/deviations (also in DECISIONS.md): D125.
+- Next step: merge or proceed to next milestone M7.
+
+## 2026-10-20 — M6 / Prevent silent overwriting of existing transcript, subtitle and summary files (B1, Spec §10.1, §10.3, §10.4)
+- Done:
+  - Fixed B1:
+    - Added `paths::collision_free_stem` in `src-tauri/src/services/paths.rs` to iteratively append ` (1)`, ` (2)`, etc. when destination files already exist on disk.
+    - Updated `whisper::derive_transcript_paths` in `src-tauri/src/services/transcribe/whisper.rs` to reuse `paths::collision_free_stem`.
+    - Updated `process_downloaded_subtitles` in `src-tauri/src/services/transcribe/subtitles.rs` to derive collision-free stems for `.srt` and `.txt` files and write outputs atomically via `paths::atomic_write`.
+    - Updated `run_gemini_transcription` in `src-tauri/src/services/transcribe/gemini.rs` to derive collision-free stems for `.txt` outputs and write atomically via `paths::atomic_write`.
+    - Updated `generate_summary` in `src-tauri/src/services/transcribe/summary.rs` to derive collision-free stems for `.summary.md` outputs and write atomically via `paths::atomic_write`.
+  - Tests:
+    - Added unit test `collision_free_stem_finds_first_unused_suffix` in `src-tauri/src/services/paths.rs`.
+    - Added reproducing unit test `process_downloaded_subtitles_does_not_overwrite_existing_files` in `src-tauri/src/services/transcribe/subtitles.rs` (verified FAILS before fix, PASSES after fix).
+    - Added reproducing integration test `transcription_and_summary_do_not_overwrite_existing_files` in `src-tauri/tests/gemini_pipeline.rs` (verified FAILS before fix, PASSES after fix).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 395 unit + 179 integration = 574 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → 13 test files, 287 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+## 2026-10-21 — M6 / Missing test coverage for poll_file_active failure/timeout, MAX_TOKENS, blockReason, Subtitles -> Whisper -> Gemini fallback, and inline VTT timing tags (M12, Spec §15, Task C, Checklist #4, #22)
+- Done:
+  - Addressed M12:
+    - Updated `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` to read `base_url` from `<config_dir>/gemini_base_url` when present (with 50ms poll interval in test mode) so queue engine integration tests can direct Gemini calls to a local mock HTTP server without hitting live networks, and log Whisper failure before falling back to Gemini.
+    - Updated `run_ytdlp` in `src-tauri/tests/bin/fake_tool.rs` to handle `--skip-download` (used by `fetch_subtitles`) and record calls in `fake-ytdlp.calls`.
+    - Added unit test in `src-tauri/src/services/transcribe/subtitles.rs`: `clean_vtt_with_inline_word_timestamps_and_punctuation_rollups` verifying auto-caption WebVTT cleaning on word-level tags (`<00:00:01.520><c> word,</c>`) and standalone punctuation tokens (`<00:00:04.500><c> !</c>`).
+    - Added integration tests in `src-tauri/tests/gemini_pipeline.rs`:
+      - `gemini_poll_failed_and_timeout_trigger_raii_delete_cleanup`: tests `poll_file_active` / `run_gemini_transcription` when remote file state is `"FAILED"` or when polling times out, ensuring the `GeminiFileGuard` synchronously and asynchronously executes `DELETE` on the remote cloud file and cleans local temporary audio files.
+      - `gemini_handles_block_reason_and_max_tokens_truncation_in_queue`: tests `generateContent` returning `promptFeedback.blockReason: "SAFETY"` (`AppError::GeminiBlocked("SAFETY")` + `DELETE` cleanup), and `finishReason: "MAX_TOKENS"` surfacing a truncation warning in the queue item's log.
+      - `queue_engine_falls_back_subtitles_to_whisper_to_gemini`: tests end-to-end engine fallback ordering `Subtitles -> Whisper -> Gemini` in `QueueEngine`, asserting that subtitles are attempted first (yt-dlp `--skip-download`), Whisper is attempted second and fails, and Gemini mock server succeeds as the final fallback setting `transcript_origin == Some("gemini")`.
+  - Step 1 test reproduction:
+    - Verified `gemini_handles_block_reason_and_max_tokens_truncation_in_queue` and `queue_engine_falls_back_subtitles_to_whisper_to_gemini` FAILED before the engine base_url / fake_tool fix (panicked at assertions because `base_url: None` sent live requests and failed, and `fake_tool` didn't handle `--skip-download`), and PASS after the fix.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 418 unit + 192 integration = 610 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: Live Gemini API calls with real Google account (local mock HTTP server used per AGENTS.md §6).
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+## 2026-10-21 — M6 / Hard-coded English strings in TranscriptionSettings.svelte and engine.rs (m1, Spec §11.9, AGENTS.md §6, Checklist #21)
+- Done:
+  - Addressed m1:
+    - Replaced hard-coded English `aria-label={showGeminiKey ? "Hide key" : "Show key"}` in `src/lib/pages/settings/TranscriptionSettings.svelte` with `showGeminiKey ? tt("transcription.gemini.hideKey") : tt("transcription.gemini.showKey")`.
+    - Added `transcription.gemini.showKey` ("Show key" / "Mostra chiave") and `transcription.gemini.hideKey` ("Hide key" / "Nascondi chiave") to `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+    - Updated `engine.rs` to emit i18n key token `"queue.status.generatingSummary"` instead of literal English `"Generating summary..."` in `on_transcribe_progress`.
+    - Added `queue.status.generatingSummary` ("Generating summary…" / "Generazione riassunto…") to `src/lib/i18n/en.json` and `src/lib/i18n/it.json`.
+    - Updated `src/lib/components/QueueItem.svelte` to translate `item.transcriptPreview` using `tt(...)` so progress status line displays the localized summary phase string instead of raw English or unmapped keys.
+  - Step 1 test reproduction:
+    - Added reproduction tests in `src/lib/settings.test.ts` asserting `TranscriptionSettings.svelte` contains no hard-coded "Hide key" / "Show key" strings and dictionary keys exist in `en` and `it`. Verified FAILS before fix (AssertionError: expected source not to contain "Hide key" and missing translation keys).
+    - Updated `cancelling_gemini_in_flight_http_aborts_promptly_and_does_not_swallow_summary_cancel` in `src-tauri/tests/gemini_pipeline.rs` to assert `item.transcript_preview.as_deref() == Some("queue.status.generatingSummary")`. Verified FAILS before fix (panicked at assertion with left: Some("Generating summary..."), right: Some("queue.status.generatingSummary")).
+    - Verified all tests PASS after the fix.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 418 unit + 192 integration = 610 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 13 test files, 292 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+## 2026-10-21 — M6 / Eliminate .unwrap() in non-test code in upload_file_resumable (m2, AGENTS.md §6)
+- Done:
+  - Addressed m2:
+    - Replaced `HeaderValue::from_str(&file_len.to_string()).unwrap()` with `HeaderValue::from(file_len)` for `X-Goog-Upload-Header-Content-Length` and `Content-Length` in `upload_file_resumable` (`src-tauri/src/services/transcribe/gemini.rs`).
+    - Replaced `HeaderValue::from_str(mime_type).unwrap()` with `HeaderValue::from_str(mime_type).map_err(|e| AppError::Process(format!("Invalid MIME header: {e}")))?` for `X-Goog-Upload-Header-Content-Type` in `upload_file_resumable`.
+  - Step 1 test reproduction:
+    - Added unit test `upload_file_resumable_contains_no_unwrap_in_source` asserting `upload_file_resumable` contains no `.unwrap()` calls in its function body. Verified FAILS before fix (panicked at assertion).
+    - Added unit test `upload_file_resumable_handles_invalid_mime_header_without_unwrap_panic` calling `upload_file_resumable` with an invalid MIME string containing control characters (`\r\n`). Verified FAILS before fix (panicked at line 598 with `called Result::unwrap() on an Err value: InvalidHeaderValue`).
+    - Verified both tests PASS after the fix.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 420 unit + 192 integration = 612 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 13 test files, 292 passed, 0 failed.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+
+
+
+
+## 2026-10-21 — M6 / Redact Gemini API key in Debug output and mark `x-goog-api-key` sensitive (review m3)
+- Done:
+  - `GeminiTranscribeRequest` (`src-tauri/src/services/transcribe/gemini.rs`) and `SummaryRequest` (`src-tauri/src/services/transcribe/summary.rs`) no longer derive `Debug`; they use custom `impl fmt::Debug` that prints `api_key: "[REDACTED]"` (spec §10.5).
+  - Added `gemini_api_key_header()` helper in `gemini.rs` that builds the `HeaderValue` and calls `set_sensitive(true)`; both `x-goog-api-key` header constructions in `upload_file_resumable` (init request and upload request) now use it, so `reqwest` debug logging redacts the key.
+  - Step 1 test reproduction:
+    - Added `gemini_transcribe_request_debug_redacts_api_key` and `summary_request_debug_redacts_api_key`: verified both FAIL before the fix (panicked: raw `super-secret-test-key` present in `{:?}` output).
+    - Added `gemini_api_key_header_is_sensitive` with the fix (helper did not exist before).
+    - Verified all three PASS after the fix.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, no warnings.
+  - `( cd src-tauri && cargo test )` → 616 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): Only the two explicit `HeaderValue` constructions named in the review were changed; `x-goog-api-key` values passed via `reqwest::RequestBuilder::header(name, &str)` (other functions) were left untouched to keep the change minimal.
+- Next step: Address remaining review items.
+## 2026-10-21 — M6 / Validate blank Gemini API key before audio prep and HTTP (review m4)
+- Done:
+  - `run_gemini_transcription` (`src-tauri/src/services/transcribe/gemini.rs`) now returns `AppError::GeminiKeyMissing` unconditionally at the start when `req.api_key.trim().is_empty()`, before creating the HTTP client, probing duration or running ffmpeg (spec §10.3 item 7).
+  - `generate_summary` (`src-tauri/src/services/transcribe/summary.rs`) does the same at the start, before any HTTP request or output write.
+  - Note: the current code had no `api_key` check at all (the review's `api_base` condition no longer exists), so the guard is new in both functions.
+  - Step 1 test reproduction:
+    - Added `run_gemini_transcription_fails_fast_when_api_key_is_blank` and `generate_summary_fails_fast_when_api_key_is_blank` (blank/whitespace key, unreachable `base_url`, temp dir). Verified both FAIL before the fix: `run_gemini_transcription` returned `Process("starting \"…/missing-ffmpeg\": No such file or directory")` (ffmpeg was invoked) and `generate_summary` returned `Process("Network error generating summary with Gemini: …")` (HTTP attempted).
+    - Verified both PASS after the fix, each returning `GeminiKeyMissing` with no audio file / summary file written.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, no warnings.
+  - `( cd src-tauri && cargo test )` → 618 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): None.
+- Next step: Address remaining review items.
+
+## 2026-10-21 — M6 / Correct inaccurate claims in docs/PROGRESS.md, docs/DECISIONS.md, and summary.rs doc comments (B6, AGENTS.md §2 rule 7)
+- Done:
+  - Addressed B6:
+    - Updated `docs/PROGRESS.md` and `docs/DECISIONS.md` to accurately describe the Google Files API resumable upload flow (`POST /upload/v1beta/files` followed by single streaming `POST` to upload URL, removing false claims of the resumable upload query parameter and chunked `PUT`).
+    - Corrected transcription prompt description in `docs/PROGRESS.md` to reflect instructions passed in contents parts without claiming a separate `systemInstruction` field in the API payload.
+    - Corrected subtitle output claim in `docs/PROGRESS.md` to state that `subtitles.rs` writes `<name>.txt` and `<name>.<lang>.srt` (or `<name>.<lang>.auto.srt`), removing the claim of writing `<name>.vtt`.
+    - Corrected `MAX_SUMMARY_CHUNK_CHARS` claim in `docs/PROGRESS.md` and `docs/DECISIONS.md` from the previously claimed 30k chars to the actual 50,000 characters (`50_000`).
+    - Corrected IPC secret status claim in `docs/DECISIONS.md` to accurately note `GeminiKeyStatus` only exposes `has_key` and `source` without claiming masked prefix/suffix.
+    - Updated `docs/PROGRESS.md` to clarify that `geminiPrivacyHintDismissed` was added to settings schema but privacy hint UI was deferred, and updated `src-tauri/src/services/transcribe/summary.rs` module doc comments to accurately describe chapter generation (timestamped sections when timestamps are present in cues, omitted otherwise).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → exit 0.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → exit 0, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 425 unit + 193 integration = 618 passed, 0 failed, 3 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+- Not verified / stubbed: None.
+- Spec items marked "verify" that I checked: None.
+- Decisions/deviations (also in DECISIONS.md): D125 updated in-place to correct inaccurate claims per review B6.
+- Next step: Address remaining review items.

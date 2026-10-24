@@ -383,7 +383,7 @@ pub struct ItemOptions {
     pub sponsorblock_mode: Option<ytdlp::SponsorBlockMode>,
     /// User-selectable SponsorBlock categories (spec §8.4).
     pub sponsorblock_categories: Vec<String>,
-    /// Transcribe with Whisper after download/encode (spec §10.2).
+    /// Transcribe with Whisper or Gemini after download/encode (spec §10).
     pub transcribe: bool,
     /// Model identifier from whisper catalogue (e.g. "large-v3-turbo-q5_0").
     pub whisper_model: Option<String>,
@@ -393,6 +393,14 @@ pub struct ItemOptions {
     pub translate_to_english: Option<bool>,
     /// Place transcripts in a `transcripts/` subfolder.
     pub transcripts_subfolder: Option<bool>,
+    /// Transcription engine order override ("subtitles_whisper_gemini", "whisper_only", "gemini_only", "subtitles_only").
+    pub transcription_engine: Option<String>,
+    /// Selected Gemini model (e.g. "gemini-flash-latest").
+    pub gemini_model: Option<String>,
+    /// Optional summary toggle (spec §10.4).
+    pub summarize: Option<bool>,
+    /// Target language for summary (e.g. "auto", "it", "en").
+    pub summary_language: Option<String>,
 }
 
 impl Default for ItemOptions {
@@ -432,6 +440,10 @@ impl Default for ItemOptions {
             transcript_language: None,
             translate_to_english: None,
             transcripts_subfolder: None,
+            transcription_engine: None,
+            gemini_model: None,
+            summarize: None,
+            summary_language: None,
         }
     }
 }
@@ -494,7 +506,7 @@ impl ItemOptions {
         let mut sb_categories = self.sponsorblock_categories.clone();
         sb_categories.sort();
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind.as_str(),
             self.quality.signature(),
             self.output_dir.display(),
@@ -515,6 +527,10 @@ impl ItemOptions {
             self.transcript_language.as_deref().unwrap_or(""),
             self.translate_to_english.unwrap_or(false),
             self.transcripts_subfolder.unwrap_or(false),
+            self.transcription_engine.as_deref().unwrap_or(""),
+            self.gemini_model.as_deref().unwrap_or(""),
+            self.summarize.unwrap_or(false),
+            self.summary_language.as_deref().unwrap_or(""),
         )
     }
 }
@@ -657,10 +673,12 @@ pub struct QueueItem {
     pub updated_at: u64,
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
-    /// Transcript output files (.txt, .srt, .vtt) (spec §10.2).
+    /// Transcript output files (.txt, .srt, .vtt, .summary.md) (spec §10).
     pub transcript_files: Vec<PathBuf>,
     /// Live segment preview or last preview text (spec §11.5).
     pub transcript_preview: Option<String>,
+    /// Origin of the transcript (e.g. "subtitles_manual", "subtitles_auto", "whisper", "gemini") (spec §10.1).
+    pub transcript_origin: Option<String>,
 }
 
 impl Default for QueueItem {
@@ -692,6 +710,7 @@ impl Default for QueueItem {
             finished_at: None,
             transcript_files: Vec::new(),
             transcript_preview: None,
+            transcript_origin: None,
         }
     }
 }

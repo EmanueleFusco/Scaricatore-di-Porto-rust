@@ -1104,6 +1104,18 @@ pub enum YtdlpErrorCode {
     WhisperMissing,
     /// The requested Whisper model is not downloaded/installed on disk (spec §10.2).
     WhisperModelMissing,
+    /// Gemini API key is not configured (spec §10.3, §10.5).
+    GeminiKeyMissing,
+    /// Gemini API key is invalid or unauthorized (spec §10.3).
+    GeminiKeyInvalid,
+    /// Gemini API rate limit or quota exceeded (spec §10.3).
+    GeminiQuotaExceeded,
+    /// Gemini model is no longer available or was not found (spec §10.3).
+    GeminiModelNotFound,
+    /// Gemini transcription was blocked by safety filters (spec §10.3).
+    GeminiBlocked,
+    /// Subtitles-only requested but no subtitles were found (spec §10.1).
+    NoSubtitles,
     Unknown,
 }
 
@@ -1126,6 +1138,12 @@ impl YtdlpErrorCode {
             Self::DenoMissing => "DENO_MISSING",
             Self::WhisperMissing => "WHISPER_MISSING",
             Self::WhisperModelMissing => "WHISPER_MODEL_MISSING",
+            Self::GeminiKeyMissing => "GEMINI_KEY_MISSING",
+            Self::GeminiKeyInvalid => "GEMINI_KEY_INVALID",
+            Self::GeminiQuotaExceeded => "GEMINI_QUOTA_EXCEEDED",
+            Self::GeminiModelNotFound => "GEMINI_MODEL_NOT_FOUND",
+            Self::GeminiBlocked => "GEMINI_BLOCKED",
+            Self::NoSubtitles => "NO_SUBTITLES",
             Self::Unknown => "UNKNOWN",
         }
     }
@@ -1155,6 +1173,12 @@ impl YtdlpErrorCode {
             "DENO_MISSING" => Self::DenoMissing,
             "WHISPER_MISSING" => Self::WhisperMissing,
             "WHISPER_MODEL_MISSING" => Self::WhisperModelMissing,
+            "GEMINI_KEY_MISSING" => Self::GeminiKeyMissing,
+            "GEMINI_KEY_INVALID" => Self::GeminiKeyInvalid,
+            "GEMINI_QUOTA_EXCEEDED" => Self::GeminiQuotaExceeded,
+            "GEMINI_MODEL_NOT_FOUND" => Self::GeminiModelNotFound,
+            "GEMINI_BLOCKED" => Self::GeminiBlocked,
+            "NO_SUBTITLES" => Self::NoSubtitles,
             _ => Self::Unknown,
         }
     }
@@ -1178,6 +1202,12 @@ impl YtdlpErrorCode {
             Self::DenoMissing => "error.ytdlp.denoMissing",
             Self::WhisperMissing => "error.ytdlp.whisperMissing",
             Self::WhisperModelMissing => "error.ytdlp.whisperModelMissing",
+            Self::GeminiKeyMissing => "error.ytdlp.geminiKeyMissing",
+            Self::GeminiKeyInvalid => "error.ytdlp.geminiKeyInvalid",
+            Self::GeminiQuotaExceeded => "error.ytdlp.geminiQuotaExceeded",
+            Self::GeminiModelNotFound => "error.ytdlp.geminiModelNotFound",
+            Self::GeminiBlocked => "error.ytdlp.geminiBlocked",
+            Self::NoSubtitles => "error.ytdlp.noSubtitles",
             Self::Unknown => "error.ytdlp.unknown",
         }
     }
@@ -2221,7 +2251,7 @@ mod tests {
     }
 
     /// Every error code, so a new one has to be added here and looked at.
-    const CODES: [YtdlpErrorCode; 17] = [
+    const CODES: [YtdlpErrorCode; 23] = [
         YtdlpErrorCode::FfmpegMissing,
         YtdlpErrorCode::YtChallenge,
         YtdlpErrorCode::Auth,
@@ -2238,6 +2268,12 @@ mod tests {
         YtdlpErrorCode::DenoMissing,
         YtdlpErrorCode::WhisperMissing,
         YtdlpErrorCode::WhisperModelMissing,
+        YtdlpErrorCode::GeminiKeyMissing,
+        YtdlpErrorCode::GeminiKeyInvalid,
+        YtdlpErrorCode::GeminiQuotaExceeded,
+        YtdlpErrorCode::GeminiModelNotFound,
+        YtdlpErrorCode::GeminiBlocked,
+        YtdlpErrorCode::NoSubtitles,
         YtdlpErrorCode::Unknown,
     ];
 
