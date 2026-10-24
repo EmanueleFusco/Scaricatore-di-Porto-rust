@@ -4552,3 +4552,6 @@ Branch `m4-media-processing`.
   1024, 256 and 32 px renders on a light background.
 - Not verified / stubbed: not seen on a real Windows/macOS desktop or dock.
 - Next step: unchanged.
+- Follow-up: the artwork's teal water has its own rounded bottom corners
+  (radius ≈136/1024); a 96 px mask left white corners outside it. The
+  Windows/Linux mask radius is now 140/1024, so all four corners follow the shape.
