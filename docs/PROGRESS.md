@@ -4650,7 +4650,9 @@ Branch `m4-media-processing`.
     - Restricted video re-encoding to the primary stream (`-c:v:0 <encoder>`) so FFmpeg does not attempt to re-encode the attached picture with H.264/HEVC, and mapped the picture stream cleanly with `-c:v:1 copy -disposition:v:1 attached_pic`.
     - For audio with thumbnail, mapped `0:a:0?` and `0:disp:attached_pic?` with `-c:v copy -disposition:v attached_pic`.
   - Fixed footer status row wrapping in `src/lib/components/FooterStatus.svelte` by setting `flex-shrink: 0; white-space: nowrap;` on counts and state, and `min-width: 0;` on detail.
+  - Fixed `find_executable` in `src-tauri/src/services/download.rs` to use breadth-first search through all subdirectories, resolving executables nested more than one directory deep (such as Windows `ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe`).
 - Verified by running:
+  - Downloaded and extracted all 5 release archives (Windows x64, Linux x64, Linux arm64, macOS arm64, macOS x64) and verified `find_executable` resolves `ffmpeg` and `ffprobe` cleanly on all platforms.
   - Real execution test of the generated FFmpeg command against the user's test video (`.mkv` with AV1 video, Opus audio, and attached JPEG thumbnail) yielding successful MP4 muxing with exit code 0.
   - `npm.cmd run check` → 0 errors, 0 warnings.
   - `npm.cmd test -- --run` → 16 test files, 327 passed.

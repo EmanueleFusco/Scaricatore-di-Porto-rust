@@ -608,26 +608,46 @@ fn extract_gz(archive: &Path, destination: &Path, url: &str) -> Result<PathBuf, 
 
 /// Install the entry called `executable` from the unpacked tree.
 ///
-/// Searched first at the top level, then one level deep: BtbN and Deno both ship
-/// `ffmpeg-…/bin/ffmpeg`, and hard-coding either shape would break on the next
-/// release.
+/// Searches breadth-first: checks the top level first, then immediate subdirectories,
+/// then nested directories (e.g. `ffmpeg-…/bin/ffmpeg` or `ffmpeg-…/ffmpeg`).
 pub fn find_executable(root: &Path, executable: &str) -> Option<PathBuf> {
     let direct = root.join(executable);
     if direct.is_file() {
         return Some(direct);
     }
-    let entries = fs::read_dir(root).ok()?;
-    let mut directories: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.path())
-        .collect();
-    // Sorted so a tree with two candidates picks the same one every time.
-    directories.sort();
-    directories
-        .iter()
-        .map(|dir| dir.join(executable))
-        .find(|candidate| candidate.is_file())
+
+    // Breadth-first search through subdirectories
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(current) = queue.pop_front() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        let mut subdirs = Vec::new();
+
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                // If the target is directly inside this subdirectory, return it immediately
+                let candidate = path.join(executable);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                subdirs.push(path);
+            } else if path.is_file() && entry.file_name() == executable {
+                return Some(path);
+            }
+        }
+
+        // Sort subdirectories for deterministic breadth-first search order
+        subdirs.sort();
+        for dir in subdirs {
+            queue.push_back(dir);
+        }
+    }
+
+    None
 }
 
 fn extract_zip(archive: &Path, destination: &Path) -> Result<PathBuf, AppError> {
@@ -889,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn the_executable_is_found_at_the_top_level_and_one_level_down() {
+    fn the_executable_is_found_at_any_depth() {
         let dir = TempDir::new().expect("temp dir");
 
         let flat = dir.path().join("flat");
@@ -900,16 +920,38 @@ mod tests {
             Some(flat.join("ffmpeg").as_path())
         );
 
-        // The BtbN and Deno layout: one directory deep.
-        let nested = dir.path().join("nested");
-        fs::create_dir_all(nested.join("ffmpeg-9.0")).expect("dir");
-        fs::write(nested.join("ffmpeg-9.0").join("ffmpeg"), b"x").expect("write");
+        // One directory deep:
+        let nested1 = dir.path().join("nested1");
+        fs::create_dir_all(nested1.join("ffmpeg-9.0")).expect("dir");
+        fs::write(nested1.join("ffmpeg-9.0").join("ffmpeg"), b"x").expect("write");
         assert_eq!(
-            find_executable(&nested, "ffmpeg").as_deref(),
-            Some(nested.join("ffmpeg-9.0").join("ffmpeg").as_path())
+            find_executable(&nested1, "ffmpeg").as_deref(),
+            Some(nested1.join("ffmpeg-9.0").join("ffmpeg").as_path())
         );
 
-        assert_eq!(find_executable(&nested, "ffprobe"), None);
+        // Two directories deep (e.g. GyanD / BtbN release shape: <folder>/bin/ffmpeg.exe):
+        let nested2 = dir.path().join("nested2");
+        fs::create_dir_all(nested2.join("ffmpeg-9.0.2-essentials_build").join("bin")).expect("dir");
+        fs::write(
+            nested2
+                .join("ffmpeg-9.0.2-essentials_build")
+                .join("bin")
+                .join("ffmpeg.exe"),
+            b"x",
+        )
+        .expect("write");
+        assert_eq!(
+            find_executable(&nested2, "ffmpeg.exe").as_deref(),
+            Some(
+                nested2
+                    .join("ffmpeg-9.0.2-essentials_build")
+                    .join("bin")
+                    .join("ffmpeg.exe")
+                    .as_path()
+            )
+        );
+
+        assert_eq!(find_executable(&nested2, "ffprobe.exe"), None);
     }
 
     #[test]
