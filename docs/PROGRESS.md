@@ -4555,3 +4555,25 @@ Branch `m4-media-processing`.
 - Follow-up: the artwork's teal water has its own rounded bottom corners
   (radius ≈136/1024); a 96 px mask left white corners outside it. The
   Windows/Linux mask radius is now 140/1024, so all four corners follow the shape.
+
+## 2026-10-24 — M7 / Cross-platform icon visibility & Linux desktop integration
+
+- Done:
+  - Reordered `bundle.icon` in `src-tauri/tauri.conf.json` so high-res icons
+    (`128x128@2x.png` 256px, `icon.png` 512px) precede `32x32.png`, preventing
+    low-res fallback on X11 / Wayland / desktop docks.
+  - Added explicit `window.set_icon(...)` call in `src-tauri/src/lib.rs` setup.
+  - Added `ensure_linux_desktop_integration()` in `src-tauri/src/lib.rs` to
+    write high-res icon and register desktop entries
+    (`com.scaricatorediporto.app.desktop` for Wayland and
+    `scaricatore-di-porto.desktop` for X11 / WM_CLASS) in `~/.local/share/` on
+    Linux startup.
+- Verified by running:
+  - Visual verification on Linux (KDE Plasma 6 / CachyOS): icon displayed
+    properly in taskbar, window title, and task switcher.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → passed.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `( cd src-tauri && cargo test )` → all 441 unit and integration tests passed.
+- Not verified / stubbed: none.
+- Next step: unchanged.
