@@ -32,7 +32,8 @@ Builds are not code-signed or notarized yet, so Windows SmartScreen and macOS
 Gatekeeper will warn you the first time. On Windows, click **More info → Run
 anyway**. On macOS, try to open the app once, then go to **System Settings →
 Privacy & Security** and click **Open Anyway** (on macOS 14 and older,
-right-click the app and choose **Open** also works).
+right-click the app and choose **Open** also works). If macOS says the app is
+damaged, see [Troubleshooting](docs/TROUBLESHOOTING.md).
 In-app updates on Linux only work with the AppImage; `.deb` and `.rpm` are
 updated through your package manager or by downloading the new release.
 
