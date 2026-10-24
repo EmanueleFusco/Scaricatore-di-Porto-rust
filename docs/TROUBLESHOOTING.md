@@ -196,8 +196,9 @@ and some containers.
 
 ### macOS: "The app is damaged" or Gatekeeper refuses to open it
 
-The current builds are not notarized. First try right-click → **Open**. If macOS
-still refuses, verify the download and remove the quarantine attribute:
+The current builds are not notarized. Try to open the app once, then go to
+**System Settings → Privacy & Security** and click **Open Anyway** (on macOS 14
+and older, right-click → **Open** also works). If macOS still refuses, verify the download and remove the quarantine attribute:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Scaricatore Di Porto.app"
