@@ -28,9 +28,13 @@ Get the latest build from [Releases](https://github.com/EmanueleFusco/Scaricator
 | macOS 12+ (universal) | `*_universal.dmg` or `*.app.zip` |
 | Linux x64 | `*.AppImage`, `*.deb`, `*.rpm` |
 
-Builds are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will
-warn you the first time. On macOS, right-click the app and choose **Open**.
-In-app updates on Linux only work with the AppImage.
+Builds are not code-signed or notarized yet, so Windows SmartScreen and macOS
+Gatekeeper will warn you the first time. On Windows, click **More info → Run
+anyway**. On macOS, try to open the app once, then go to **System Settings →
+Privacy & Security** and click **Open Anyway** (on macOS 14 and older,
+right-click the app and choose **Open** also works).
+In-app updates on Linux only work with the AppImage; `.deb` and `.rpm` are
+updated through your package manager or by downloading the new release.
 
 yt-dlp and QuickJS ship with the app. ffmpeg, Deno and Whisper models are
 downloaded on demand when a feature needs them (or picked up from your system
@@ -85,6 +89,15 @@ docs/                 spec, progress log, decisions, troubleshooting
 
 See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). When opening an issue,
 attach the output of **Settings → About → Copy diagnostics**.
+
+## Disclaimer
+
+This app was developed with the help of AI tools.
+
+The software is provided "as is", without warranty of any kind. The authors
+take no responsibility for how it is used. You are responsible for respecting
+the terms of service of the sites you download from and the copyright of the
+content.
 
 ## License
 
