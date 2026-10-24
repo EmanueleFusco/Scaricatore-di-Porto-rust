@@ -335,6 +335,19 @@ jobs:
 
       - run: npm ci
 
+      # The updater artifacts are signed at build time (spec §13.4). Without a
+      # key Tauri fails halfway through the bundle with a bundler error, so
+      # check first and say exactly which repository secret is missing.
+      - name: Check the updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; add the updater private key to the repository secrets."
+            exit 1
+          fi
+
       # NOTA: non si usa `cargo build --release` da solo. Tauri decide
       # "dev vs release" con la feature `custom-protocol`, e solo la CLI la
       # attiva: senza, l'app cercherebbe il frontend sul server di sviluppo.
@@ -366,6 +379,9 @@ jobs:
         run: cargo test --test bundled_tools -- --nocapture
 
       - name: Build the bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
       - name: Report bundle sizes
@@ -389,7 +405,7 @@ jobs:
             out="${{ matrix.label }}-$(basename "$app" .app).app.zip"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$out"
             rm -rf "$app"
-            echo "pacchettato e rimosso: $out"
+            echo "packed and removed: $out"
           done
 
       # One artifact per format on Linux, and **only the installable file** in
@@ -406,8 +422,10 @@ jobs:
       # build shows what that costs — the 42 MB `.deb` arrived as a 127 MB
       # artifact and the 148 MB AppImage as a 251 MB one. The same trees were
       # about to be attached to the draft release by the flatten step.
-      # `*.AppImage*` also covers the updater's `.AppImage.tar.gz` and its
-      # `.sig` when M7 turns them on.
+      # `*.AppImage*` covers the raw AppImage, its updater `.sig`, and the
+      # `.AppImage.tar.gz` a legacy v1-compatible build would add. The raw
+      # AppImage is what a first install downloads and what the v2 updater
+      # replaces on Linux.
       #
       # Windows ships one format (`nsis`) and macOS two files of the same
       # product (the `.dmg` and the `.app.zip`), so a single artifact stays
@@ -445,7 +463,7 @@ jobs:
         with:
           name: scaricatore-di-porto-${{ matrix.label }}
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe*
             src-tauri/target/release/bundle/dmg/*.dmg
             ${{ runner.os == 'macOS' && format('{0}/*.app.zip', matrix.label) || '' }}
           if-no-files-found: error
@@ -477,6 +495,18 @@ jobs:
           workspaces: src-tauri -> target
 
       - run: npm ci
+
+      # Same check as the native bundle job: signing is not optional when
+      # `createUpdaterArtifacts` is true (spec §13.4).
+      - name: Check the updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; add the updater private key to the repository secrets."
+            exit 1
+          fi
 
       # Il bundle universale cerca `qjs-universal-apple-darwin`, che solo un
       # `lipo` sulle due slice native può produrre (spec §5.2.1): la variabile
@@ -550,6 +580,9 @@ jobs:
       # lipo che fa Tauri. NON FIRMATO: la notarizzazione resta umana
       # (docs/SPIKES.md).
       - name: Build the universal bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target universal-apple-darwin
 
       # PRIMA di "Pack the universal .app", che cancella la `.app`: dopo non
@@ -570,7 +603,7 @@ jobs:
             out="macos-universal-$(basename "$app" .app).app.zip"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$out"
             rm -rf "$app"
-            echo "pacchettato e rimosso: $out"
+            echo "packed and removed: $out"
           done
 
       - name: Upload the universal bundle
@@ -579,6 +612,7 @@ jobs:
           name: scaricatore-di-porto-macos-universal
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
             macos-universal-*.app.zip
           if-no-files-found: error
           retention-days: 14
@@ -597,6 +631,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The manifest generator lives in the repository, so the release job
+      # needs a checkout. The other steps only consume downloaded artifacts.
+      - uses: actions/checkout@v7
+
       - name: Collect every artifact
         uses: actions/download-artifact@v8
         with:
@@ -616,6 +654,17 @@ jobs:
           echo "--- asset da allegare ---"
           ls -la assets
 
+      # The updater endpoint is `releases/latest/download/latest.json`
+      # (spec §13.4). Generating it here, after the flatten, means the URLs
+      # name the files that are actually attached to this release. The script
+      # fails if any platform or `.sig` is missing, so a partial release never
+      # reaches `gh release create`.
+      - name: Generate the updater manifest
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/generate-latest-json.mjs --assets assets
+
       # A release carries installers, and nothing else.
       #
       # The bundlers leave the *unpacked* package next to the installer
@@ -632,7 +681,7 @@ jobs:
           unexpected=""
           while IFS= read -r file; do
             case "$file" in
-              *.deb | *.rpm | *.AppImage | *.AppImage.tar.gz | *.dmg | *.app.zip | *.exe | *.msi | *.sig) ;;
+              *.deb | *.rpm | *.AppImage | *.AppImage.tar.gz | *.dmg | *.app.zip | *.app.tar.gz | *.exe | *.msi | *.sig) ;;
               *SHA256SUMS | *latest.json) ;;
               *) unexpected="${unexpected}${file}"$'\n' ;;
             esac

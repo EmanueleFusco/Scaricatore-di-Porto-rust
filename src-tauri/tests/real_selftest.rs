@@ -173,6 +173,109 @@ async fn the_deno_install_downloads_verifies_and_runs() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "downloads ~35 MB from GitHub; run it by hand"]
+async fn the_ffmpeg_install_downloads_verifies_and_runs() {
+    let dir = TempDir::new().expect("temp dir");
+    let triple = manifest::current_target_triple().expect("triple");
+    let manifest =
+        scaricatore_di_porto_lib::services::manifest::ToolsManifest::embedded().expect("manifest");
+    let tools_dir = dir.path().join("tools");
+    let token = CancellationToken::new();
+
+    for name in ["ffmpeg", "ffprobe"] {
+        if !manifest
+            .entry(name, &triple)
+            .is_some_and(|entry| entry.is_installable())
+        {
+            eprintln!("{name}: no installable asset for {triple}, skipping");
+            continue;
+        }
+        let path = tools::install_tool(&manifest, name, &triple, &tools_dir, &token, |progress| {
+            eprintln!(
+                "{name}: {}/{} bytes",
+                progress.received,
+                progress
+                    .total
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "?".to_owned())
+            );
+        })
+        .await
+        .unwrap_or_else(|err| panic!("the {name} install must succeed: {err}"));
+        eprintln!("installed {name} at {}", path.display());
+        assert!(path.is_file());
+
+        let output = std::process::Command::new(&path)
+            .arg("-version")
+            .output()
+            .unwrap_or_else(|err| panic!("{name} -version: {err}"));
+        let text = String::from_utf8_lossy(&output.stdout);
+        eprintln!("{text}");
+        assert!(output.status.success(), "{name} -version failed");
+        assert!(
+            text.contains("7.0.2"),
+            "expected the pinned 7.0.2, got: {text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "downloads ~5 MB from GitHub; run it by hand"]
+async fn the_whisper_sidecar_install_downloads_verifies_and_runs() {
+    let dir = TempDir::new().expect("temp dir");
+    let triple = manifest::current_target_triple().expect("triple");
+    let manifest =
+        scaricatore_di_porto_lib::services::manifest::ToolsManifest::embedded().expect("manifest");
+    let entry = manifest
+        .entry(manifest::SDP_WHISPER, &triple)
+        .unwrap_or_else(|| panic!("sdp-whisper has no asset for {triple}"));
+    assert!(
+        entry.is_installable(),
+        "sdp-whisper must carry a published url and checksum for {triple}"
+    );
+
+    let tools_dir = dir.path().join("tools");
+    let token = CancellationToken::new();
+    let path = tools::install_tool(
+        &manifest,
+        manifest::SDP_WHISPER,
+        &triple,
+        &tools_dir,
+        &token,
+        |progress| {
+            eprintln!(
+                "sdp-whisper: {}/{} bytes",
+                progress.received,
+                progress
+                    .total
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "?".to_owned())
+            );
+        },
+    )
+    .await
+    .expect("the sdp-whisper install must succeed");
+    eprintln!("installed sdp-whisper at {}", path.display());
+    assert!(path.is_file());
+
+    let output = std::process::Command::new(&path)
+        .arg("-h")
+        .output()
+        .expect("sdp-whisper -h");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("{text}");
+    assert!(output.status.success(), "sdp-whisper -h failed");
+    assert!(
+        text.contains("usage:") && text.contains("--version"),
+        "expected the whisper.cpp CLI help, got: {text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the network and live YouTube; run it by hand"]
 async fn the_self_test_passes_with_the_bundled_tools() {
     let dir = TempDir::new().expect("temp dir");

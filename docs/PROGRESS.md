@@ -4312,3 +4312,268 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: None.
 - Decisions/deviations (also in DECISIONS.md): D125 updated in-place to correct inaccurate claims per review B6.
 - Next step: Address remaining review items.
+
+## 2026-10-23 — M7 / Polish and release
+- Done:
+  - **On-demand tools.** Added `ArchiveKind::Gz` and a generic `tools::install_tool` for plain, `.gz`, `.zip`, `.tar.gz` and `.tar.xz` assets; ffmpeg/ffprobe are pinned to 7.0.2 from `eugeneware/ffmpeg-static` b6.1.1 with all ten SHA-256 values computed from the real assets. Installing ffmpeg also installs its ffprobe companion. `sdp-whisper` remains installable from a user path; its manifest entries are null because `whisper-v1.9.5` is still 404. Committed as `ed015ad`.
+  - **Setup wizard.** Real install/retry/cancel for missing tools, batch install, recommended Whisper model download/cancel/resume, engine order, output-folder picker, focus trap, and close/backdrop/Escape counted as completed.
+  - **Queue and keyboard.** Filter (`Ctrl/Cmd+F`), row checkboxes, Shift-click range selection, select-all-shown, bulk pause/resume/cancel/remove, `Ctrl/Cmd+,`, and typing-vs-interactive target handling. Committed as `d317306`.
+  - **About and updates.** About page, daily update check, check/install/relaunch UI, diagnostics copy, open logs/folders, licences list. Rust side: `commands/app.rs`, `services/logging.rs`, `services/diagnostics.rs`, `ErrorCode::Update`, updater/process plugins, capabilities.
+  - **Updater and CI.** `createUpdaterArtifacts: true`, generated public key and GitHub `releases/latest/download/latest.json` endpoint. `scripts/generate-latest-json.mjs` builds the four-platform manifest from the real `.sig` files; CI checks the signing secret before building, uploads Windows/macOS signatures, generates the manifest and guards the release assets. A local signed Linux build produced `.deb.sig`, `.rpm.sig` and `.AppImage.sig`; the manifest generator accepted the real AppImage signature.
+  - **User docs and licence.** English `README.md`, Italian `README.it.md`, `docs/SUPPORTED_SITES*.md`, `docs/TROUBLESHOOTING*.md`, and an MIT `LICENSE`. Bilingual user docs are the deliberate exception recorded in D129.
+  - **Polish.** Localized error banner first with collapsed technical detail, wizard layout fixes, queue compaction, `ToolSource::PathEnv` serialization fix (`path`), and `docs/ACCEPTANCE.md` with the full §15 status.
+  - **Size and memory measurements.** App binary **8,890,880 bytes (8.5 MiB)**, `.deb` **43.2 MiB**, `.rpm` **43.2 MiB**, AppImage **148.9 MiB**. Installers are intentionally larger than 15 MiB because they carry yt-dlp (~38.6 MiB) and qjs; there is no hard installer-size gate (D132). Idle main process: **191,920 kB RSS / 87,832 kB PSS / 44,628 kB RssAnon**; the 30 MB target is not met on Linux (D133).
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → **436 unit + 193 integration = 629 passed, 0 failed, 4 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 333 tests passed**.
+  - `npm run build` → pass.
+  - `npm run check:ci` → 24 run blocks valid.
+  - `npm run check:runners`, `npm run check:tools`, `npm run check:release -- v0.1.0` → pass.
+  - `npx tauri build` with the local updater key → signed Linux bundle, sizes above; public key in `tauri.conf.json` matches the generated public key.
+  - `node scripts/generate-latest-json.mjs ...` → four platform entries with percent-encoded URLs and real signatures.
+  - `cargo test --test real_selftest the_self_test_passes_with_the_bundled_tools -- --ignored --nocapture` → **pass**: bundled yt-dlp 2026.08.19, QuickJS, 24 formats, heights `[240, 144]`, 2137 ms.
+  - `cargo test --test real_selftest a_real_inspection_and_download_end_to_end -- --ignored --nocapture` → **pass**: "Me at the zoo" inspected in 2093 ms, `.mkv` downloaded in 2835 ms, `.opus` produced.
+  - Manual Linux/KDE Wayland checks: queue filter/selection/bulk/shortcuts, wizard tool install and model download, local-file transcription, Gemini error banner, language/theme switching, About/diagnostics, update error.
+- Not verified / stubbed:
+  - Windows 10/11 x64 and macOS 13+ manual acceptance (no hardware); no macOS notarization or Windows code signing.
+  - Public 1080p/4K/Shorts download, 100-item playlist, non-YouTube/HLS/cookies/live/DRM, and a real Gemini request (no API key here).
+  - `sdp-whisper` sidecar install and every Whisper model size / >2 h chunking end-to-end: the release assets are still 404.
+  - A real in-app update: `releases/latest` still points at the old `v2.5`, which has no `latest.json`; a signed M7 release must exist first.
+  - The idle-RSS target of spec §15 item 1 is **not met** on Linux (D133); `docs/ACCEPTANCE.md` records the item as open, not waived.
+- Spec items marked "verify" that I checked:
+  - Tauri v2 updater artifacts → a local Linux build with `createUpdaterArtifacts: true` produces the raw `.AppImage` + `.AppImage.sig`, not `.AppImage.tar.gz`; macOS produces `*.app.tar.gz` + `.sig`, Windows NSIS `*-setup.exe` + `.sig`. The `.tar.gz` wrapper is only for deprecated v1-compatible mode (D127).
+  - `eugeneware/ffmpeg-static` b6.1.1 → all ten `.gz` assets exist, their SHA-256 values were computed locally, and the Linux x64 ffmpeg/ffprobe binaries run and report 7.0.2.
+  - `sdp-whisper` `whisper-v1.9.5` → HTTP 404 on 2026-10-23; the manifest keeps the shape with null URLs/checksums and the UI reports it as unavailable.
+  - Tauri updater/process plugin versions → `tauri-plugin-updater 2.14.0`, `tauri-plugin-process 2.4.0`; the JS updater package is not used.
+- Decisions/deviations (also in DECISIONS.md): D126 tools, D127 updater/artifact behavior and MSRV 1.90, D128 diagnostics/logging, D129 bilingual docs, D130 UI, D131 MIT licence, D132 installer measurements without a hard gate, D133 Linux idle-RSS finding.
+- Next step: human prerequisites for a release: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub secrets, publish the `sdp-whisper` assets, publish a signed M7 release with `latest.json`, and run the Tier 1 manual acceptance on Windows/macOS. Decide whether to accept or investigate the Linux RSS deviation (D133).
+
+## 2026-10-23 — M7 / Correct repository slug and enable the published sdp-whisper sidecar
+- Done:
+  - Corrected the repository slug from `EmanueleFusco/ScaricatoreDiPorto` to `EmanueleFusco/Scaricatore-di-Porto-rust` in `tools.manifest.json`, the updater endpoint in `src-tauri/tauri.conf.json`, the About/releases and licence links, both READMEs and the URL tests.
+  - Confirmed that the `whisper-v1.9.5` release exists (published 2026-10-19) with all seven `sdp-whisper` assets and `SHA256SUMS`; the earlier 404 came from the wrong repository slug.
+  - Filled the real URL and SHA-256 for every `sdp-whisper` platform in `tools.manifest.json` (Linux x64/arm64, Windows x64/arm64, macOS x64/arm64/universal), so the Install button is enabled.
+  - Replaced the Rust test that expected the sidecar to be unpublished with `whisper_sidecar_assets_are_installable_and_use_the_published_release`, asserting the release template, all seven platform entries and the Linux x64 checksum. The generic "declared but unpublished" install test now uses a synthetic tool instead of `sdp-whisper`.
+  - Updated the frontend tool-state tests: `sdp-whisper` missing is an optional `notInstalled`, while a synthetic unpublished tool still reports `notYetAvailable`.
+  - Added the ignored real test `the_whisper_sidecar_install_downloads_verifies_and_runs` and updated the English/Italian troubleshooting guides plus `docs/ACCEPTANCE.md`.
+- Verified by running:
+  - `curl -I` on all seven release assets → HTTP 200; the published `SHA256SUMS` matches the manifest values.
+  - `cargo test --test real_selftest the_whisper_sidecar_install_downloads_verifies_and_runs -- --ignored --nocapture` → pass: 4,893,088 bytes downloaded, SHA-256 verified, installed binary ran `-h` and printed the whisper.cpp CLI help.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 436 unit + 193 integration = **629 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 333 tests passed**.
+  - `npm run build` → pass.
+  - `npm run check:ci` → 24 run blocks valid; `npm run check:runners`, `npm run check:tools`, `npm run check:release -- v0.1.0` → pass.
+- Not verified / stubbed:
+  - The Windows, macOS and ARM64 sidecar assets answered HTTP 200; their checksum values came from `SHA256SUMS`, but those six files were not downloaded or executed (no hardware).
+  - The Tools-page Install button was not clicked manually in this step; the same `install_tool` path was exercised by the real ignored test.
+  - A full transcription with the downloaded sidecar and a Whisper model was not re-run in this step.
+- Spec items marked "verify" that I checked:
+  - `whisper-v1.9.5` release and assets → published 2026-10-19 in `EmanueleFusco/Scaricatore-di-Porto-rust`; all seven URLs and `SHA256SUMS` verified.
+  - Tauri updater endpoint → corrected to the real repository; no `latest.json` release exists yet, so a live update check is still unverified.
+- Decisions/deviations (also in DECISIONS.md): D134 corrects D126/D127 and records the real sidecar release.
+- Next step: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to GitHub Actions secrets, then publish a signed M7 release with `latest.json` and run the remaining Tier 1 acceptance checks.
+
+## 2026-10-23 — M7 / Move the WebKitGTK Wayland DMA-BUF fallback into the app
+
+- Done:
+  - Reproduced `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display.` with `npm run tauri dev` on the owner's KDE Wayland / NVIDIA RTX 3080 session.
+  - Verified `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone keeps both the debug binary and the AppImage alive and removes the `Failed to create GBM buffer` messages. `WEBKIT_DISABLE_COMPOSITING_MODE=1` did not help, and `GDK_BACKEND=x11` was not needed once the DMA-BUF renderer was disabled.
+  - Added `is_wayland_session()` and `apply_webkit_dma_buf_fallback()` to `src-tauri/src/lib.rs`. On Linux, before Tauri creates the webview, the app now sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` when it detects a Wayland session and the user has not already set that variable.
+  - Added unit tests for `is_wayland_session()`.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass.
+  - `( cd src-tauri && cargo test )` → 441 unit + 193 integration = 634 passed, 0 failed, 5 ignored.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND timeout --signal=TERM 25s npm run tauri dev` → no `Gdk-Message: Error 71`, no GBM warnings, process stayed alive until timeout.
+- Not verified / stubbed:
+  - The existing AppImage still uses the pre-fix binary and needs `WEBKIT_DISABLE_DMABUF_RENDERER=1` until it is rebuilt; newly built binaries apply the fallback automatically.
+  - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; the environment variable remains available as an override.
+- Decisions/deviations (also in DECISIONS.md): D135.
+- Next step: rebuild and publish a signed release so the AppImage inherits the fallback; otherwise document the environment variable for installed packages.
+
+## 2026-10-23 — M7 / Restrict the Wayland DMA-BUF fallback to NVIDIA
+
+- Done:
+  - `apply_webkit_dma_buf_fallback()` now also checks for an NVIDIA proprietary driver (`/proc/driver/nvidia/version` or `/dev/nvidia0`) before setting `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+  - AMD/Intel Wayland systems keep WebKitGTK's default DMA-BUF renderer.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )`, `cargo clippy --all-targets -- -D warnings`, `cargo test` → pass (441 unit + 193 integration).
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND npm run tauri dev` on the owner's NVIDIA/KDE Wayland machine → no `Error 71`, no GBM warnings, process stayed alive.
+- Decisions/deviations (also in DECISIONS.md): D136.
+
+## 2026-10-24 — M7 / Verify the Wayland DMA-BUF fallback and rebuild the AppImage
+
+- Done:
+  - Confirmed the committed fallback from D135/D136 is active on this machine: `npm run tauri dev` with both `WEBKIT_DISABLE_DMABUF_RENDERER` and `GDK_BACKEND` unset stayed alive for 22 seconds and printed no `Gdk-Message: Error 71` or `Failed to create GBM buffer` line.
+  - Rebuilt the Linux AppImage from the same commit with the fallback included:
+    `npx tauri build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'`.
+    The resulting `Scaricatore Di Porto_0.1.0_amd64.AppImage` is 148.94 MiB.
+  - Ran the rebuilt AppImage with the same environment variables unset. It stayed alive, rendered the queue window on native Wayland, and produced no `Error 71` or GBM warnings. A real desktop screenshot (2560×1440, mean brightness 0.118439) confirmed that the window is not black.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass.
+  - `( cd src-tauri && cargo test )` → **441 unit + 193 integration = 634 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 16 files, **333 tests passed**.
+  - `env -u WEBKIT_DISABLE_DMABUF_RENDERER -u GDK_BACKEND npm run tauri dev` → process alive after 22 s, no GDK/GBM errors.
+  - Rebuilt AppImage, same unset environment → process alive, visible window, no GDK/GBM errors.
+- Not verified / stubbed:
+  - The rebuilt AppImage is **unsigned**: `/tmp/opencode/updater.key` no longer exists (the temporary directory was cleared), so `createUpdaterArtifacts` was disabled only for this local build and no `.sig` was produced. A human must restore the original updater private key, or deliberately generate a new key pair and replace the public key before publishing a signed release.
+  - The old pre-fix AppImage still needs `WEBKIT_DISABLE_DMABUF_RENDERER=1`; the rebuilt one does not.
+  - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; that environment variable remains available as an override.
+- Decisions/deviations (also in DECISIONS.md): none; this step verifies D135/D136.
+- Next step: restore the updater signing key and publish a signed release, or keep using the unsigned local AppImage for testing only.
+
+## 2026-10-24 — M7 / Rotate the updater key and sign a fresh AppImage
+
+- Done:
+  - Confirmed the old `/tmp/opencode/updater.key` was lost when `/tmp` was cleared, and that no public release had been signed with it.
+  - Generated a new Tauri/minisign key pair outside the repository:
+    `~/.config/scaricatore-di-porto/updater.key` (mode `0600`) and
+    `~/.config/scaricatore-di-porto/updater.key.pub`. The private key is not in
+    the working tree and must never be committed.
+  - Replaced only the public key in `src-tauri/tauri.conf.json`; the public key
+    file and the configured value are byte-for-byte identical.
+  - Built and signed the AppImage with the new key. Tauri produced
+    `Scaricatore Di Porto_0.1.0_amd64.AppImage.sig` (456 bytes).
+- Verified by running:
+  - `ls -l ~/.config/scaricatore-di-porto/updater.key` → mode `-rw-------`.
+  - `npx tauri build --bundles appimage` with
+    `TAURI_SIGNING_PRIVATE_KEY="$(cat …/updater.key)"` and an empty password →
+    AppImage (148.94 MiB) plus `.sig`.
+  - Independent Ed25519 verification with Python `cryptography` against the new
+    public key → file signature valid (BLAKE2b-512 prehash), trusted-comment
+    signature valid, key IDs match.
+  - `git status --short` → only `src-tauri/tauri.conf.json` and documentation;
+    the private key is outside the repository and `*.key` is already ignored.
+- Not verified / stubbed:
+  - The key is unencrypted (empty password). It must be backed up securely and
+    added to the GitHub Actions secrets as `TAURI_SIGNING_PRIVATE_KEY`, with an
+    empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+  - A real in-app update still requires a published release with `latest.json`.
+- Decisions/deviations (also in DECISIONS.md): D137.
+- Next step: back up the private key, add the CI secrets, and publish a signed release.
+
+## 2026-10-24 — M7 / Rewrite README, drop Italian documentation
+
+- Done:
+  - Rewrote `README.md` from scratch: shorter, plain wording, install table,
+    build-from-source commands, checks, layout, troubleshooting, license.
+  - Removed `README.it.md`, `docs/TROUBLESHOOTING.it.md`, `docs/SUPPORTED_SITES.it.md`.
+- Verified by running:
+  - `grep -rn "\.it\.md"` outside `docs/PROGRESS.md`/`docs/DECISIONS.md` → no matches.
+  - Checked README facts against the repo: npm scripts in `package.json`, Node
+    `lts/*` in `ci.yml`, repo URL from `git remote`, "Copy diagnostics" button in
+    `src/lib/pages/settings/AboutPage.svelte`.
+  - No code changed, so cargo/npm checks were not re-run.
+- Not verified / stubbed: none.
+- Decisions/deviations (also in DECISIONS.md): D138.
+- Next step: unchanged — back up the updater key, add the CI secrets, publish a signed release.
+
+## 2026-10-24 — M7 / Review user-facing docs
+
+- Done: checked `docs/TROUBLESHOOTING.md` and `docs/SUPPORTED_SITES.md` against
+  the UI strings (`src/lib/i18n/en.json`, settings pages) and the backend.
+  Fixed in TROUBLESHOOTING: Turbo model size (574 MB, from `whisper.models.json`),
+  Whisper uses Metal on macOS (`whisper-sidecar.yml`, `-ng` fallback), the
+  automatic DMA-BUF workaround only triggers on Wayland + NVIDIA (`lib.rs`),
+  location of the JavaScript runtime setting, and replaced the developer-only
+  `npm run app` hint with a desktop-entry hint. SUPPORTED_SITES needed no change.
+- Verified by running: grep of every UI label and setting location quoted in
+  the two docs; all match.
+- Not verified / stubbed: the docs describe behaviour; it was checked in code,
+  not by running the app.
+- Found, not fixed (UI, not docs): `job.deno.body`, `job.whisper.body` and
+  `tools.selfTest.hint` show "spec §…" references to end users.
+- Next step: unchanged.
+
+## 2026-10-24 — M7 / UI polish, localization fixes, and non-modal update banner
+
+- Done:
+  - Audited the M7 implementation across backend, CI, packaging, updater, and UI against `docs/RUST_PORT_GUIDELINES.md` and the four user-provided screenshots.
+  - Added missing theme design tokens (`--accent-surface`, `--success`, `--success-surface`, `--warning`, `--warning-surface`) and shared button/control classes (`.btn--secondary`, `.btn--ghost`, `.btn--danger`, `.btn--small` / `.btn--sm`, `.btn--icon`, `.select--small`, `.settings__group`, `.settings__group-title`) to `src/lib/styles/app.css`.
+  - Styled `.select` with `appearance: none` and an inline SVG chevron so `<select>` controls match `.input` and `.btn` across Linux/WebKitGTK, Windows, and macOS without native GTK3 glossy bevels.
+  - Fixed card padding (`var(--space-4)` = 16 px) across `ToolsPage.svelte`, `AboutPage.svelte`, `GeneralSettings.svelte`, and `NetworkSettings.svelte`, and fixed `SettingsPage.svelte` / `AboutPage.svelte` width (`width: 100%`) so the About tab cards fill the full 720 px tab-strip width instead of shrinking to content.
+  - Fixed the `.btn-icon` CSS selector collision in `TranscriptionSettings.svelte`: renamed the Gemini password eye button to `.password-toggle` (`position: absolute; right: 8px;`) so `.btn-icon` action buttons (Pause, Resume, Cancel, Delete) in the Whisper models table stay inline inside their table cell.
+  - Localized tool role labels (`tools.role.<name>`) and Whisper model labels/notes (`models.label.<id>`, `models.notes.<id>`) in `it.json` and `en.json`, wired via `toolRoleKey()`, `modelLabelKey()`, and `modelNotesKey()` in `ToolsPage.svelte`, `SetupWizard.svelte`, `TranscriptionSettings.svelte`, and `AddBar.svelte`.
+  - Collapsed multi-line `ffmpeg`/`ffprobe` version banners via `splitToolBanner()` so only the first headline line is shown by default and GCC build flags are tucked into `<details><summary>Technical details</summary><pre>…</pre></details>`.
+  - Prevented status badges (`.tools__status`, `.tools__badge`) from wrapping mid-phrase (`white-space: nowrap`) and filtered the redundant `ffprobe` row from Setup Wizard step 2 (since `ffmpeg` installs both).
+  - Fixed Setup Wizard `<select>` / control focus-ring clipping by adding negative margin + compensating padding on `.wizard__body`, and styled the close button and footer border.
+  - Removed developer jargon (`(spec §5.3)`, `(spec §5.4)`, `(spec §5.3.6)`, `(M3)`) from user-visible strings in `it.json` and `en.json`.
+  - Wired the non-modal top update banner in `App.svelte` and the update-available indicator dot on the About tab in `SettingsPage.svelte` (spec §13.4).
+  - Hardened `toolsStore.probeEncoders()` to normalise non-array IPC responses to `[]`.
+  - Fixed a connection-pool race in `src-tauri/tests/gemini_pipeline.rs` by adding `Connection: close` to the single-request `MockGeminiServer` HTTP responses so `reqwest` does not reuse a closing socket for the RAII `DELETE` call.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 441 unit + 193 integration = **634 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 338 tests passed** (added unit tests for `toolRoleKey`, `splitToolBanner`, `modelLabelKey`, and `modelNotesKey`).
+  - `npm run build` → pass.
+  - Offscreen WebKit2GTK visual snapshots (`WebKit2.WebView.get_snapshot`) across Queue, Settings (General, Transcription, Tools, Network, About), and Setup Wizard steps 1–3 → verified all layout, padding, localization, badge wrapping, focus ring, and `<select>` appearance fixes.
+- Not verified / stubbed:
+  - Live self-update banner action requires a published GitHub release with `latest.json`.
+- Spec items marked "verify" that I checked: none new in this step.
+- Decisions/deviations (also in DECISIONS.md): none new (follows spec §11 and §13.4).
+- Next step: back up the updater signing key, configure GitHub Actions secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publish the signed release.
+
+## 2026-10-24 — M7 / App icon from the original app
+
+- Done: replaced the default Tauri icons in `src-tauri/icons/` with the original
+  app's artwork (`original_python/images/Win_icon.ico`, 256×256, full-bleed
+  rounded square, already centred). Upscaled to 1024 px (Lanczos) and ran
+  `npx tauri icon`. `icon.icns` was generated from a separate source with the
+  artwork scaled to 824/1024 and centred, following the macOS icon grid, so it
+  does not look oversized in the Dock. Removed the generated `android/` and
+  `ios/` folders (not targets). `tauri.conf.json` already lists the right files.
+- Verified by running: `cargo check` → OK; alpha bounding boxes of the PNGs are
+  symmetric (centred).
+- Not verified / stubbed: not looked at on a real Windows/macOS desktop. The
+  only source is 256 px, so the 512/1024 sizes (macOS Retina, `icon.png`) are
+  upscaled and slightly soft; a vector or 1024 px master would fix that.
+- Next step: unchanged.
+
+## 2026-10-24 — M7 / App icon from the 1024 px master
+
+- Done: regenerated `src-tauri/icons/` from `original_python/images/icona_1024.png`
+  (opaque square, no rounding). Windows/Linux master: full bleed, rounded with the
+  same corner ratio as the old 256 px icon (96/1024), faint dark outline so the
+  light background stays visible on light desktops. macOS `icon.icns`: Apple grid
+  (824 px body centred on 1024, 185 px corners, soft shadow). Anti-aliased masks
+  (4× supersampling). Replaces the upscaled 256 px icons of the previous step.
+- Verified by running: `npx tauri icon`, `cargo check` → OK; visual check of the
+  1024, 256 and 32 px renders on a light background.
+- Not verified / stubbed: not seen on a real Windows/macOS desktop or dock.
+- Next step: unchanged.
+- Follow-up: the artwork's teal water has its own rounded bottom corners
+  (radius ≈136/1024); a 96 px mask left white corners outside it. The
+  Windows/Linux mask radius is now 140/1024, so all four corners follow the shape.
+
+## 2026-10-24 — M7 / Cross-platform icon visibility & Linux desktop integration
+
+- Done:
+  - Reordered `bundle.icon` in `src-tauri/tauri.conf.json` so high-res icons
+    (`128x128@2x.png` 256px, `icon.png` 512px) precede `32x32.png`, preventing
+    low-res fallback on X11 / Wayland / desktop docks.
+  - Added explicit `window.set_icon(...)` call in `src-tauri/src/lib.rs` setup.
+  - Added `ensure_linux_desktop_integration()` in `src-tauri/src/lib.rs` to
+    write high-res icon and register desktop entries
+    (`com.scaricatorediporto.app.desktop` for Wayland and
+    `scaricatore-di-porto.desktop` for X11 / WM_CLASS) in `~/.local/share/` on
+    Linux startup.
+- Verified by running:
+  - Visual verification on Linux (KDE Plasma 6 / CachyOS): icon displayed
+    properly in taskbar, window title, and task switcher.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → passed.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → passed.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `( cd src-tauri && cargo test )` → all 441 unit and integration tests passed.
+- Not verified / stubbed: none.
+- Next step: unchanged.

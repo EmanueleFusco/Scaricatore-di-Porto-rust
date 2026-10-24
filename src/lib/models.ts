@@ -89,3 +89,13 @@ export function filterModels(
   if (showFullPrecision) return models;
   return models.filter((m) => !m.advanced);
 }
+
+/** i18n key for a Whisper model's localized label. */
+export function modelLabelKey(id: string): string {
+  return `models.label.${id}`;
+}
+
+/** i18n key for a Whisper model's localized note. */
+export function modelNotesKey(id: string): string {
+  return `models.notes.${id}`;
+}

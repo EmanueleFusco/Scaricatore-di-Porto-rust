@@ -718,6 +718,60 @@ export function actionKey(action: ItemAction): string {
   return `queue.item.action.${action}`;
 }
 
+/**
+ * The rows a filter query keeps (spec §11.5).
+ *
+ * Matching is deliberately generous: title, site, link and output file name
+ * are all things a user remembers about a row, and the filter is a find
+ * tool, not a query language. An empty query returns the list untouched.
+ */
+export function filterQueueItems(items: readonly QueueItem[], query: string): QueueItem[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (needle === "") return [...items];
+  return items.filter((item) => {
+    const haystack = [
+      itemLabel(item),
+      item.site ?? "",
+      item.url,
+      item.file ?? "",
+      item.error?.messageKey ?? "",
+    ]
+      .join("\n")
+      .toLocaleLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
+/** Add or remove one row from a selection, returning a new set. */
+export function toggleSelected(selected: ReadonlySet<string>, id: string): Set<string> {
+  const next = new Set(selected);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/**
+ * Extend a selection across the visible range, inclusive.
+ *
+ * Shift-click is the one range gesture that works without a pointer: the
+ * checkbox keeps its normal click, and the range is computed from the rows the
+ * user can actually see (a filtered or collapsed list).
+ */
+export function selectRange(
+  selected: ReadonlySet<string>,
+  visibleIds: readonly string[],
+  from: string,
+  to: string,
+): Set<string> {
+  const start = visibleIds.indexOf(from);
+  const end = visibleIds.indexOf(to);
+  if (start === -1 || end === -1) return new Set(selected);
+  const next = new Set(selected);
+  const [first, last] = start <= end ? [start, end] : [end, start];
+  for (const id of visibleIds.slice(first, last + 1)) next.add(id);
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Text helpers
 // ---------------------------------------------------------------------------

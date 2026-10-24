@@ -5,7 +5,7 @@ description = "Scaricatore Di Porto — cross-platform downloader and transcribe
 authors = ["Scaricatore Di Porto contributors"]
 license = "MIT"
 edition = "2024"
-rust-version = "1.85" # edition 2024 floor
+rust-version = "1.90" # tauri-plugin-updater 2.14 floor
 
 [lib]
 # The `_lib` suffix keeps the lib name unique and avoids clashing with the bin
@@ -29,6 +29,13 @@ tauri-plugin-opener = "2.7"
 # pull in tauri-plugin-deep-link, and the `deep-link` feature is not needed for
 # the M0-A "second launch focuses the first window" behaviour (spec §3).
 tauri-plugin-single-instance = "2"
+# In-app updates (spec §13.4). Only the AppImage can replace itself on Linux;
+# the UI shows a releases link for .deb/.rpm (D127). The plugin also brings its
+# own rustls-based reqwest 0.13, so the binary grows by the updater + a second
+# reqwest copy; measured in D127.
+tauri-plugin-updater = "2.14"
+# Relaunch after an update (spec §13.4), via the JS process plugin.
+tauri-plugin-process = "2.4"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -82,15 +89,17 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # System notification when the queue becomes idle (spec §7.7, §11.8). Added in
 # M2; see D79 for the dependency-size measurement that justified it.
-# NOT pinned to a newer major-minor: 2.4 is the newest release whose
-# `rust-version` stays inside this package's `rust-version = 1.85`, and a
-# dependency that cannot be built by the toolchain the project declares is not
-# a dependency. The `windows` crate it pulls in is the 0.61 line, separate from
-# the 0.62 one spec §4.2 needs; they are independent crates and coexist.
+# 2.4 was the newest release whose `rust-version` fitted the 1.85 floor the
+# package declared at the time. M7 raised the floor to 1.90 for the updater
+# (D127), so the pin is no longer forced by MSRV; it is kept to avoid an
+# unrelated dependency bump. The `windows` crate it pulls in is the 0.61 line,
+# separate from the 0.62 one spec §4.2 needs; they are independent crates and
+# coexist.
 tauri-plugin-notification = "2.4"
 
 # Keyring for Gemini API key storage (spec §10.5).
-# Pinned to 3.6 to respect rust-version = 1.85 and pure Rust crypto without OpenSSL.
+# Pinned to 3.6 for pure Rust crypto without OpenSSL; it also respected the
+# former 1.85 MSRV floor (now 1.90, D127).
 keyring = { version = "3.6", default-features = false, features = [
     "apple-native",
     "windows-native",

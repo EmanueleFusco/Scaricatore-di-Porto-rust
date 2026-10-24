@@ -484,7 +484,12 @@ pub async fn download(
     }
 
     if request.archive_kind.needs_extraction() {
-        let staged = extract_archive(&part, destination, request.archive_kind)?;
+        // A `.gz` holds one file, not a tree: the caller installs the returned
+        // path directly. The other archives return the directory they filled.
+        let staged = match request.archive_kind {
+            ArchiveKind::Gz => extract_gz(&part, destination, &request.url)?,
+            kind => extract_archive(&part, destination, kind)?,
+        };
         let _ = fs::remove_file(&part);
         return Ok(DownloadOutcome {
             path: staged,
@@ -559,7 +564,46 @@ pub fn extract_archive(
         ArchiveKind::Tar | ArchiveKind::TarGz | ArchiveKind::TarXz => {
             extract_tar(archive, destination, kind)
         }
+        // Handled before this function is called, because its output is a file
+        // rather than the directory the other kinds return.
+        ArchiveKind::Gz => Err(download_error(
+            "extract_archive cannot unpack a single gzip stream",
+        )),
     }
+}
+
+/// Decompress a single-file `.gz` asset into `destination`.
+///
+/// The name comes from the URL, never from the (untrusted) archive contents:
+/// only the final path segment is kept, so a crafted URL cannot escape the
+/// destination. The caller renames the result to the executable name it wants.
+fn extract_gz(archive: &Path, destination: &Path, url: &str) -> Result<PathBuf, AppError> {
+    paths::ensure_dir(destination)?;
+    let asset = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('/')
+        .next()
+        .unwrap_or("tool");
+    let name = asset.strip_suffix(".gz").unwrap_or(asset);
+    let file_name = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("tool");
+    let target = destination.join(file_name);
+
+    let input = File::open(archive)?;
+    let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(input));
+    let mut out = File::create(&target)?;
+    std::io::copy(&mut decoder, &mut out).map_err(|err| {
+        download_error(format!(
+            "{} is not a valid gzip stream: {err}",
+            archive.display()
+        ))
+    })?;
+    Ok(target)
 }
 
 /// Install the entry called `executable` from the unpacked tree.
@@ -640,7 +684,9 @@ fn extract_tar(archive: &Path, destination: &Path, kind: ArchiveKind) -> Result<
             })?;
             out
         }
-        ArchiveKind::None | ArchiveKind::Zip => unreachable!("handled by the caller"),
+        ArchiveKind::None | ArchiveKind::Zip | ArchiveKind::Gz => {
+            unreachable!("handled by the caller")
+        }
     };
 
     let mut tar = tar::Archive::new(&plain[..]);
@@ -895,6 +941,62 @@ mod tests {
                 .exists(),
             "nothing may be written outside the destination"
         );
+    }
+
+    #[test]
+    fn a_single_gz_asset_is_decompressed_and_named_from_the_url() {
+        use std::io::Write as _;
+        let dir = TempDir::new().expect("temp dir");
+        let gz = dir.path().join("asset.gz");
+        {
+            let encoder = flate2::write::GzEncoder::new(
+                File::create(&gz).expect("create"),
+                flate2::Compression::fast(),
+            );
+            let mut writer = std::io::BufWriter::new(encoder);
+            writer.write_all(b"#!/bin/sh\necho fake\n").expect("write");
+            writer
+                .into_inner()
+                .expect("flush")
+                .finish()
+                .expect("finish");
+        }
+
+        let out = dir.path().join("out");
+        let path = extract_gz(
+            &gz,
+            &out,
+            "https://example.invalid/releases/ffmpeg-linux-x64.gz",
+        )
+        .expect("unpack");
+        assert_eq!(path, out.join("ffmpeg-linux-x64"));
+        assert_eq!(fs::read(&path).expect("read"), b"#!/bin/sh\necho fake\n");
+    }
+
+    #[test]
+    fn a_gz_name_cannot_escape_the_destination() {
+        use std::io::Write as _;
+        let dir = TempDir::new().expect("temp dir");
+        let gz = dir.path().join("asset.gz");
+        {
+            let encoder = flate2::write::GzEncoder::new(
+                File::create(&gz).expect("create"),
+                flate2::Compression::fast(),
+            );
+            let mut writer = std::io::BufWriter::new(encoder);
+            writer.write_all(b"x").expect("write");
+            writer
+                .into_inner()
+                .expect("flush")
+                .finish()
+                .expect("finish");
+        }
+
+        let out = dir.path().join("out");
+        // The last segment is what is kept, so `..` never becomes a parent.
+        let path =
+            extract_gz(&gz, &out, "https://example.invalid/../../escape.gz").expect("unpack");
+        assert_eq!(path, out.join("escape"));
     }
 
     #[test]

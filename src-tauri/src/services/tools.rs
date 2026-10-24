@@ -69,6 +69,10 @@ pub enum ToolSource {
     /// 3. Shipped in the installer, next to the app binary.
     Bundled,
     /// 4. Found on the inherited `PATH`.
+    ///
+    /// The frontend calls this source `path`, so the serialized name must not
+    /// follow the camelCase rename of the other variants.
+    #[serde(rename = "path")]
     PathEnv,
     /// 5. A well-known install location.
     WellKnown,
@@ -557,18 +561,12 @@ pub struct ToolStatus {
     pub searched: Vec<String>,
 }
 
-/// The ffmpeg executable name, as `extra_tools` and the commands look it up.
+/// The media tools the job pipeline asks for by name. Both are manifest
+/// entries now, so the Tools page can offer a checksum-verified install when
+/// the system copy is missing (spec §5: prefer the system install, offer a
+/// static build if absent).
 pub const FFMPEG: &str = "ffmpeg";
-
-/// Tools the Tools page lists even though the manifest does not manage them.
-///
-/// ffmpeg is here and not in `tools.manifest.json` on purpose: spec §5 says to
-/// *prefer the system install*, and offering a static download for it is an M4
-/// decision with real licence and size consequences. It is still detected, so
-/// "do you have ffmpeg?" is answered today.
-pub fn extra_tools() -> &'static [&'static str] {
-    &[FFMPEG, "ffprobe"]
-}
+pub const FFPROBE: &str = "ffprobe";
 
 /// Status of one tool.
 pub async fn status_of(
@@ -911,48 +909,56 @@ pub async fn update_ytdlp(
 // On-demand installation (spec §5.2.1, §5.3.2)
 // ---------------------------------------------------------------------------
 
-/// Download and install Deno from the manifest and return the executable path.
+/// Download and install one manifest tool and return the executable path.
 ///
-/// Deno is never bundled (spec §0.7); this is the lazy install of spec §5.3.2,
-/// called only after the user consented. The zip is verified against the
-/// manifest's sha256 before it is unpacked, extraction refuses path traversal
-/// (both inherited from `download.rs`), and the executable lands in the
-/// app-data lookup directory so the next [`resolve`] finds it.
-pub async fn install_deno(
+/// This is the single on-demand install path for every non-bundled tool
+/// (spec §5.2): Deno's lazy fallback (§5.3.2), ffmpeg/ffprobe, and the Whisper
+/// sidecar. The asset is verified against the manifest's sha256 before it is
+/// unpacked, extraction refuses path traversal (both inherited from
+/// `download.rs`), and the executable lands in the app-data lookup directory so
+/// the next [`resolve`] finds it.
+///
+/// An entry with no `url`/`sha256` is not installable, and the error says so in
+/// the same words the UI uses: "not available on this platform yet". That is
+/// how a declared-but-unpublished release stays honest instead of producing a
+/// button that downloads a 404.
+pub async fn install_tool(
     manifest: &ToolsManifest,
+    tool_name: &str,
     triple: &str,
     tools_dir: &Path,
     token: &CancellationToken,
     on_progress: impl FnMut(crate::services::download::DownloadProgress),
 ) -> Result<PathBuf, AppError> {
-    let tool = manifest.tool(manifest::DENO).ok_or_else(|| {
-        AppError::Unsupported("deno is not declared in the tools manifest".to_owned())
+    let tool = manifest.tool(tool_name).ok_or_else(|| {
+        AppError::Unsupported(format!("{tool_name} is not declared in the tools manifest"))
     })?;
     let entry = tool.platforms.get(triple).ok_or_else(|| {
         AppError::Unsupported(format!(
-            "deno has no build for this platform ({triple}): not available on this platform"
+            "{tool_name} has no build for this platform ({triple}): not available on this platform"
         ))
     })?;
     if !entry.is_installable() {
         return Err(AppError::Unsupported(format!(
-            "deno is not pinned for {triple} yet (spec §5.1)"
+            "{tool_name} is not available on this platform yet: no release is pinned for {triple} \
+             (spec §5.1)"
         )));
     }
     let executable = entry.executable().ok_or_else(|| {
         AppError::Unsupported(format!(
-            "the deno entry for {triple} has no executable name"
+            "the {tool_name} entry for {triple} has no executable name"
         ))
     })?;
     let url = entry
         .url
         .clone()
-        .ok_or_else(|| AppError::Unsupported("the deno entry has no url".to_owned()))?;
+        .ok_or_else(|| AppError::Unsupported(format!("the {tool_name} entry has no url")))?;
     let sha256 = entry
         .sha256
         .clone()
-        .ok_or_else(|| AppError::Unsupported("the deno entry has no sha256".to_owned()))?;
+        .ok_or_else(|| AppError::Unsupported(format!("the {tool_name} entry has no sha256")))?;
 
-    let dir = app_data_dir_for(tools_dir, manifest::DENO);
+    let dir = app_data_dir_for(tools_dir, tool_name);
     paths::ensure_dir(&dir)?;
     let target = dir.join(executable);
     if target.is_file() {
@@ -965,35 +971,79 @@ pub async fn install_deno(
     // A previous interrupted attempt may have left files behind; a fresh tree is
     // the cheapest way to be sure the executable found afterwards is the new
     // one.
-    let _ = fs::remove_dir_all(&staging);
+    remove_path(&staging);
 
-    let request = crate::services::download::DownloadRequest::new(url, staging.clone())
+    // A plain asset is itself the destination file; an archive needs a
+    // directory to unpack into.
+    let destination = if entry.archive_kind == manifest::ArchiveKind::None {
+        dir.join(format!(".{executable}.download"))
+    } else {
+        staging.clone()
+    };
+    remove_path(&destination);
+
+    let request = crate::services::download::DownloadRequest::new(url, destination.clone())
         .with_checksum(sha256)
-        .with_archive(crate::services::manifest::ArchiveKind::Zip);
+        .with_archive(entry.archive_kind);
     let outcome = crate::services::download::download(&request, token, on_progress).await?;
 
-    let staged =
-        crate::services::download::find_executable(&outcome.path, executable).ok_or_else(|| {
-            AppError::Process(format!(
-                "the deno archive does not contain {executable} (looked in {})",
-                outcome.path.display()
-            ))
-        })?;
+    let staged = match entry.archive_kind {
+        // The download itself is the executable, or the gzip already named the
+        // one file it contained.
+        manifest::ArchiveKind::None | manifest::ArchiveKind::Gz => outcome.path,
+        _ => crate::services::download::find_executable(&outcome.path, executable).ok_or_else(
+            || {
+                AppError::Process(format!(
+                    "the {tool_name} archive does not contain {executable} (looked in {})",
+                    outcome.path.display()
+                ))
+            },
+        )?,
+    };
     make_executable(&staged)?;
     if staged != target {
         // Same directory tree, so the rename is atomic on every OS we ship.
         fs::rename(&staged, &target).map_err(|err| {
             AppError::Io(io::Error::new(
                 err.kind(),
-                format!("installing deno at {}: {err}", target.display()),
+                format!("installing {tool_name} at {}: {err}", target.display()),
             ))
         })?;
     }
-    let _ = fs::remove_dir_all(&staging);
+    remove_path(&staging);
     // A downloaded binary is quarantined on macOS until this runs; harmless
     // everywhere else.
     quarantine_repair(&target).await;
     Ok(target)
+}
+
+/// The Deno fallback install (spec §5.3.2), kept as a named entry point for the
+/// callers that ask for that tool specifically.
+pub async fn install_deno(
+    manifest: &ToolsManifest,
+    triple: &str,
+    tools_dir: &Path,
+    token: &CancellationToken,
+    on_progress: impl FnMut(crate::services::download::DownloadProgress),
+) -> Result<PathBuf, AppError> {
+    install_tool(
+        manifest,
+        manifest::DENO,
+        triple,
+        tools_dir,
+        token,
+        on_progress,
+    )
+    .await
+}
+
+/// Remove a file or a directory tree, ignoring "it was not there".
+fn remove_path(path: &Path) {
+    if path.is_dir() {
+        let _ = fs::remove_dir_all(path);
+    } else {
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// Run a command and return `(exited zero, stdout + stderr)`.
@@ -1609,9 +1659,60 @@ mod tests {
         assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
     }
 
-    #[test]
-    fn extra_tools_are_the_two_ffmpeg_binaries_and_nothing_else() {
-        assert_eq!(extra_tools(), &["ffmpeg", "ffprobe"]);
+    #[tokio::test]
+    async fn installing_a_declared_but_unpublished_tool_says_so_without_network() {
+        // A manifest can declare a tool before its release exists. The error
+        // must be the UI's own wording, and no HTTP request may be attempted.
+        let raw = r#"{
+            "schemaVersion": 1,
+            "tools": [{
+                "name": "later", "role": "r", "license": "MIT", "versioning": "pinned",
+                "version": "1.0.0", "minVersion": "1.0",
+                "platforms": {"x86_64-unknown-linux-gnu": {
+                    "asset": "later", "executableName": "later", "archiveKind": "none"}}
+            }]
+        }"#;
+        let manifest = ToolsManifest::parse(raw).expect("manifest");
+        let dir = TempDir::new().expect("temp dir");
+        let token = CancellationToken::new();
+        let err = install_tool(&manifest, "later", LINUX, dir.path(), &token, |_| {})
+            .await
+            .expect_err("unpublished tools cannot be installed");
+        assert!(
+            err.to_string().contains("not available on this platform"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn installing_an_already_installed_tool_is_idempotent() {
+        // The button can be pressed twice: the second press must return the
+        // existing executable, not download it again.
+        let dir = TempDir::new().expect("temp dir");
+        let target = dir.path().join("fake").join("fake");
+        fs::create_dir_all(target.parent().expect("parent")).expect("dir");
+        fs::write(&target, b"already here").expect("write");
+
+        let raw = r#"{
+            "schemaVersion": 1,
+            "tools": [{
+                "name": "fake", "role": "r", "license": "MIT", "versioning": "pinned",
+                "version": "1.0.0", "minVersion": "1.0",
+                "platforms": {"x86_64-unknown-linux-gnu": {
+                    "asset": "fake.gz", "executableName": "fake", "archiveKind": "gz",
+                    "url": "https://example.invalid/fake.gz",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}}
+            }]
+        }"#;
+        let manifest = ToolsManifest::parse(raw).expect("manifest");
+        let token = CancellationToken::new();
+        let installed = install_tool(&manifest, "fake", LINUX, dir.path(), &token, |_| {
+            panic!("an idempotent install must not start a download")
+        })
+        .await
+        .expect("already installed");
+        assert_eq!(installed, target);
+        assert_eq!(fs::read(&target).expect("read"), b"already here");
     }
 
     #[test]
@@ -1625,6 +1726,22 @@ mod tests {
             (ToolSource::WellKnown, "wellKnown"),
         ] {
             assert_eq!(source.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn tool_sources_serialize_with_the_names_the_ui_expects() {
+        // `ToolSource` is camelCased as a whole, which would turn `PathEnv`
+        // into `pathEnv`; the frontend switches on `path`.
+        for (source, expected) in [
+            (ToolSource::Override, "override"),
+            (ToolSource::AppData, "appData"),
+            (ToolSource::Bundled, "bundled"),
+            (ToolSource::PathEnv, "path"),
+            (ToolSource::WellKnown, "wellKnown"),
+        ] {
+            let value = serde_json::to_value(source).expect("serialize a tool source");
+            assert_eq!(value, serde_json::json!(expected));
         }
     }
 

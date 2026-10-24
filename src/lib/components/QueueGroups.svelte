@@ -9,17 +9,23 @@
 -->
 <script lang="ts">
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import { groupPercent, groupStats, nonEmptyGroups } from "$lib/queue";
+  import { groupPercent, groupStats, nonEmptyGroups, type QueueItem } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt } from "$lib/stores/settings.svelte";
 
-  let { collapsed, ontoggle }: { collapsed: ReadonlySet<string>; ontoggle: (id: string) => void } =
-    $props();
+  let {
+    collapsed,
+    ontoggle,
+    items = queueStore.list,
+  }: {
+    collapsed: ReadonlySet<string>;
+    ontoggle: (id: string) => void;
+    /** Rows left after the filter, so a group with no match disappears too. */
+    items?: QueueItem[];
+  } = $props();
 
-  const groups = $derived(nonEmptyGroups(queueStore.groups, queueStore.list));
-  const stats = $derived(
-    new Map(groups.map((group) => [group.id, groupStats(group.id, queueStore.list)])),
-  );
+  const groups = $derived(nonEmptyGroups(queueStore.groups, items));
+  const stats = $derived(new Map(groups.map((group) => [group.id, groupStats(group.id, items)])));
 </script>
 
 {#if groups.length > 0}

@@ -15,6 +15,7 @@ import {
   detailsText,
   emptyQueueState,
   fileName,
+  filterQueueItems,
   groupPercent,
   groupStats,
   itemsOutsideCollapsed,
@@ -38,7 +39,9 @@ import {
   qualityLabel,
   secondsToClock,
   scrollOffsetFor,
+  selectRange,
   speedMbits,
+  toggleSelected,
   stageDetail,
   stateKey,
   statusKindFor,
@@ -673,6 +676,55 @@ describe("the virtualised list", () => {
 // ---------------------------------------------------------------------------
 // The Add bar
 // ---------------------------------------------------------------------------
+
+describe("filtering and selecting rows", () => {
+  const rows = [
+    item({ id: "a", title: "Live concert", site: "Youtube" }),
+    item({ id: "b", title: "Cooking", site: "Vimeo", url: "https://vimeo.com/1" }),
+    item({ id: "c", title: "Podcast", site: "Soundcloud", url: "https://soundcloud.com/1" }),
+  ];
+
+  it("matches title, site and link, case-insensitively", () => {
+    expect(filterQueueItems(rows, "LIVE").map((row) => row.id)).toEqual(["a"]);
+    expect(filterQueueItems(rows, "vimeo").map((row) => row.id)).toEqual(["b"]);
+    expect(filterQueueItems(rows, "soundcloud.com").map((row) => row.id)).toEqual(["c"]);
+  });
+
+  it("returns the whole list for an empty or whitespace query", () => {
+    expect(filterQueueItems(rows, "")).toEqual(rows);
+    expect(filterQueueItems(rows, "   ")).toEqual(rows);
+  });
+
+  it("returns an empty list when nothing matches", () => {
+    expect(filterQueueItems(rows, "no-such-row")).toEqual([]);
+  });
+
+  it("filters a 5 000-item queue without copying unrelated rows into the result", () => {
+    const many = Array.from({ length: 5000 }, (_, index) =>
+      item({ id: `row-${index}`, title: `Item-${index}` }),
+    );
+    const filtered = filterQueueItems(many, "Item-4999");
+    expect(filtered.map((row) => row.id)).toEqual(["row-4999"]);
+    expect(filterQueueItems(many, "").length).toBe(5000);
+  });
+
+  it("toggles one id without touching the others", () => {
+    const selected = toggleSelected(new Set(["a"]), "b");
+    expect([...selected].sort()).toEqual(["a", "b"]);
+    expect([...toggleSelected(selected, "a")]).toEqual(["b"]);
+  });
+
+  it("extends a selection across the visible range, in either direction", () => {
+    expect([...selectRange(new Set(), ["a", "b", "c", "d"], "b", "d")]).toEqual(["b", "c", "d"]);
+    expect([...selectRange(new Set(), ["a", "b", "c", "d"], "d", "b")]).toEqual(["b", "c", "d"]);
+    expect([...selectRange(new Set(["a"]), ["a", "b"], "a", "b")]).toEqual(["a", "b"]);
+  });
+
+  it("ignores anchors that are no longer visible", () => {
+    const selected = new Set(["a"]);
+    expect(selectRange(selected, ["b", "c"], "a", "c")).toEqual(selected);
+  });
+});
 
 describe("splitting a paste into links", () => {
   it("keeps http(s) links, deduped and in order", () => {

@@ -9,6 +9,8 @@ import {
   normaliseToolStatus,
   normaliseToolsView,
   readyToolCount,
+  splitToolBanner,
+  toolRoleKey,
   toolState,
   WIZARD_STEPS,
   wizardIndex,
@@ -71,12 +73,30 @@ describe("toolState()", () => {
     expect(info.problem).toBe(false);
   });
 
+  it("distinguishes a declared tool whose release is not published yet", () => {
+    // A future manifest entry may exist before its release does: the row must
+    // say "not available yet", never offer a download that fails.
+    const info = toolState(
+      tool({
+        name: "future-tool",
+        bundled: false,
+        installable: false,
+        path: null,
+        source: null,
+        version: null,
+      }),
+    );
+    expect(info.state).toBe("notYetAvailable");
+    expect(info.problem).toBe(false);
+  });
+
   it("names an i18n key that exists in both dictionaries", () => {
     for (const candidate of [
       tool(),
       tool({ path: null }),
       tool({ meetsMinVersion: false }),
       tool({ availableOnPlatform: false }),
+      tool({ name: "future-tool", bundled: false, installable: false, path: null }),
     ]) {
       const key = toolState(candidate).key;
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
@@ -244,8 +264,22 @@ describe("readyToolCount() and wizardToolNames()", () => {
 
 describe("optional tools never look like a problem", () => {
   it("a missing Deno is not a problem; a missing ffmpeg is", () => {
-    const deno = tool({ name: "deno", bundled: false, source: null, path: null, version: null });
-    const ffmpeg = tool({ name: "ffmpeg", bundled: false, source: null, path: null, version: null });
+    const deno = tool({
+      name: "deno",
+      bundled: false,
+      installable: true,
+      source: null,
+      path: null,
+      version: null,
+    });
+    const ffmpeg = tool({
+      name: "ffmpeg",
+      bundled: false,
+      installable: true,
+      source: null,
+      path: null,
+      version: null,
+    });
     expect(toolState(deno)).toEqual({
       state: "notInstalled",
       key: "tools.state.notInstalled",
@@ -254,6 +288,23 @@ describe("optional tools never look like a problem", () => {
     expect(toolState(ffmpeg).problem).toBe(true);
     expect(hasToolProblem([deno])).toBe(false);
     expect(hasToolProblem([deno, ffmpeg])).toBe(true);
+  });
+
+  it("a missing sdp-whisper is optional, not a defect", () => {
+    const whisper = tool({
+      name: "sdp-whisper",
+      bundled: false,
+      installable: true,
+      source: null,
+      path: null,
+      version: null,
+    });
+    expect(toolState(whisper)).toEqual({
+      state: "notInstalled",
+      key: "tools.state.notInstalled",
+      problem: false,
+    });
+    expect(hasToolProblem([whisper])).toBe(false);
   });
 
   it("an installed Deno is simply ok", () => {
@@ -288,6 +339,37 @@ describe("the dictionaries", () => {
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
       expect(hasKey("en", key), `en is missing ${key}`).toBe(true);
     }
+  });
+
+  it("carries a localized role for every manifest tool", () => {
+    for (const name of ["yt-dlp", "qjs", "deno", "ffmpeg", "ffprobe", "sdp-whisper"]) {
+      const key = toolRoleKey(name);
+      expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
+      expect(hasKey("en", key), `en is missing ${key}`).toBe(true);
+    }
+  });
+});
+
+describe("splitToolBanner()", () => {
+  it("returns null for empty or blank banners", () => {
+    expect(splitToolBanner(null)).toBeNull();
+    expect(splitToolBanner("   \n  ")).toBeNull();
+  });
+
+  it("extracts a single-line headline with null details", () => {
+    expect(splitToolBanner("2026.08.19")).toEqual({
+      headline: "2026.08.19",
+      details: null,
+    });
+  });
+
+  it("splits multi-line ffmpeg banners into headline and details", () => {
+    const raw =
+      "ffmpeg version n9.0.2 Copyright (c) 2000-2026\nbuilt with gcc 15.2.1\nconfiguration: --prefix=/usr";
+    expect(splitToolBanner(raw)).toEqual({
+      headline: "ffmpeg version n9.0.2 Copyright (c) 2000-2026",
+      details: "built with gcc 15.2.1\nconfiguration: --prefix=/usr",
+    });
   });
 });
 

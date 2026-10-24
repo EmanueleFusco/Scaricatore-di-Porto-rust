@@ -129,8 +129,10 @@ dello stesso tag) che si decomprime in una cartella e si esegue da li'.
 "installer size ... measure it in M0 and fix the budget then". Il numero va
 deciso qui, non lasciato a un "vediamo".
 
-**Stato: i numeri ci sono, la decisione no.** Misurati il 2026-10-13, build
-completa **con** i tool inclusi (spec §5.2.1).
+**Status (M0): measured, not decided.** M7 recorded the Linux measurements in
+D132, without a hard installer-size gate; see the update at the end of this
+section. Measured on 2026-10-13, full build **with** the bundled tools
+(spec §5.2.1).
 
 **Rimisurati dopo D55**, che ha spostato `bundle` da `ubuntu-22.04` a
 `ubuntu-24.04`: i numeri della prima misura erano su 22.04 e **non valgono piu'**.
@@ -180,7 +182,15 @@ Verificato dentro il `.deb`, non supposto:
 Tutti e tre nello stesso `PATH` di sistema, che e' dove spec §5.2 vuole i tool
 inclusi.
 
-**Cosa scrivere.**
+**M7 update (2026-10-23, English).** The Linux numbers were re-measured with
+the M7 updater enabled: application binary **8.5 MiB**, `.deb` **43.2 MiB**,
+`.rpm` **43.2 MiB**, AppImage **148.9 MiB** (excluded). The application binary
+is under the spec §1 target of 15 MB. The installers are larger because they
+carry the bundled yt-dlp (~38.6 MiB) and qjs; this is expected, and D132
+deliberately sets **no hard installer-size gate**. Windows and macOS numbers
+will come from the first CI bundle on those runners.
+
+**Cosa scrivere.** (historical, pre-M7)
 
 - Budget installer Windows:
 - Budget installer macOS:

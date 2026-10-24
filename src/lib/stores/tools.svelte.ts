@@ -66,8 +66,9 @@ class ToolsStore {
       this.probingEncoders = true;
       try {
         const res = await invoke<EncoderInfo[]>("encoders_probe", { force });
-        this.probedEncoders = res;
-        return res;
+        const list = Array.isArray(res) ? res : [];
+        this.probedEncoders = list;
+        return list;
       } catch {
         return [];
       } finally {
@@ -182,18 +183,19 @@ class ToolsStore {
       if (!isTauriRuntime()) return null;
       unlisten = await listen<ToolProgressEvent>("tool:progress", (event) => {
         const payload = event.payload;
-        if (payload.tool !== tool) return;
+        // Installing ffmpeg also installs its ffprobe companion, so both event
+        // names belong to the same progress bar.
+        const companion = tool === "ffmpeg" && payload.tool === "ffprobe";
+        if (payload.tool !== tool && !companion) return;
         this.installPercent =
           typeof payload.total === "number" && payload.total > 0
             ? Math.min(100, Math.round((payload.received / payload.total) * 100))
             : null;
       });
       const status = normaliseToolStatus(await invoke<ToolStatus>("tools_install", { tool }));
-      this.view = {
-        ...this.view,
-        tools: this.view.tools.map((row) => (row.name === status.name ? status : row)),
-      };
-      this.clearError();
+      // ffmpeg installs ffprobe too, so a single-row patch would leave the
+      // companion stale. Re-read the whole table once, after the download.
+      await this.refresh();
       return status;
     } catch (err) {
       // A cancel is an answer, not a failure; the backend only says the

@@ -7,6 +7,8 @@
 //! - Tree cancellation and partial file cleanup
 //! - Queue engine integration for local file transcription and post-download transcription
 
+#![allow(clippy::collapsible_if)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

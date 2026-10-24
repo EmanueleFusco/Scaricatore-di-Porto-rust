@@ -1,6 +1,12 @@
 //! Scaricatore Di Porto — Tauri builder, plugins and process lifetime
 //! (spec §3 `main.rs / lib.rs`).
 
+// Raising `rust-version` to 1.90 for tauri-plugin-updater switched on Clippy's
+// let-chain rewrite for every nested `if let` in the tree. Those rewrites are
+// unrelated to the update feature and would bury it in churn; the lint stays
+// off until a dedicated cleanup.
+#![allow(clippy::collapsible_if)]
+
 pub mod commands;
 pub mod error;
 pub mod services;
@@ -38,8 +44,95 @@ fn on_exit(app: &tauri::AppHandle) {
     process::kill_all_running();
 }
 
+/// WebKitGTK's default DMA-BUF renderer can die at startup on some Wayland
+/// compositors (for example KDE + NVIDIA) with
+/// `Gdk-Message: Error 71 (Errore di protocollo) dispatching to Wayland display`.
+/// Spec §13.3 prescribes disabling it as the fallback. This is applied before the
+/// webview is created, and an explicit `WEBKIT_DISABLE_DMABUF_RENDERER` value is
+/// always respected.
+fn is_wayland_session(wayland_display: Option<&str>, xdg_session_type: Option<&str>) -> bool {
+    wayland_display.is_some_and(|value| !value.is_empty())
+        || xdg_session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+}
+
+#[cfg(target_os = "linux")]
+fn nvidia_driver_present() -> bool {
+    // The DMA-BUF crash tracked here is specific to NVIDIA's proprietary driver
+    // stack (WebKit bug 280210). Restricting the fallback to NVIDIA avoids
+    // disabling the faster renderer on AMD/Intel systems where it works.
+    std::path::Path::new("/proc/driver/nvidia/version").exists()
+        || std::path::Path::new("/dev/nvidia0").exists()
+}
+
+#[cfg(target_os = "linux")]
+fn apply_webkit_dma_buf_fallback() {
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let user_override = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+
+    if user_override.is_none()
+        && is_wayland_session(wayland_display.as_deref(), xdg_session_type.as_deref())
+        && nvidia_driver_present()
+    {
+        // SAFETY: this runs before Tauri creates the GTK/WebKitGTK backend, and
+        // `set_var` is only called once on this startup path.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_desktop_integration<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
+    use std::fs;
+    if let Ok(data_dir) = crate::services::paths::app_data_dir(handle) {
+        let icon_dir = data_dir.join("icons");
+        let _ = fs::create_dir_all(&icon_dir);
+        let icon_path = icon_dir.join("icon.png");
+        let icon_bytes = include_bytes!("../icons/icon.png");
+        let _ = fs::write(&icon_path, icon_bytes);
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let apps_dir = std::path::PathBuf::from(home).join(".local/share/applications");
+            let _ = fs::create_dir_all(&apps_dir);
+            let icon_str = icon_path.to_string_lossy();
+            let exec_str = std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "scaricatore-di-porto".to_string());
+
+            let entries = [
+                (
+                    "com.scaricatorediporto.app.desktop",
+                    "com.scaricatorediporto.app",
+                ),
+                ("scaricatore-di-porto.desktop", "scaricatore-di-porto"),
+            ];
+
+            for (filename, wm_class) in entries {
+                let desktop_content = format!(
+                    "[Desktop Entry]\n\
+                     Type=Application\n\
+                     Name=Scaricatore Di Porto\n\
+                     Comment=Downloader and transcriber\n\
+                     Exec=\"{}\" %U\n\
+                     Icon={}\n\
+                     Terminal=false\n\
+                     Categories=Utility;Network;\n\
+                     StartupNotify=true\n\
+                     StartupWMClass={}\n",
+                    exec_str, icon_str, wm_class
+                );
+                let _ = fs::write(apps_dir.join(filename), desktop_content);
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    apply_webkit_dma_buf_fallback();
+
     let builder = tauri::Builder::default()
         // Must be the FIRST plugin: a second launch has to be intercepted
         // before any other plugin starts doing work (spec §3 single-instance).
@@ -54,9 +147,26 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Spec §7.7: the notification when the queue becomes idle.
         .plugin(tauri_plugin_notification::init())
+        // Spec §13.4: signed in-app updates, endpoint and public key in
+        // `tauri.conf.json`. The private key never exists in the repository.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Relaunch after an update, from the webview.
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let handle = app.handle().clone();
+            #[cfg(target_os = "linux")]
+            ensure_linux_desktop_integration(&handle);
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon() {
+                    let _ = window.set_icon(icon.clone());
+                }
+            }
             let state = AppState::load(&handle)?;
+            crate::services::logging::append_line(
+                &handle,
+                "INFO",
+                &format!("app started, version {}", handle.package_info().version),
+            );
             // Spec §5.2.1: copy the bundled yt-dlp into the app data dir on
             // first launch, so the copy is the thing that runs and the thing
             // `-U` can replace. Best effort: without it the app still works on
@@ -97,6 +207,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app::app_info,
+            commands::app::app_update_check,
+            commands::app::app_update_install,
+            commands::app::app_diagnostics,
+            commands::app::app_open_logs,
             commands::settings::settings_get,
             commands::settings::settings_save,
             commands::settings::archive_status,
@@ -200,4 +315,34 @@ fn build_queue(handle: &tauri::AppHandle, state: &AppState) -> QueueEngine {
         notify_on_idle: settings.notify_on_idle,
         notifier: Some(notifier),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_wayland_session_from_display() {
+        assert!(is_wayland_session(Some("wayland-1"), None));
+    }
+
+    #[test]
+    fn is_wayland_session_from_xdg_type() {
+        assert!(is_wayland_session(None, Some("wayland")));
+    }
+
+    #[test]
+    fn is_wayland_session_is_case_insensitive() {
+        assert!(is_wayland_session(None, Some("Wayland")));
+    }
+
+    #[test]
+    fn is_wayland_session_rejects_empty_display() {
+        assert!(!is_wayland_session(Some(""), None));
+    }
+
+    #[test]
+    fn is_wayland_session_rejects_x11() {
+        assert!(!is_wayland_session(None, Some("x11")));
+    }
 }

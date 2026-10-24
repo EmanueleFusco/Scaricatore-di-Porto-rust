@@ -70,6 +70,8 @@ pub enum ArchiveKind {
     TarGz,
     /// What BtbN publishes for Linux ffmpeg builds.
     TarXz,
+    /// A single executable compressed with gzip, as `ffmpeg-static` publishes.
+    Gz,
 }
 
 impl ArchiveKind {
@@ -669,12 +671,15 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_carries_yt_dlp_qjs_and_the_deno_fallback() {
+    fn the_manifest_carries_every_on_demand_tool() {
         // Spec §0.7, §5.4: bundled: only yt-dlp and qjs ship in the installer;
-        // Deno and sdp-whisper are downloaded on demand.
+        // Deno, ffmpeg/ffprobe and sdp-whisper are downloaded on demand.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec![YTDLP, DENO, QJS, SDP_WHISPER]);
+        assert_eq!(
+            names,
+            vec![YTDLP, DENO, QJS, "ffmpeg", "ffprobe", SDP_WHISPER]
+        );
 
         let whisper = manifest
             .tool(SDP_WHISPER)
@@ -692,7 +697,7 @@ mod tests {
         assert_eq!(whisper_entry.archive_kind, ArchiveKind::None);
         assert!(
             whisper_entry.is_installable(),
-            "sdp-whisper must carry url + sha256 so the lazy install works"
+            "the published whisper-v1.9.5 assets must be installable"
         );
 
         let deno = manifest.tool(DENO).expect("deno is in the manifest");
@@ -726,30 +731,105 @@ mod tests {
     }
 
     #[test]
-    fn whisper_sidecar_asset_has_url_and_checksum_where_pinned() {
+    fn whisper_sidecar_assets_are_installable_and_use_the_published_release() {
+        // The whisper-v1.9.5 release was published on 2026-10-19. Every
+        // platform entry must point at an asset of that release and carry the
+        // matching SHA-256, otherwise the Install button would be dead.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         let whisper = manifest.tool(SDP_WHISPER).expect("sdp-whisper");
-        assert!(!whisper.platforms.is_empty());
+        let template = whisper.release_url.as_deref().expect("releaseUrl");
         assert_eq!(
-            whisper.release_url.as_deref(),
-            Some(
-                "https://github.com/emanuelefusco/ScaricatoreDiPorto/releases/download/whisper-v1.9.5/{asset}"
-            )
+            template,
+            "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/whisper-v1.9.5/{asset}"
         );
 
-        let linux = whisper
-            .platforms
-            .get("x86_64-unknown-linux-gnu")
-            .expect("x86_64-unknown-linux-gnu entry");
-        assert_eq!(linux.archive_kind, ArchiveKind::None);
-        assert!(
-            linux.url.is_some() && linux.sha256.is_some(),
-            "linux whisper asset must carry url and sha256"
+        let expected = [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "universal-apple-darwin",
+        ];
+        assert_eq!(whisper.platforms.len(), expected.len());
+        for triple in expected {
+            assert!(
+                whisper.platforms.contains_key(triple),
+                "missing sdp-whisper asset for {triple}"
+            );
+        }
+
+        for (triple, entry) in &whisper.platforms {
+            assert_eq!(entry.archive_kind, ArchiveKind::None, "{triple}");
+            let asset = entry.asset.as_deref().expect("asset");
+            let expected_url =
+                resolve_asset_url(template, asset).expect("the release template must resolve");
+            assert_eq!(
+                entry.url.as_deref(),
+                Some(expected_url.as_str()),
+                "{triple}"
+            );
+            assert!(entry.is_installable(), "{triple}");
+        }
+
+        let linux = manifest
+            .entry(SDP_WHISPER, "x86_64-unknown-linux-gnu")
+            .expect("linux x64");
+        assert_eq!(
+            linux.sha256.as_deref(),
+            Some("0addfb2aa67079fdfd74f7ff0cb11f950347625fcc12f80e4326cc81cd66f2ce")
         );
-        assert!(
-            linux.is_installable(),
-            "x86_64-unknown-linux-gnu whisper asset must be installable, not an unpinned entry"
-        );
+    }
+
+    #[test]
+    fn ffmpeg_and_ffprobe_are_pinned_gzip_assets_with_checksums() {
+        // ffmpeg-static publishes one gzip per executable, not an archive.
+        // Both tools must be installable on every platform where an asset
+        // exists; Windows ARM64 has no asset and is deliberately absent.
+        let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
+        for name in ["ffmpeg", "ffprobe"] {
+            let tool = manifest.tool(name).expect(name);
+            assert!(!tool.bundled, "{name} is downloaded on demand");
+            assert_eq!(tool.version.as_deref(), Some("7.0.2"), "{name}");
+            for triple in [
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                "x86_64-pc-windows-msvc",
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+            ] {
+                let entry = manifest
+                    .entry(name, triple)
+                    .unwrap_or_else(|| panic!("{name} is missing its {triple} entry"));
+                assert_eq!(entry.archive_kind, ArchiveKind::Gz, "{name}/{triple}");
+                assert!(
+                    entry.asset.as_deref().is_some_and(|a| a.ends_with(".gz")),
+                    "{name}/{triple}: the asset is the gzip itself"
+                );
+                assert!(
+                    entry.is_installable(),
+                    "{name}/{triple} must be installable"
+                );
+                assert_eq!(
+                    entry.executable(),
+                    Some(if triple.contains("windows") {
+                        if name == "ffmpeg" {
+                            "ffmpeg.exe"
+                        } else {
+                            "ffprobe.exe"
+                        }
+                    } else {
+                        name
+                    }),
+                    "{name}/{triple}"
+                );
+            }
+            assert!(
+                !manifest.supports(name, "aarch64-pc-windows-msvc"),
+                "{name}: no win32-arm64 asset exists, so the platform must be absent"
+            );
+        }
     }
 
     #[test]

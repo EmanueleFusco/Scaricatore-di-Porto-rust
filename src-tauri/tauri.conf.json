@@ -49,14 +49,24 @@
       "freezePrototype": true
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0RjRGNzgyMTFGMDhEMkEKUldRcWpmQVJndmYwTktIblN1b2Rvb3VZbGFkNjFUY0ZEOFZRR0pXRGVIcU9YTDhlQzlrQzE1RmgK",
+      "endpoints": [
+        "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["deb", "rpm", "appimage", "nsis", "app", "dmg"],
     "externalBin": ["binaries/yt-dlp", "binaries/qjs"],
     "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/128x128.png",
+      "icons/32x32.png",
       "icons/icon.icns",
       "icons/icon.ico"
     ],

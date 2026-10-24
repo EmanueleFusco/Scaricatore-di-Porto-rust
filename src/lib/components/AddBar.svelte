@@ -45,7 +45,10 @@
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { modelsStore } from "$lib/stores/models.svelte";
+  import { hasKey } from "$lib/i18n";
   import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
+  import { modelLabelKey } from "$lib/models";
+  import { activeLang } from "$lib/stores/settings.svelte";
 
   /** Which of the two actions a click asked for. */
   type AddMode = "download" | "queue";
@@ -386,7 +389,7 @@
       </select>
     </div>
 
-    <div class="field">
+    <div class="field add__destination">
       <span class="field__label">{tt("queue.folder.label")}</span>
       <div class="add__folder">
         <output class="settings__value">{folderText}</output>
@@ -823,8 +826,9 @@
                         >
                           {#if modelsStore.view.models.length > 0}
                             {#each modelsStore.view.models as model (model.id)}
+                              {@const mKey = modelLabelKey(model.id)}
                               <option value={model.id}>
-                                {model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
+                                {hasKey(activeLang(), mKey) ? tt(mKey) : model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
                               </option>
                             {/each}
                           {:else}
@@ -1095,8 +1099,8 @@
   .add {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-4);
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
     /* Never squeezed: on a window too small for everything, the page scrolls
        (`.queue`), and the textarea keeps its size. */
     flex: none;
@@ -1116,14 +1120,37 @@
   .add__controls {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-4);
+    gap: var(--space-3);
     align-items: flex-end;
+  }
+
+  /* Let the destination field share the row with the quality preset: the
+     folder path truncates instead of pushing the controls onto two rows. */
+  .add__destination {
+    flex: 1 1 300px;
+    min-width: 0;
   }
 
   .add__folder {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
     align-items: center;
+    min-width: 0;
+  }
+
+  .add__folder output {
+    flex: 1 1 140px;
+    min-width: 0;
+    min-height: var(--control-height);
+    padding: 0 var(--space-2);
+    overflow: hidden;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    line-height: var(--control-height);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .add__rows {
@@ -1133,7 +1160,9 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    max-height: min(70vh, 720px);
+    /* A long inspection list scrolls inside the card so the queue below it
+       keeps a usable height. */
+    max-height: min(32vh, 360px);
     overflow-y: auto;
   }
 
@@ -1255,7 +1284,7 @@
   .add__footer {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-3);
+    gap: var(--space-2) var(--space-3);
     align-items: center;
     justify-content: space-between;
   }
@@ -1264,6 +1293,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+    flex: 1 1 220px;
     min-width: 0;
   }
 
@@ -1271,6 +1301,7 @@
     display: flex;
     gap: var(--space-2);
     flex-wrap: wrap;
+    flex: none;
   }
 
   .add__error {
