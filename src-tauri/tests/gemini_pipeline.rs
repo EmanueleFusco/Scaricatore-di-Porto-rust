@@ -234,7 +234,7 @@ fn serve_gemini_request(
         // Step 1: Resumable upload start -> return upload URL
         let upload_url = format!("http://127.0.0.1:{}/resumable-upload/mock-file-123", port);
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nx-goog-upload-url: {}\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nx-goog-upload-url: {}\r\nContent-Length: 0\r\n\r\n",
             upload_url
         );
         let _ = stream.write_all(resp.as_bytes());
@@ -242,7 +242,7 @@ fn serve_gemini_request(
         // Step 2: Upload streamed bytes -> return UploadedFile JSON
         let json = r#"{"file":{"name":"files/mock-file-123","uri":"https://generativelanguage.googleapis.com/v1beta/files/mock-file-123","state":"PROCESSING"}}"#;
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             json.len(),
             json
         );
@@ -263,7 +263,7 @@ fn serve_gemini_request(
             }
         };
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             json.len(),
             json
         );
@@ -274,7 +274,7 @@ fn serve_gemini_request(
             MockBehavior::FailGenerateContent404 => {
                 let json = r#"{"error":{"code":404,"message":"models/gemini-2.5-flash is not found for API version v1beta, or is not supported for generateContent","status":"NOT_FOUND"}}"#;
                 let resp = format!(
-                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -283,7 +283,7 @@ fn serve_gemini_request(
             MockBehavior::FailGenerateContent500 => {
                 let json = r#"{"error":{"code":500,"message":"Internal server error","status":"INTERNAL"}}"#;
                 let resp = format!(
-                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -294,7 +294,7 @@ fn serve_gemini_request(
                 if count == 0 {
                     let json = r#"{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}"#;
                     let resp = format!(
-                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         json.len(),
                         json
                     );
@@ -302,7 +302,7 @@ fn serve_gemini_request(
                 } else {
                     let json = r#"{"candidates":[{"content":{"parts":[{"text":"Transcribed text after quota backoff."}]},"finishReason":"STOP"}]}"#;
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         json.len(),
                         json
                     );
@@ -314,7 +314,7 @@ fn serve_gemini_request(
                 thread::sleep(Duration::from_secs(5));
                 let json = r#"{"candidates":[{"content":{"parts":[{"text":"Late response"}]},"finishReason":"STOP"}]}"#;
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -335,7 +335,7 @@ fn serve_gemini_request(
                 })
                 .to_string();
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -349,7 +349,7 @@ fn serve_gemini_request(
                 })
                 .to_string();
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -380,7 +380,7 @@ fn serve_gemini_request(
                 })
                 .to_string();
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     json.len(),
                     json
                 );
@@ -391,7 +391,7 @@ fn serve_gemini_request(
         // Step 5: DELETE file cleanup
         let json = r#"{"status":"DELETED"}"#;
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             json.len(),
             json
         );
@@ -427,13 +427,13 @@ fn serve_gemini_request(
             ]
         }"#;
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             json.len(),
             json
         );
         let _ = stream.write_all(resp.as_bytes());
     } else {
-        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        let resp = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         let _ = stream.write_all(resp.as_bytes());
     }
 }

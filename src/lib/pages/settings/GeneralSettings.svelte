@@ -75,7 +75,7 @@
     clampCap(value, min, max, fallback);
 </script>
 
-<section class="settings__group" aria-labelledby="heading-lang">
+<section class="card settings__group" aria-labelledby="heading-lang">
   <h2 class="settings__group-title" id="heading-lang">{tt("settings.section.language")}</h2>
 
   <div class="field">

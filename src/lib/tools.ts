@@ -186,6 +186,25 @@ export function canUseOwnPath(tool: ToolStatus): boolean {
   return tool.availableOnPlatform;
 }
 
+/** i18n key for a tool's human-readable role. */
+export function toolRoleKey(name: string): string {
+  return `tools.role.${name}`;
+}
+
+/** Split a `--version` banner into its primary headline and any remaining build lines. */
+export function splitToolBanner(banner: string | null): { headline: string; details: string | null } | null {
+  if (!banner) return null;
+  const lines = banner
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  if (lines.length === 0) return null;
+  return {
+    headline: lines[0],
+    details: lines.length > 1 ? lines.slice(1).join("\n") : null,
+  };
+}
+
 /** Should the footer show the red "tools need attention" dot (spec §11.2)? */
 export function hasToolProblem(tools: readonly ToolStatus[]): boolean {
   return tools.some((tool) => toolState(tool).problem);

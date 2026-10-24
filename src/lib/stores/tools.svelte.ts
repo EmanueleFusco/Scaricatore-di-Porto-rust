@@ -66,8 +66,9 @@ class ToolsStore {
       this.probingEncoders = true;
       try {
         const res = await invoke<EncoderInfo[]>("encoders_probe", { force });
-        this.probedEncoders = res;
-        return res;
+        const list = Array.isArray(res) ? res : [];
+        this.probedEncoders = list;
+        return list;
       } catch {
         return [];
       } finally {

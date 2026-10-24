@@ -13,6 +13,7 @@
   import TranscriptionSettings from "$lib/pages/settings/TranscriptionSettings.svelte";
   import ToolsPage from "$lib/pages/ToolsPage.svelte";
   import { router } from "$lib/router.svelte";
+  import { aboutStore } from "$lib/stores/about.svelte";
   import { tt } from "$lib/stores/settings.svelte";
 
   const tabs = [
@@ -42,6 +43,9 @@
         onclick={(event) => router.follow(event, tab.href)}
       >
         {tt(tab.key)}
+        {#if tab.href === "/settings/about" && aboutStore.updateAvailable}
+          <span class="settings__tab-dot" aria-hidden="true"></span>
+        {/if}
       </a>
     {/each}
   </nav>
@@ -64,6 +68,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+    width: 100%;
     max-width: 720px;
     margin: 0 auto;
   }
@@ -74,21 +79,36 @@
 
   .settings__tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-1);
     border-bottom: 1px solid var(--border);
   }
 
   /* Current tab: bold plus an underline, never colour alone (spec §11.9). */
   .settings__tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
     padding: var(--space-2) var(--space-3);
     border-bottom: 2px solid transparent;
     color: var(--text-muted);
     text-decoration: none;
   }
 
+  .settings__tab:hover {
+    color: var(--text);
+  }
+
   .settings__tab[aria-current="page"] {
     border-bottom-color: var(--accent);
     color: var(--text);
     font-weight: 700;
+  }
+
+  .settings__tab-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
   }
 </style>

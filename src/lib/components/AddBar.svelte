@@ -45,7 +45,10 @@
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { modelsStore } from "$lib/stores/models.svelte";
+  import { hasKey } from "$lib/i18n";
   import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
+  import { modelLabelKey } from "$lib/models";
+  import { activeLang } from "$lib/stores/settings.svelte";
 
   /** Which of the two actions a click asked for. */
   type AddMode = "download" | "queue";
@@ -823,8 +826,9 @@
                         >
                           {#if modelsStore.view.models.length > 0}
                             {#each modelsStore.view.models as model (model.id)}
+                              {@const mKey = modelLabelKey(model.id)}
                               <option value={model.id}>
-                                {model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
+                                {hasKey(activeLang(), mKey) ? tt(mKey) : model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
                               </option>
                             {/each}
                           {:else}

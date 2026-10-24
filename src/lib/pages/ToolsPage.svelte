@@ -14,9 +14,18 @@
   import WrenchIcon from "lucide-svelte/icons/wrench";
   import { open } from "@tauri-apps/plugin-dialog";
   import SetupWizard from "$lib/components/SetupWizard.svelte";
-  import { canUpdate, canUseOwnPath, toolState, wizardToolNames } from "$lib/tools";
+  import { hasKey } from "$lib/i18n";
+  import {
+    canUpdate,
+    canUseOwnPath,
+    splitToolBanner,
+    toolRoleKey,
+    toolState,
+    wizardToolNames,
+    type ToolStatus,
+  } from "$lib/tools";
   import { toolsStore } from "$lib/stores/tools.svelte";
-  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { activeLang, errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
 
   let wizardOpen = $state(false);
 
@@ -42,6 +51,11 @@
     if (typeof picked === "string") {
       await toolsStore.setToolPath(name, picked);
     }
+  }
+
+  function roleLabel(tool: ToolStatus): string {
+    const key = toolRoleKey(tool.name);
+    return hasKey(activeLang(), key) ? tt(key) : tool.role;
   }
 </script>
 
@@ -96,9 +110,11 @@
           {@const state = toolState(tool)}
           <tr>
             <th scope="row" class="tools__name">
-              <span>{tool.name}</span>
-              {#if tool.bundled}<span class="tools__badge">{tt("tools.badge.bundled")}</span>{/if}
-              {#if tool.role}<span class="field__hint">{tool.role}</span>{/if}
+              <div class="tools__name-head">
+                <span>{tool.name}</span>
+                {#if tool.bundled}<span class="tools__badge">{tt("tools.badge.bundled")}</span>{/if}
+              </div>
+              {#if tool.role}<span class="field__hint">{roleLabel(tool)}</span>{/if}
             </th>
             <td>{tool.source ? tt(`tools.source.${tool.source}`) : "—"}</td>
             <td>
@@ -118,7 +134,7 @@
               {#if canUpdate(tool)}
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn--small"
                   disabled={toolsStore.busy}
                   onclick={() => void toolsStore.updateYtdlp()}
                 >
@@ -128,7 +144,7 @@
               {#if tool.installable && !tool.path}
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn--small btn--primary"
                   disabled={toolsStore.busy}
                   onclick={() => void toolsStore.install(tool.name)}
                 >
@@ -143,7 +159,7 @@
                 {#if toolsStore.installingTool === tool.name}
                   <button
                     type="button"
-                    class="btn"
+                    class="btn btn--small"
                     onclick={() => void toolsStore.cancelInstall()}
                   >
                     {tt("tools.action.cancel")}
@@ -154,7 +170,7 @@
               {/if}
               <button
                 type="button"
-                class="btn"
+                class="btn btn--small"
                 disabled={toolsStore.busy}
                 onclick={() => void toolsStore.test(tool.name)}
               >
@@ -163,18 +179,18 @@
               {#if canUseOwnPath(tool)}
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn--small"
                   disabled={toolsStore.busy}
                   onclick={() => void chooseOwnPath(tool.name)}
                 >
-                  <FolderOpenIcon size={16} aria-hidden="true" focusable="false" />
+                  <FolderOpenIcon size={14} aria-hidden="true" focusable="false" />
                   {tt("tools.action.ownPath")}
                 </button>
               {/if}
               {#if tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])}
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn--small"
                   disabled={toolsStore.busy}
                   onclick={() => void toolsStore.setToolPath(tool.name, null)}
                 >
@@ -184,11 +200,18 @@
             </td>
           </tr>
           {#if tool.path}
+            {@const bannerParts = splitToolBanner(tool.banner)}
             <tr>
               <td class="tools__detail" colspan="5">
                 <span class="tools__path">{tool.path}</span>
-                {#if tool.banner}
-                  <span class="field__hint">{tool.banner}</span>
+                {#if bannerParts}
+                  <span class="tools__banner-head field__hint">{bannerParts.headline}</span>
+                  {#if bannerParts.details}
+                    <details class="tools__banner-details">
+                      <summary>{tt("common.technicalDetails")}</summary>
+                      <pre>{bannerParts.details}</pre>
+                    </details>
+                  {/if}
                 {/if}
               </td>
             </tr>
@@ -352,27 +375,35 @@
 
   .tools__name {
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-2);
+    flex-direction: column;
+    gap: 2px;
     font-weight: 600;
   }
 
+  .tools__name-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   .tools__badge {
-    padding: 0 var(--space-2);
+    padding: 1px var(--space-2);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
     font-size: 10px;
     text-transform: uppercase;
     color: var(--text-muted);
+    white-space: nowrap;
   }
 
   .tools__status {
     display: inline-block;
-    padding: 0 var(--space-2);
+    padding: 2px var(--space-2);
     border-radius: var(--radius-sm);
     font-size: 11px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
+    white-space: nowrap;
   }
 
   .tools__status[data-state="notInstalled"],
@@ -384,11 +415,13 @@
   .tools__actions {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: var(--space-1);
+    align-items: center;
   }
 
   .tools__detail {
     background: var(--surface-2);
+    padding: var(--space-2) var(--space-3);
   }
 
   .tools__path {
@@ -398,15 +431,56 @@
     word-break: break-all;
   }
 
+  .tools__banner-head {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  .tools__banner-details {
+    margin-top: var(--space-1);
+    font-size: 11px;
+  }
+
+  .tools__banner-details summary {
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  .tools__banner-details pre {
+    margin: var(--space-1) 0 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text-muted);
+  }
+
   .tools__group {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+    padding: var(--space-4);
     align-items: flex-start;
   }
 
+  .tools__group .field {
+    width: 100%;
+    max-width: 360px;
+  }
+
+  .tools__group .tools__note {
+    width: 100%;
+  }
+
   .tools__group-title {
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 700;
   }
 
   .tools__paths {

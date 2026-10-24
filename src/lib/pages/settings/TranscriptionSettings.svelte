@@ -29,9 +29,18 @@
     testGeminiKey,
     type GeminiKeyStatus,
   } from "$lib/gemini.svelte";
-  import { filterModels, formatBytes, formatWer, isLargeDownload, type ModelViewItem } from "$lib/models";
+  import { hasKey } from "$lib/i18n";
+  import {
+    filterModels,
+    formatBytes,
+    formatWer,
+    isLargeDownload,
+    modelLabelKey,
+    modelNotesKey,
+    type ModelViewItem,
+  } from "$lib/models";
   import { modelsStore } from "$lib/stores/models.svelte";
-  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { activeLang, errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
 
   let geminiStatus = $state<GeminiKeyStatus | null>(null);
   let geminiInputKey = $state("");
@@ -225,6 +234,16 @@
     const value = (event.currentTarget as HTMLInputElement).value.trim();
     void settingsStore.update({ whisperModelsMirrorUrl: value !== "" ? value : null });
   }
+
+  function localizedModelLabel(model: ModelViewItem): string {
+    const key = modelLabelKey(model.id);
+    return hasKey(activeLang(), key) ? tt(key) : model.label;
+  }
+
+  function localizedModelNotes(model: ModelViewItem): string | null {
+    const key = modelNotesKey(model.id);
+    return hasKey(activeLang(), key) ? tt(key) : model.notes;
+  }
 </script>
 
 <div class="transcription-page">
@@ -341,29 +360,30 @@
       <div class="models-header__actions">
         <button
           type="button"
-          class="btn btn--secondary"
+          class="btn btn--secondary btn--small"
           disabled={modelsStore.busy}
           onclick={importModelFile}
         >
-          <UploadIcon size={16} aria-hidden="true" />
+          <UploadIcon size={14} aria-hidden="true" />
           {tt("transcription.models.importButton")}
         </button>
 
         <button
           type="button"
-          class="btn btn--secondary"
+          class="btn btn--secondary btn--small"
           onclick={() => void modelsStore.openFolder()}
         >
-          <FolderOpenIcon size={16} aria-hidden="true" />
+          <FolderOpenIcon size={14} aria-hidden="true" />
           {tt("transcription.models.openFolder")}
         </button>
 
         <button
           type="button"
-          class="btn btn--ghost"
+          class="btn btn--ghost btn--icon"
           disabled={modelsStore.loading}
           onclick={() => void modelsStore.refresh()}
           aria-label={tt("common.refresh")}
+          title={tt("common.refresh")}
         >
           <RefreshCwIcon size={16} aria-hidden="true" />
         </button>
@@ -435,7 +455,7 @@
                   value={model.id}
                   checked={isActive}
                   disabled={!isInstalled}
-                  aria-label={tt("transcription.models.setActive", { name: model.label })}
+                  aria-label={tt("transcription.models.setActive", { name: localizedModelLabel(model) })}
                   onchange={() => void modelsStore.setActive(model.id)}
                 />
               </td>
@@ -443,7 +463,7 @@
               <!-- Model info -->
               <td class="col-model">
                 <div class="model-name-group">
-                  <span class="model-name">{model.label}</span>
+                  <span class="model-name">{localizedModelLabel(model)}</span>
                   {#if model.recommended}
                     <span class="badge badge--recommended">
                       {tt("transcription.models.recommendedBadge")}
@@ -456,8 +476,8 @@
                   {/if}
                 </div>
                 <span class="model-filename">{model.file}</span>
-                {#if model.notes}
-                  <span class="model-notes">{model.notes}</span>
+                {#if localizedModelNotes(model)}
+                  <span class="model-notes">{localizedModelNotes(model)}</span>
                 {/if}
               </td>
 
@@ -685,7 +705,7 @@
           />
           <button
             type="button"
-            class="btn-icon"
+            class="password-toggle"
             onclick={() => (showGeminiKey = !showGeminiKey)}
             aria-label={showGeminiKey
               ? tt("transcription.gemini.hideKey")
@@ -887,17 +907,18 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-3);
-    margin-bottom: var(--space-2);
   }
 
   .models-header__title-block {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2) var(--space-3);
   }
 
   .models-header__actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
@@ -905,7 +926,7 @@
   .disk-space-badge {
     font-size: 12px;
     color: var(--text-muted);
-    background: var(--bg-surface);
+    background: var(--surface-2);
     padding: 2px 8px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
@@ -915,21 +936,23 @@
     display: flex;
     align-items: center;
     padding: var(--space-2) var(--space-3);
-    background: var(--bg-surface);
-    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border-radius: var(--radius-md);
     border: 1px solid var(--border);
     font-size: 13px;
-    margin-bottom: var(--space-3);
   }
 
   .vad-banner__info {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
 
   .models-table-wrapper {
     overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
   }
 
   .models-table {
@@ -943,19 +966,30 @@
   .models-table td {
     padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .models-table tbody tr:last-child td {
+    border-bottom: none;
   }
 
   .models-table th {
+    background: var(--surface-2);
     color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     font-weight: 600;
+    white-space: nowrap;
   }
 
   .row--active {
-    background-color: rgba(var(--accent-rgb, 59, 130, 246), 0.08);
+    background-color: var(--accent-surface);
   }
 
   .model-name-group {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
@@ -969,39 +1003,43 @@
     font-size: 11px;
     color: var(--text-muted);
     font-family: var(--font-mono, monospace);
+    margin-top: 2px;
   }
 
   .model-notes {
     display: block;
     font-size: 11px;
     color: var(--text-muted);
+    margin-top: 2px;
   }
 
   .badge {
+    display: inline-block;
     font-size: 11px;
     padding: 1px 6px;
     border-radius: var(--radius-sm);
-    font-weight: 500;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .badge--recommended {
     background: var(--accent);
-    color: white;
+    color: var(--on-accent);
   }
 
   .badge--advanced {
-    background: var(--bg-surface);
+    background: var(--surface-2);
     border: 1px solid var(--border);
     color: var(--text-muted);
   }
 
   .badge--success {
-    background: rgba(34, 197, 94, 0.15);
-    color: #16a34a;
+    background: var(--success-surface);
+    color: var(--success);
   }
 
   .badge--neutral {
-    background: var(--bg-surface);
+    background: var(--surface-2);
     border: 1px solid var(--border);
     color: var(--text-muted);
   }
@@ -1013,6 +1051,7 @@
     padding: 2px 6px;
     border: 1px solid var(--accent);
     border-radius: var(--radius-sm);
+    white-space: nowrap;
   }
 
   .downloading-widget {
@@ -1076,16 +1115,16 @@
   }
 
   .btn-icon:hover {
-    background: var(--bg-surface);
+    background: var(--surface-hover);
     color: var(--text);
   }
 
   .btn-icon--danger:hover {
-    color: #ef4444;
+    color: var(--danger);
   }
 
   .confirm-download-row {
-    background: rgba(245, 158, 11, 0.1);
+    background: var(--warning-surface);
   }
 
   .confirm-download-banner {
@@ -1112,8 +1151,13 @@
   .toggle-item {
     display: flex;
     align-items: flex-start;
-    gap: var(--space-3);
+    gap: var(--space-2);
     cursor: pointer;
+  }
+
+  .toggle-item input[type="checkbox"] {
+    margin-top: 3px;
+    flex: none;
   }
 
   .toggle-item__text {
@@ -1123,8 +1167,9 @@
   }
 
   .toggle-item__title {
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
   }
 
   .toggle-item__hint {
@@ -1135,6 +1180,7 @@
   .ram-text {
     font-size: 12px;
     color: var(--text-muted);
+    white-space: nowrap;
   }
 
   .text-muted {
@@ -1142,32 +1188,30 @@
   }
 
   .text-danger {
-    color: #ef4444;
+    color: var(--danger);
   }
 
   .badge--muted {
-    background: var(--bg-surface);
+    background: var(--surface-2);
     border: 1px solid var(--border);
     color: var(--text-muted);
   }
 
   .banner--info {
-    background: rgba(59, 130, 246, 0.1);
-    border: 1px solid rgba(59, 130, 246, 0.25);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
     color: var(--text);
-    padding: var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
-    margin-bottom: var(--space-3);
     font-size: 13px;
   }
 
   .banner--success {
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    color: #16a34a;
+    background: var(--success-surface);
+    border: 1px solid var(--success);
+    color: var(--success);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
-    margin-bottom: var(--space-3);
     font-size: 13px;
   }
 
@@ -1182,8 +1226,8 @@
     position: relative;
     display: flex;
     align-items: center;
-    flex: 1;
-    min-width: 240px;
+    flex: 1 1 240px;
+    min-width: 200px;
   }
 
   .input--password {
@@ -1191,11 +1235,12 @@
     padding-right: 36px;
   }
 
-  .btn-icon {
+  .password-toggle {
     position: absolute;
     right: 8px;
     background: none;
     border: none;
+    border-radius: var(--radius-sm);
     color: var(--text-muted);
     cursor: pointer;
     display: flex;
@@ -1204,7 +1249,8 @@
     padding: 4px;
   }
 
-  .btn-icon:hover {
+  .password-toggle:hover {
+    background: var(--surface-hover);
     color: var(--text);
   }
 
@@ -1212,7 +1258,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 4px;
+    gap: var(--space-2);
+  }
+
+  .input[type="number"] {
+    max-width: 120px;
   }
 
   @keyframes spin {

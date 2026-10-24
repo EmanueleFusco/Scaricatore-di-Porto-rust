@@ -9,6 +9,8 @@ import {
   normaliseToolStatus,
   normaliseToolsView,
   readyToolCount,
+  splitToolBanner,
+  toolRoleKey,
   toolState,
   WIZARD_STEPS,
   wizardIndex,
@@ -337,6 +339,37 @@ describe("the dictionaries", () => {
       expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
       expect(hasKey("en", key), `en is missing ${key}`).toBe(true);
     }
+  });
+
+  it("carries a localized role for every manifest tool", () => {
+    for (const name of ["yt-dlp", "qjs", "deno", "ffmpeg", "ffprobe", "sdp-whisper"]) {
+      const key = toolRoleKey(name);
+      expect(hasKey("it", key), `it is missing ${key}`).toBe(true);
+      expect(hasKey("en", key), `en is missing ${key}`).toBe(true);
+    }
+  });
+});
+
+describe("splitToolBanner()", () => {
+  it("returns null for empty or blank banners", () => {
+    expect(splitToolBanner(null)).toBeNull();
+    expect(splitToolBanner("   \n  ")).toBeNull();
+  });
+
+  it("extracts a single-line headline with null details", () => {
+    expect(splitToolBanner("2026.08.19")).toEqual({
+      headline: "2026.08.19",
+      details: null,
+    });
+  });
+
+  it("splits multi-line ffmpeg banners into headline and details", () => {
+    const raw =
+      "ffmpeg version n9.0.2 Copyright (c) 2000-2026\nbuilt with gcc 15.2.1\nconfiguration: --prefix=/usr";
+    expect(splitToolBanner(raw)).toEqual({
+      headline: "ffmpeg version n9.0.2 Copyright (c) 2000-2026",
+      details: "built with gcc 15.2.1\nconfiguration: --prefix=/usr",
+    });
   });
 });
 

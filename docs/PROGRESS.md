@@ -4493,3 +4493,33 @@ Branch `m4-media-processing`.
 - Found, not fixed (UI, not docs): `job.deno.body`, `job.whisper.body` and
   `tools.selfTest.hint` show "spec §…" references to end users.
 - Next step: unchanged.
+
+## 2026-10-24 — M7 / UI polish, localization fixes, and non-modal update banner
+
+- Done:
+  - Audited the M7 implementation across backend, CI, packaging, updater, and UI against `docs/RUST_PORT_GUIDELINES.md` and the four user-provided screenshots.
+  - Added missing theme design tokens (`--accent-surface`, `--success`, `--success-surface`, `--warning`, `--warning-surface`) and shared button/control classes (`.btn--secondary`, `.btn--ghost`, `.btn--danger`, `.btn--small` / `.btn--sm`, `.btn--icon`, `.select--small`, `.settings__group`, `.settings__group-title`) to `src/lib/styles/app.css`.
+  - Styled `.select` with `appearance: none` and an inline SVG chevron so `<select>` controls match `.input` and `.btn` across Linux/WebKitGTK, Windows, and macOS without native GTK3 glossy bevels.
+  - Fixed card padding (`var(--space-4)` = 16 px) across `ToolsPage.svelte`, `AboutPage.svelte`, `GeneralSettings.svelte`, and `NetworkSettings.svelte`, and fixed `SettingsPage.svelte` / `AboutPage.svelte` width (`width: 100%`) so the About tab cards fill the full 720 px tab-strip width instead of shrinking to content.
+  - Fixed the `.btn-icon` CSS selector collision in `TranscriptionSettings.svelte`: renamed the Gemini password eye button to `.password-toggle` (`position: absolute; right: 8px;`) so `.btn-icon` action buttons (Pause, Resume, Cancel, Delete) in the Whisper models table stay inline inside their table cell.
+  - Localized tool role labels (`tools.role.<name>`) and Whisper model labels/notes (`models.label.<id>`, `models.notes.<id>`) in `it.json` and `en.json`, wired via `toolRoleKey()`, `modelLabelKey()`, and `modelNotesKey()` in `ToolsPage.svelte`, `SetupWizard.svelte`, `TranscriptionSettings.svelte`, and `AddBar.svelte`.
+  - Collapsed multi-line `ffmpeg`/`ffprobe` version banners via `splitToolBanner()` so only the first headline line is shown by default and GCC build flags are tucked into `<details><summary>Technical details</summary><pre>…</pre></details>`.
+  - Prevented status badges (`.tools__status`, `.tools__badge`) from wrapping mid-phrase (`white-space: nowrap`) and filtered the redundant `ffprobe` row from Setup Wizard step 2 (since `ffmpeg` installs both).
+  - Fixed Setup Wizard `<select>` / control focus-ring clipping by adding negative margin + compensating padding on `.wizard__body`, and styled the close button and footer border.
+  - Removed developer jargon (`(spec §5.3)`, `(spec §5.4)`, `(spec §5.3.6)`, `(M3)`) from user-visible strings in `it.json` and `en.json`.
+  - Wired the non-modal top update banner in `App.svelte` and the update-available indicator dot on the About tab in `SettingsPage.svelte` (spec §13.4).
+  - Hardened `toolsStore.probeEncoders()` to normalise non-array IPC responses to `[]`.
+  - Fixed a connection-pool race in `src-tauri/tests/gemini_pipeline.rs` by adding `Connection: close` to the single-request `MockGeminiServer` HTTP responses so `reqwest` does not reuse a closing socket for the RAII `DELETE` call.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test )` → 441 unit + 193 integration = **634 passed, 0 failed, 5 ignored**.
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → **16 files, 338 tests passed** (added unit tests for `toolRoleKey`, `splitToolBanner`, `modelLabelKey`, and `modelNotesKey`).
+  - `npm run build` → pass.
+  - Offscreen WebKit2GTK visual snapshots (`WebKit2.WebView.get_snapshot`) across Queue, Settings (General, Transcription, Tools, Network, About), and Setup Wizard steps 1–3 → verified all layout, padding, localization, badge wrapping, focus ring, and `<select>` appearance fixes.
+- Not verified / stubbed:
+  - Live self-update banner action requires a published GitHub release with `latest.json`.
+- Spec items marked "verify" that I checked: none new in this step.
+- Decisions/deviations (also in DECISIONS.md): none new (follows spec §11 and §13.4).
+- Next step: back up the updater signing key, configure GitHub Actions secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publish the signed release.

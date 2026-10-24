@@ -222,14 +222,14 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 720px;
-    margin: 0 auto;
+    width: 100%;
   }
 
   .about__hero {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-3);
+    padding: var(--space-4);
   }
 
   .about__name {
@@ -238,11 +238,18 @@
 
   .about__tagline {
     color: var(--text-muted);
+    margin-top: 2px;
   }
 
   .about__version {
+    display: inline-block;
+    align-self: flex-start;
+    padding: 2px var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .about__facts {
@@ -267,11 +274,13 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+    padding: var(--space-4);
     align-items: flex-start;
   }
 
   .about__group-title {
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 700;
   }
 
   .about__actions {
@@ -315,12 +324,15 @@
 
   .about__paths {
     width: 100%;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border);
     font-size: 12px;
   }
 
   .about__paths summary {
     cursor: pointer;
     color: var(--text-muted);
+    font-weight: 600;
   }
 
   .about__paths dl {
@@ -341,10 +353,11 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2);
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
+    background: var(--surface-2);
   }
 
   .about__license > div {

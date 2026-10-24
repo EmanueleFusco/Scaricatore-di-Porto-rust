@@ -38,7 +38,7 @@
   }
 </script>
 
-<section class="settings__group" aria-labelledby="heading-runtime">
+<section class="card settings__group" aria-labelledby="heading-runtime">
   <h2 class="settings__group-title" id="heading-runtime">
     {tt("settings.section.network")}
   </h2>

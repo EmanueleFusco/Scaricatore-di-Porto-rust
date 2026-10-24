@@ -17,11 +17,12 @@
   import RefreshCwIcon from "lucide-svelte/icons/refresh-cw";
   import XIcon from "lucide-svelte/icons/x";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { languageName, type LangPreference } from "$lib/i18n";
-  import { formatBytes, type ModelViewItem } from "$lib/models";
+  import { languageName, hasKey, type LangPreference } from "$lib/i18n";
+  import { formatBytes, modelLabelKey, type ModelViewItem } from "$lib/models";
   import type { ThemePreference } from "$lib/theme";
   import {
     readyToolCount,
+    toolRoleKey,
     toolState,
     wizardNext,
     wizardPrevious,
@@ -30,7 +31,7 @@
     type WizardStep,
   } from "$lib/tools";
   import { modelsStore } from "$lib/stores/models.svelte";
-  import { errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
+  import { activeLang, errorText, settingsStore, tt } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
 
   interface Props {
@@ -49,9 +50,14 @@
 
   const index = $derived(WIZARD_STEPS.indexOf(step));
   const isLast = $derived(index === WIZARD_STEPS.length - 1);
-  const ready = $derived(readyToolCount(toolsStore.view.tools));
+  // Filter out `ffprobe` from the wizard list: installing `ffmpeg` installs both
+  // in one action (D126), so showing a separate ffprobe row is redundant.
+  const wizardTools = $derived(
+    toolsStore.view.tools.filter((tool) => tool.name !== "ffprobe"),
+  );
+  const ready = $derived(readyToolCount(wizardTools));
   const rows = $derived(
-    toolsStore.view.tools
+    wizardTools
       .slice()
       .sort((left, right) => {
         const order = (tool: ToolStatus): number => {
@@ -142,6 +148,16 @@
     return tt("tools.action.install");
   }
 
+  function roleLabel(tool: ToolStatus): string {
+    const key = toolRoleKey(tool.name);
+    return hasKey(activeLang(), key) ? tt(key) : tool.role;
+  }
+
+  function localizedModelLabel(model: ModelViewItem): string {
+    const key = modelLabelKey(model.id);
+    return hasKey(activeLang(), key) ? tt(key) : model.label;
+  }
+
   function modelStateLabel(model: ModelViewItem): string {
     if (model.state.kind === "installed") return tt("wizard.transcription.installed");
     if (model.state.kind === "downloading") {
@@ -215,7 +231,12 @@
         {tt("wizard.title")}
         <span class="wizard__counter">{index + 1} / {WIZARD_STEPS.length}</span>
       </h2>
-      <button type="button" class="btn" onclick={() => void finish()} aria-label={tt("common.close")}>
+      <button
+        type="button"
+        class="btn btn--ghost btn--icon"
+        onclick={() => void finish()}
+        aria-label={tt("common.close")}
+      >
         <XIcon size={16} aria-hidden="true" focusable="false" />
       </button>
     </header>
@@ -278,8 +299,8 @@
             {@const state = toolState(tool)}
             <li class="wizard__tool" class:wizard__tool--problem={state.problem}>
               <span class="wizard__tool-name">
-                {tool.name}
-                {#if tool.role}<span class="field__hint">{tool.role}</span>{/if}
+                <span>{tool.name}</span>
+                {#if tool.role}<span class="field__hint">{roleLabel(tool)}</span>{/if}
               </span>
               <span class="wizard__tool-state" data-state={state.state}>{tt(state.key)}</span>
               {#if tool.version}
@@ -288,7 +309,7 @@
               {#if tool.installable && !tool.path}
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn--small"
                   disabled={toolsStore.busy}
                   onclick={() => void toolsStore.install(tool.name)}
                 >
@@ -366,7 +387,7 @@
         {#if recommendedModel}
           <div class="wizard__model">
             <div>
-              <span class="wizard__model-name">{recommendedModel.label}</span>
+              <span class="wizard__model-name">{localizedModelLabel(recommendedModel)}</span>
               <span class="field__hint">
                 {tt("wizard.transcription.modelHint", {
                   size: formatBytes(recommendedModel.sizeBytes),
@@ -555,7 +576,10 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    padding-right: var(--space-1);
+    /* Reserve space inside the scroll box so focus outlines (2px + 2px offset)
+       on inputs, selects and buttons are never clipped at the edges. */
+    margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2));
+    padding: var(--space-1) var(--space-2);
   }
 
   .wizard__grid {
@@ -576,11 +600,12 @@
   .wizard__tool {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-2);
-    padding: var(--space-2);
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
+    background: var(--surface-2);
   }
 
   .wizard__tool--problem {
@@ -590,15 +615,18 @@
   .wizard__tool-name {
     display: flex;
     flex-direction: column;
+    gap: 2px;
     font-weight: 600;
-    min-width: 120px;
+    flex: 1 1 180px;
+    min-width: 140px;
   }
 
   .wizard__tool-state {
-    padding: 0 var(--space-2);
-    border: 1px solid var(--border);
+    padding: 2px var(--space-2);
+    border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
     font-size: 11px;
+    white-space: nowrap;
   }
 
   .wizard__tool-state[data-state="notInstalled"],
@@ -681,5 +709,7 @@
     gap: var(--space-2);
     justify-content: flex-end;
     flex: none;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
   }
 </style>

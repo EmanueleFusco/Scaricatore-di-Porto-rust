@@ -5,6 +5,9 @@
    */
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { relaunch } from "@tauri-apps/plugin-process";
+  import XIcon from "lucide-svelte/icons/x";
+  import { canSelfUpdate } from "$lib/about";
   import FooterStatus from "$lib/components/FooterStatus.svelte";
   import SetupWizard from "$lib/components/SetupWizard.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -21,6 +24,23 @@
 
   /** Spec §11.1: the wizard shows once. */
   let wizardOpen = $state(false);
+  let updateBannerDismissed = $state(false);
+
+  const showUpdateBanner = $derived(
+    aboutStore.updateAvailable &&
+      !updateBannerDismissed &&
+      aboutStore.update?.version &&
+      !router.isActive("/settings/about"),
+  );
+  const queueIdle = $derived(queueStore.summary.running === 0);
+  const selfUpdate = $derived(canSelfUpdate(aboutStore.bundleType));
+
+  async function installAndRestart(): Promise<void> {
+    const ok = await aboutStore.installUpdate();
+    if (ok) {
+      await relaunch();
+    }
+  }
 
   /**
    * Tell the backend which language is actually in effect.
@@ -82,6 +102,42 @@
   <Sidebar />
   <div class="shell__body">
     <Toast />
+    {#if showUpdateBanner}
+      <div class="update-banner" role="status">
+        <span class="update-banner__text">
+          {tt("about.updates.banner", { version: aboutStore.update?.version ?? "" })}
+        </span>
+        <div class="update-banner__actions">
+          {#if selfUpdate && queueIdle}
+            <button
+              type="button"
+              class="btn btn--small btn--primary"
+              disabled={aboutStore.installing}
+              onclick={() => void installAndRestart()}
+            >
+              {aboutStore.installing
+                ? tt("about.updates.installing")
+                : tt("about.updates.bannerInstall")}
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="btn btn--small"
+            onclick={() => router.go("/settings/about")}
+          >
+            {tt("about.updates.bannerView")}
+          </button>
+          <button
+            type="button"
+            class="banner__close"
+            onclick={() => (updateBannerDismissed = true)}
+            aria-label={tt("common.dismiss")}
+          >
+            <XIcon size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+    {/if}
     <main class="shell__main" id="main" tabindex="-1">
       {#if !settingsStore.loaded}
         <p class="shell__loading">{tt("footer.placeholder")}</p>
@@ -150,5 +206,28 @@
 
   .skip-link:focus-visible {
     transform: translateY(0);
+  }
+
+  .update-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 13px;
+    flex: none;
+  }
+
+  .update-banner__text {
+    font-weight: 600;
+  }
+
+  .update-banner__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 </style>

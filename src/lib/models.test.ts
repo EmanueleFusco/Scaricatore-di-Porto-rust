@@ -4,9 +4,13 @@ import {
   formatWer,
   isLargeDownload,
   filterModels,
+  modelLabelKey,
+  modelNotesKey,
   ONE_GIB,
   type ModelViewItem,
 } from "$lib/models";
+import { hasKey } from "$lib/i18n";
+import catalogue from "../../whisper.models.json";
 
 const MOCK_MODELS: ModelViewItem[] = [
   {
@@ -92,6 +96,17 @@ describe("models helpers", () => {
     if (pausedModel.state.kind === "paused") {
       expect(pausedModel.state.receivedBytes).toBe(1024);
       expect(pausedModel.state.totalBytes).toBe(32560352);
+    }
+  });
+
+  it("has localized labels and notes in both dictionaries for every catalogue model", () => {
+    for (const model of catalogue.models) {
+      const lKey = modelLabelKey(model.id);
+      const nKey = modelNotesKey(model.id);
+      expect(hasKey("it", lKey), `it is missing ${lKey}`).toBe(true);
+      expect(hasKey("en", lKey), `en is missing ${lKey}`).toBe(true);
+      expect(hasKey("it", nKey), `it is missing ${nKey}`).toBe(true);
+      expect(hasKey("en", nKey), `en is missing ${nKey}`).toBe(true);
     }
   });
 });
