@@ -890,6 +890,12 @@ export function progressLabelKey(label: string): string {
       return "job.label.waitingEncode";
     case "transcribing":
       return "job.label.transcribing";
+    case "transcribingWhisper":
+      return "job.label.transcribingWhisper";
+    case "transcribingGemini":
+      return "job.label.transcribingGemini";
+    case "transcribingSubtitles":
+      return "job.label.transcribingSubtitles";
     case "waitingTranscribe":
       return "job.label.waitingTranscribe";
     case "postProcessing":

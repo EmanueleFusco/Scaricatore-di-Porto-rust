@@ -1779,7 +1779,13 @@ async fn acquire_transcribe_slot(
 }
 
 /// Fold one Whisper progress payload into the item (spec §3, §7.6, §10.2).
-fn on_transcribe_progress(inner: &Arc<Inner>, id: &str, percent: f64, segment: Option<&str>) {
+fn on_transcribe_progress(
+    inner: &Arc<Inner>,
+    id: &str,
+    percent: f64,
+    segment: Option<&str>,
+    label: &str,
+) {
     let milestone = {
         let mut state = lock(&inner.state);
         let Some(item) = state.item_mut(id) else {
@@ -1789,7 +1795,7 @@ fn on_transcribe_progress(inner: &Arc<Inner>, id: &str, percent: f64, segment: O
             return;
         }
         item.state = ItemState::Transcribing;
-        item.progress.label = "transcribing".to_string();
+        item.progress.label = label.to_string();
         item.progress.percent = Some(percent);
         item.progress.speed_bps = None;
         item.progress.eta_sec = None;
@@ -1854,11 +1860,23 @@ async fn run_transcribe_stage(
         return Err(crate::error::AppError::Process("Cancelled".to_string()));
     };
 
-    // 3. Update status once slot acquired
+    let engine_order = options
+        .transcription_engine
+        .as_deref()
+        .or(environment.default_transcription_engine_order.as_deref())
+        .unwrap_or("subtitles_whisper_gemini");
+
+    // 3. Update status once slot acquired with engine-specific label
+    let initial_label = match engine_order {
+        "gemini_only" => "transcribingGemini",
+        "whisper_only" => "transcribingWhisper",
+        "subtitles_only" => "transcribingSubtitles",
+        _ => "transcribingSubtitles",
+    };
     {
         let mut state = lock(&inner.state);
         if let Some(item) = state.item_mut(id) {
-            item.progress.label = "transcribing".to_string();
+            item.progress.label = initial_label.to_string();
             item.progress.percent = Some(0.0);
             item.updated_at = now_unix();
         }
@@ -1872,12 +1890,6 @@ async fn run_transcribe_stage(
     if stopped || token.is_cancelled() {
         return Err(crate::error::AppError::Process("Cancelled".to_string()));
     }
-
-    let engine_order = options
-        .transcription_engine
-        .as_deref()
-        .or(environment.default_transcription_engine_order.as_deref())
-        .unwrap_or("subtitles_whisper_gemini");
 
     let url = lock(&inner.state)
         .item(id)
@@ -1903,6 +1915,15 @@ async fn run_transcribe_stage(
 
     // Subtitles attempt
     let try_subtitles = || async {
+        {
+            let mut state = lock(&inner.state);
+            if let Some(item) = state.item_mut(id) {
+                item.progress.label = "transcribingSubtitles".to_string();
+                item.progress.percent = Some(0.0);
+                item.updated_at = now_unix();
+            }
+        }
+        mark_dirty(inner, id, false);
         if url.starts_with("local://") {
             return Ok(None);
         }
@@ -1943,6 +1964,15 @@ async fn run_transcribe_stage(
 
     // Whisper attempt
     let try_whisper = || async {
+        {
+            let mut state = lock(&inner.state);
+            if let Some(item) = state.item_mut(id) {
+                item.progress.label = "transcribingWhisper".to_string();
+                item.progress.percent = Some(0.0);
+                item.updated_at = now_unix();
+            }
+        }
+        mark_dirty(inner, id, false);
         let Some(whisper_path) = environment.whisper.as_ref() else {
             return Err(crate::error::AppError::WhisperMissing);
         };
@@ -2047,7 +2077,13 @@ async fn run_transcribe_stage(
         let progress_id = id.to_string();
         let sink: crate::services::transcribe::whisper::TranscribeProgressSink =
             Arc::new(move |percent: f64, segment: Option<&str>| {
-                on_transcribe_progress(&progress_inner, &progress_id, percent, segment);
+                on_transcribe_progress(
+                    &progress_inner,
+                    &progress_id,
+                    percent,
+                    segment,
+                    "transcribingWhisper",
+                );
             });
 
         crate::services::transcribe::whisper::run_transcribe(req, token.clone(), Some(sink)).await
@@ -2055,6 +2091,15 @@ async fn run_transcribe_stage(
 
     // Gemini attempt
     let try_gemini = || async {
+        {
+            let mut state = lock(&inner.state);
+            if let Some(item) = state.item_mut(id) {
+                item.progress.label = "transcribingGemini".to_string();
+                item.progress.percent = Some(0.0);
+                item.updated_at = now_unix();
+            }
+        }
+        mark_dirty(inner, id, false);
         let Some(ffmpeg_path) = environment.ffmpeg.as_ref() else {
             return Err(crate::error::AppError::Process(
                 "ffmpeg is required for Gemini audio preparation but was not found".to_string(),
@@ -2112,7 +2157,13 @@ async fn run_transcribe_stage(
         let progress_id = id.to_string();
         let sink: crate::services::transcribe::gemini::GeminiProgressSink =
             Arc::new(move |percent: f64, _label: &str| {
-                on_transcribe_progress(&progress_inner, &progress_id, percent * 100.0, None);
+                on_transcribe_progress(
+                    &progress_inner,
+                    &progress_id,
+                    percent * 100.0,
+                    None,
+                    "transcribingGemini",
+                );
             });
 
         crate::services::transcribe::gemini::run_gemini_transcription(
@@ -2314,7 +2365,13 @@ async fn run_transcribe_stage(
                 .and_then(|cd| crate::services::secrets::get_gemini_api_key(cd));
 
             if let Some(api_key) = api_key {
-                on_transcribe_progress(inner, id, 95.0, Some("queue.status.generatingSummary"));
+                on_transcribe_progress(
+                    inner,
+                    id,
+                    95.0,
+                    Some("queue.status.generatingSummary"),
+                    "transcribingGemini",
+                );
                 let sum_req = crate::services::transcribe::summary::SummaryRequest {
                     transcript_text,
                     language: options

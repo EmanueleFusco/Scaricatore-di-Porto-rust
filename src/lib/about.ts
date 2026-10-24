@@ -88,7 +88,7 @@ export const LICENSES: readonly LicenseEntry[] = [
   },
   {
     name: "ffmpeg / ffprobe",
-    license: "GPL-3.0-or-later",
+    license: "LGPL-2.1-or-later / GPL-2.0-or-later",
     url: "https://ffmpeg.org/legal.html",
     roleKey: "about.licenses.role.ffmpeg",
   },

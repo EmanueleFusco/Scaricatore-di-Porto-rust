@@ -4664,3 +4664,23 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: none.
 - Decisions/deviations (also in DECISIONS.md): D140.
 - Next step: push to `main` and update release tag `v0.1.0`.
+
+## 2026-10-24 — M7 / Polish: Generic transcription naming, reactive engine layout, dynamic transcribe stage status, custom scrollbars, and FFmpeg license accuracy (spec §10.1, §10.2, §10.3, §11.5, §11.6, §11.8, §11.9)
+
+- Done:
+  - Renamed download options section and toggle from "Whisper transcription" / "Transcribe with Whisper" to "Transcription" / "Transcribe" ("Trascrizione" / "Trascrivi") in `src/lib/i18n/it.json` and `en.json`.
+  - Moved the "Engine" ("Motore") dropdown to the top of transcription options in `src/lib/components/AddBar.svelte`. When set to `gemini_only` or `subtitles_only`, Whisper model controls (`<select>`, download model button, and install whisper button) are disabled (`disabled={!usesWhisper}`) and dimmed (`field--disabled`), while general settings (language, transcript folder, English translation) remain active. Switching back to an engine involving Whisper re-enables them immediately.
+  - Dynamically updated transcription progress labels in `src-tauri/src/services/queue/engine.rs` (`transcribingSubtitles`, `transcribingWhisper`, `transcribingGemini`) and `src/lib/queue.ts`, displaying exact real-time status in queue items ("Estrazione sottotitoli…", "Trascrizione con Whisper…", "Trascrizione con Gemini…").
+  - Implemented modern, sleek, theme-integrated scrollbars in `src/lib/styles/app.css` (`scrollbar-width: thin; scrollbar-color: var(--border) transparent;` and `::-webkit-scrollbar` with rounded pills and hidden arrow buttons), eliminating chunky Win32 scrollbars in both dark and light modes.
+  - Corrected FFmpeg and FFprobe license display in `src/lib/about.ts` and `tools.manifest.json` to "LGPL-2.1-or-later / GPL-2.0-or-later", matching upstream `ffmpeg.org/legal.html`.
+- Verified by running:
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 16 test files, 327 passed.
+  - `npm run build` → passed.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → clean.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → clean, 0 warnings.
+  - `( cd src-tauri && cargo test )` → all 443 unit and integration tests passed.
+- Not verified / stubbed: none.
+- Spec items marked "verify" that I checked: upstream FFmpeg licensing on `https://ffmpeg.org/legal.html` (LGPL 2.1+ / GPL 2.0+).
+- Decisions/deviations (also in DECISIONS.md): D141.
+- Next step: push to `main` and release.

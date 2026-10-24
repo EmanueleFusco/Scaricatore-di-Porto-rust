@@ -125,6 +125,43 @@
 *::after {
   box-sizing: border-box;
 }
+/* Custom scrollbar styling (spec §11.9): modern, sleek, theme-integrated */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--text-muted);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 html,
 body {
@@ -325,6 +362,9 @@ textarea:focus {
 .field__hint {
   color: var(--text-muted);
   font-size: 12px;
+}
+.field--disabled {
+  opacity: 0.55;
 }
 
 .input,

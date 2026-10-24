@@ -812,14 +812,39 @@
                   </label>
 
                   {#if row.transcribe}
+                    {@const activeEngine = row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder}
+                    {@const usesWhisper = activeEngine !== "gemini_only" && activeEngine !== "subtitles_only"}
+
+                    <div class="field">
+                      <label class="field__label" for={`engine-order-${row.key}`}>
+                        {tt("addbar.transcribeEngine")}
+                      </label>
+                      <select
+                        class="select"
+                        id={`engine-order-${row.key}`}
+                        value={activeEngine}
+                        onchange={(event) =>
+                          addBarStore.setMediaOptions(row.key, { transcriptionEngine: event.currentTarget.value })}
+                      >
+                        <option value="subtitles_whisper_gemini">{tt("transcription.engine.subtitlesWhisperGemini")}</option>
+                        <option value="whisper_only">{tt("transcription.engine.whisperOnly")}</option>
+                        <option value="gemini_only">{tt("transcription.engine.geminiOnly")}</option>
+                        <option value="subtitles_only">{tt("transcription.engine.subtitlesOnly")}</option>
+                      </select>
+                      {#if activeEngine === "gemini_only" || activeEngine === "subtitles_whisper_gemini"}
+                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+                      {/if}
+                    </div>
+
                     <div class="add__controls">
-                      <div class="field">
+                      <div class="field" class:field--disabled={!usesWhisper}>
                         <label class="field__label" for={`whisper-model-${row.key}`}>
                           {tt("transcribe.model")}
                         </label>
                         <select
                           class="select"
                           id={`whisper-model-${row.key}`}
+                          disabled={!usesWhisper}
                           value={row.whisperModel ?? settingsStore.settings.activeWhisperModel ?? "large-v3-turbo-q5_0"}
                           onchange={(event) =>
                             addBarStore.setMediaOptions(row.key, { whisperModel: event.currentTarget.value })}
@@ -845,7 +870,7 @@
                               type="button"
                               class="btn btn--small"
                               style="margin-top: 4px;"
-                              disabled={modelsStore.busy || (modelsStore.downloadingModelId !== null && modelsStore.downloadingModelId !== selectedModel.id)}
+                              disabled={!usesWhisper || modelsStore.busy || (modelsStore.downloadingModelId !== null && modelsStore.downloadingModelId !== selectedModel.id)}
                               onclick={() => void modelsStore.download(selectedModel.id)}
                             >
                               {#if modelsStore.downloadingModelId === selectedModel.id}
@@ -865,7 +890,7 @@
                               type="button"
                               class="btn btn--small"
                               style="margin-top: 4px;"
-                              disabled={toolsStore.installingTool !== null}
+                              disabled={!usesWhisper || toolsStore.installingTool !== null}
                               onclick={() => void toolsStore.install("sdp-whisper")}
                             >
                               {#if toolsStore.installingTool === "sdp-whisper"}
@@ -919,27 +944,6 @@
                       />
                       {tt("transcribe.subfolder")}
                     </label>
-
-                    <div class="field">
-                      <label class="field__label" for={`engine-order-${row.key}`}>
-                        {tt("addbar.transcribeEngine")}
-                      </label>
-                      <select
-                        class="select"
-                        id={`engine-order-${row.key}`}
-                        value={row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder}
-                        onchange={(event) =>
-                          addBarStore.setMediaOptions(row.key, { transcriptionEngine: event.currentTarget.value })}
-                      >
-                        <option value="subtitles_whisper_gemini">{tt("transcription.engine.subtitlesWhisperGemini")}</option>
-                        <option value="whisper_only">{tt("transcription.engine.whisperOnly")}</option>
-                        <option value="gemini_only">{tt("transcription.engine.geminiOnly")}</option>
-                        <option value="subtitles_only">{tt("transcription.engine.subtitlesOnly")}</option>
-                      </select>
-                      {#if (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "gemini_only" || (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "subtitles_whisper_gemini"}
-                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
-                      {/if}
-                    </div>
 
                     <label class="add__check">
                       <input

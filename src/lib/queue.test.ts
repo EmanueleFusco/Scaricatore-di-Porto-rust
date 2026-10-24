@@ -548,6 +548,10 @@ describe("the text the cards show", () => {
     expect(progressLabelKey("somethingNew")).toBe("job.label.postProcessing");
     expect(progressLabelKey("verifying")).toBe("job.label.preparing");
     expect(progressLabelKey("extractingAudio")).toBe("job.label.extractingAudio");
+    expect(progressLabelKey("transcribing")).toBe("job.label.transcribing");
+    expect(progressLabelKey("transcribingWhisper")).toBe("job.label.transcribingWhisper");
+    expect(progressLabelKey("transcribingGemini")).toBe("job.label.transcribingGemini");
+    expect(progressLabelKey("transcribingSubtitles")).toBe("job.label.transcribingSubtitles");
   });
 
   it("builds the copy-details text out of the message, the detail and the log", () => {
