@@ -51,7 +51,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM2QzdCQzI5Mzg5OUM5NjQKUldSa3laazRLYnpITnJOZzNrWEJkRmtOV0ZSbUhTQzd0NS9TZ2VUWWd4K29DMTFrblhTbkpra20K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0RjRGNzgyMTFGMDhEMkEKUldRcWpmQVJndmYwTktIblN1b2Rvb3VZbGFkNjFUY0ZEOFZRR0pXRGVIcU9YTDhlQzlrQzE1RmgK",
       "endpoints": [
         "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/latest/download/latest.json"
       ]

@@ -4430,3 +4430,33 @@ Branch `m4-media-processing`.
   - Other Wayland compositors/GPUs may still need `GDK_BACKEND=x11`; that environment variable remains available as an override.
 - Decisions/deviations (also in DECISIONS.md): none; this step verifies D135/D136.
 - Next step: restore the updater signing key and publish a signed release, or keep using the unsigned local AppImage for testing only.
+
+## 2026-10-24 — M7 / Rotate the updater key and sign a fresh AppImage
+
+- Done:
+  - Confirmed the old `/tmp/opencode/updater.key` was lost when `/tmp` was cleared, and that no public release had been signed with it.
+  - Generated a new Tauri/minisign key pair outside the repository:
+    `~/.config/scaricatore-di-porto/updater.key` (mode `0600`) and
+    `~/.config/scaricatore-di-porto/updater.key.pub`. The private key is not in
+    the working tree and must never be committed.
+  - Replaced only the public key in `src-tauri/tauri.conf.json`; the public key
+    file and the configured value are byte-for-byte identical.
+  - Built and signed the AppImage with the new key. Tauri produced
+    `Scaricatore Di Porto_0.1.0_amd64.AppImage.sig` (456 bytes).
+- Verified by running:
+  - `ls -l ~/.config/scaricatore-di-porto/updater.key` → mode `-rw-------`.
+  - `npx tauri build --bundles appimage` with
+    `TAURI_SIGNING_PRIVATE_KEY="$(cat …/updater.key)"` and an empty password →
+    AppImage (148.94 MiB) plus `.sig`.
+  - Independent Ed25519 verification with Python `cryptography` against the new
+    public key → file signature valid (BLAKE2b-512 prehash), trusted-comment
+    signature valid, key IDs match.
+  - `git status --short` → only `src-tauri/tauri.conf.json` and documentation;
+    the private key is outside the repository and `*.key` is already ignored.
+- Not verified / stubbed:
+  - The key is unencrypted (empty password). It must be backed up securely and
+    added to the GitHub Actions secrets as `TAURI_SIGNING_PRIVATE_KEY`, with an
+    empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+  - A real in-app update still requires a published release with `latest.json`.
+- Decisions/deviations (also in DECISIONS.md): D137.
+- Next step: back up the private key, add the CI secrets, and publish a signed release.

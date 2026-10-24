@@ -3538,3 +3538,29 @@ NVIDIA proprietary driver to be present (`/proc/driver/nvidia/version` or
 `/dev/nvidia0`). On non-NVIDIA Wayland systems the app keeps WebKitGTK's default
 renderer and its hardware-accelerated path; users on other affected GPUs can still
 force the fallback with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
+### D137 — Rotate the updater signing key after losing the old private key (spec §13.4)
+
+The old updater private key lived at `/tmp/opencode/updater.key`. `/tmp` was
+cleared on 2026-10-24 and the key is gone. No public release was signed with it
+(only local test artifacts existed), so rotating the key does not strand an
+installed release. A new key pair was generated on 2026-10-24:
+
+- private key: `~/.config/scaricatore-di-porto/updater.key`, mode `0600`,
+  **outside the repository**;
+- public key: `~/.config/scaricatore-di-porto/updater.key.pub`; its content
+  replaced `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`;
+- key id: `34F4F78211F08D2A`.
+
+The private key is not in the working tree, and `.gitignore` already ignores
+`*.key` and `*.pem`. It is unencrypted (empty password), matching the previous
+local setup: the file must be backed up securely and copied to the GitHub
+Actions secrets as `TAURI_SIGNING_PRIVATE_KEY`, with an empty
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. It must never be committed.
+
+Verification: `npx tauri build --bundles appimage` with the new key produced the
+AppImage and its `.sig`. The Ed25519 signature over the BLAKE2b-512 prehash and
+the trusted-comment signature both verify against the new public key, and the
+key IDs match. This supersedes the key path and public key recorded in D127.
+If this key is lost, recover the backup or generate another pair and rebuild;
+there is no way to sign an update for an installed build with a different key.
