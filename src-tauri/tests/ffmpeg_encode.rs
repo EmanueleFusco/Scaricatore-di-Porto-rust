@@ -1151,6 +1151,26 @@ fn embed_thumbnail_preserves_attached_pic_in_ffmpeg_args() {
     assert!(v_args.contains(&"-c:v:1".to_string()));
     assert!(v_args.contains(&"-disposition:v:1".to_string()));
 
+    // 1b. Video encode with HEVC and embed_thumbnail
+    let v_opts_hevc = VideoEncodeOptions {
+        input: PathBuf::from("video.mkv"),
+        output: PathBuf::from("video-encoded.mp4"),
+        video_encoder: "libx265".to_string(),
+        audio_codec: Some(AudioCodec::Aac),
+        trim: None,
+        embed_thumbnail: true,
+    };
+    let v_args_hevc: Vec<String> = build_video_encode_args(&v_opts_hevc)
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert!(v_args_hevc.contains(&"-c:v:0".to_string()));
+    assert!(v_args_hevc.contains(&"libx265".to_string()));
+    assert!(v_args_hevc.contains(&"-tag:v:0".to_string()));
+    assert!(!v_args_hevc.contains(&"-tag:v".to_string()));
+    assert!(v_args_hevc.contains(&"-c:v:1".to_string()));
+    assert!(v_args_hevc.contains(&"-disposition:v:1".to_string()));
+
     // 2. Audio encode AAC with embed_thumbnail
     let a_opts_aac = AudioEncodeOptions {
         input: PathBuf::from("audio.webm"),

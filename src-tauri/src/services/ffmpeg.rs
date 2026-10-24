@@ -443,18 +443,34 @@ pub fn build_video_encode_args_with_custom_encoder(
         "-c:v"
     };
 
+    let push_extra = |args: &mut Vec<OsString>, extra: &str| {
+        if options.embed_thumbnail {
+            if extra == "-tag:v" {
+                args.push("-tag:v:0".into());
+            } else if extra == "-b:v" {
+                args.push("-b:v:0".into());
+            } else if extra == "-q:v" {
+                args.push("-q:v:0".into());
+            } else {
+                args.push(extra.into());
+            }
+        } else {
+            args.push(extra.into());
+        }
+    };
+
     // Video encoder arguments
     if let Some(custom) = custom_args {
         args.push(v_stream_target.into());
         args.push(encoder_id.into());
         for extra in custom {
-            args.push((*extra).into());
+            push_extra(&mut args, extra);
         }
     } else if let Some(def) = lookup_encoder(encoder_id) {
         args.push(v_stream_target.into());
         args.push(def.id.into());
         for extra in def.args {
-            args.push((*extra).into());
+            push_extra(&mut args, extra);
         }
     } else {
         // Fallback to libx264 if unknown
@@ -1215,6 +1231,31 @@ mod tests {
         assert!(args_str.contains(&"0:V:0?".to_string()));
         assert!(args_str.contains(&"0:disp:attached_pic?".to_string()));
         assert!(args_str.contains(&"-c:v:0".to_string()));
+        assert!(args_str.contains(&"-c:v:1".to_string()));
+        assert!(args_str.contains(&"-disposition:v:1".to_string()));
+    }
+
+    #[test]
+    fn builds_hevc_video_encode_args_with_embed_thumbnail_uses_stream_indexed_tag() {
+        let opts = VideoEncodeOptions {
+            input: PathBuf::from("/media/input.mkv"),
+            output: PathBuf::from("/media/output-encoded.mp4"),
+            video_encoder: "libx265".to_string(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: None,
+            embed_thumbnail: true,
+        };
+
+        let args = build_video_encode_args(&opts);
+        let args_str: Vec<String> = args
+            .into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(args_str.contains(&"-c:v:0".to_string()));
+        assert!(args_str.contains(&"libx265".to_string()));
+        assert!(args_str.contains(&"-tag:v:0".to_string()));
+        assert!(!args_str.contains(&"-tag:v".to_string()));
         assert!(args_str.contains(&"-c:v:1".to_string()));
         assert!(args_str.contains(&"-disposition:v:1".to_string()));
     }

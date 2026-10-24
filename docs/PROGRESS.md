@@ -4651,9 +4651,10 @@ Branch `m4-media-processing`.
     - For audio with thumbnail, mapped `0:a:0?` and `0:disp:attached_pic?` with `-c:v copy -disposition:v attached_pic`.
   - Fixed footer status row wrapping in `src/lib/components/FooterStatus.svelte` by setting `flex-shrink: 0; white-space: nowrap;` on counts and state, and `min-width: 0;` on detail.
   - Fixed `find_executable` in `src-tauri/src/services/download.rs` to use breadth-first search through all subdirectories, resolving executables nested more than one directory deep (such as Windows `ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe`).
+  - Fixed FFmpeg `exit code Some(-1094995529)` (`Tag hvc1 incompatible with output codec id '7' (mp4v)`) when encoding with HEVC/H.265 and `embed_thumbnail`: qualified `-tag:v`, `-b:v`, and `-q:v` encoder arguments with stream index `:0` (`-tag:v:0 hvc1`) so the tag does not apply to the attached MJPEG thumbnail stream.
 - Verified by running:
   - Downloaded and extracted all 5 release archives (Windows x64, Linux x64, Linux arm64, macOS arm64, macOS x64) and verified `find_executable` resolves `ffmpeg` and `ffprobe` cleanly on all platforms.
-  - Real execution test of the generated FFmpeg command against the user's test video (`.mkv` with AV1 video, Opus audio, and attached JPEG thumbnail) yielding successful MP4 muxing with exit code 0.
+  - Real execution test of the generated FFmpeg command against the user's test video (`.mkv` with AV1 video, Opus audio, and attached JPEG thumbnail) encoding with `libx265` and `aac`, producing a valid `.mp4` with stream #0:0 `hevc (hvc1)` and stream #0:2 `mjpeg (mp4v)` with exit code 0.
   - `npm.cmd run check` → 0 errors, 0 warnings.
   - `npm.cmd test -- --run` → 16 test files, 327 passed.
   - `npm.cmd run build` → passed.
