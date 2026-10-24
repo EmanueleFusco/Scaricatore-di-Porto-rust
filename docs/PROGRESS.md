@@ -4460,3 +4460,19 @@ Branch `m4-media-processing`.
   - A real in-app update still requires a published release with `latest.json`.
 - Decisions/deviations (also in DECISIONS.md): D137.
 - Next step: back up the private key, add the CI secrets, and publish a signed release.
+
+## 2026-10-24 — M7 / Rewrite README, drop Italian documentation
+
+- Done:
+  - Rewrote `README.md` from scratch: shorter, plain wording, install table,
+    build-from-source commands, checks, layout, troubleshooting, license.
+  - Removed `README.it.md`, `docs/TROUBLESHOOTING.it.md`, `docs/SUPPORTED_SITES.it.md`.
+- Verified by running:
+  - `grep -rn "\.it\.md"` outside `docs/PROGRESS.md`/`docs/DECISIONS.md` → no matches.
+  - Checked README facts against the repo: npm scripts in `package.json`, Node
+    `lts/*` in `ci.yml`, repo URL from `git remote`, "Copy diagnostics" button in
+    `src/lib/pages/settings/AboutPage.svelte`.
+  - No code changed, so cargo/npm checks were not re-run.
+- Not verified / stubbed: none.
+- Decisions/deviations (also in DECISIONS.md): D138.
+- Next step: unchanged — back up the updater key, add the CI secrets, publish a signed release.

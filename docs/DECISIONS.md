@@ -3564,3 +3564,12 @@ the trusted-comment signature both verify against the new public key, and the
 key IDs match. This supersedes the key path and public key recorded in D127.
 If this key is lost, recover the backup or generate another pair and rebuild;
 there is no way to sign an update for an installed build with a different key.
+
+### D138 — Drop the Italian copies of the user documentation
+
+The owner asked for English-only repository documentation. `README.it.md`,
+`docs/TROUBLESHOOTING.it.md` and `docs/SUPPORTED_SITES.it.md` were removed, and
+`README.md` was rewritten from scratch. Earlier entries in this file and in
+`docs/PROGRESS.md` that mention the Italian files are historical and were left
+unchanged (append-only); those links are now dead by design. The in-app UI is
+still bilingual: this only concerns the Markdown documentation.
