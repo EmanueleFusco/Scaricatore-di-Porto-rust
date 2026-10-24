@@ -783,15 +783,15 @@ mod tests {
     }
 
     #[test]
-    fn ffmpeg_and_ffprobe_are_pinned_gzip_assets_with_checksums() {
-        // ffmpeg-static publishes one gzip per executable, not an archive.
+    fn ffmpeg_and_ffprobe_are_pinned_zip_assets_with_checksums() {
+        // Both tools are packaged in zip archives containing ffmpeg and ffprobe.
         // Both tools must be installable on every platform where an asset
         // exists; Windows ARM64 has no asset and is deliberately absent.
         let manifest = ToolsManifest::embedded().unwrap_or_else(|err| panic!("{err}"));
         for name in ["ffmpeg", "ffprobe"] {
             let tool = manifest.tool(name).expect(name);
             assert!(!tool.bundled, "{name} is downloaded on demand");
-            assert_eq!(tool.version.as_deref(), Some("7.0.2"), "{name}");
+            assert_eq!(tool.version.as_deref(), Some("7.1"), "{name}");
             for triple in [
                 "x86_64-unknown-linux-gnu",
                 "aarch64-unknown-linux-gnu",
@@ -802,10 +802,10 @@ mod tests {
                 let entry = manifest
                     .entry(name, triple)
                     .unwrap_or_else(|| panic!("{name} is missing its {triple} entry"));
-                assert_eq!(entry.archive_kind, ArchiveKind::Gz, "{name}/{triple}");
+                assert_eq!(entry.archive_kind, ArchiveKind::Zip, "{name}/{triple}");
                 assert!(
-                    entry.asset.as_deref().is_some_and(|a| a.ends_with(".gz")),
-                    "{name}/{triple}: the asset is the gzip itself"
+                    entry.asset.as_deref().is_some_and(|a| a.ends_with(".zip")),
+                    "{name}/{triple}: the asset is a zip archive"
                 );
                 assert!(
                     entry.is_installable(),

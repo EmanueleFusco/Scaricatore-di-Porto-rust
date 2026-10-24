@@ -1146,9 +1146,10 @@ fn embed_thumbnail_preserves_attached_pic_in_ffmpeg_args() {
         .map(|s| s.to_string_lossy().into_owned())
         .collect();
     assert!(v_args.contains(&"0:V:0?".to_string()));
-    assert!(v_args.contains(&"0:v:disp:attached_pic?".to_string()));
-    assert!(v_args.contains(&"-c:v:disp:attached_pic".to_string()));
-    assert!(v_args.contains(&"-disposition:v:disp:attached_pic".to_string()));
+    assert!(v_args.contains(&"0:disp:attached_pic?".to_string()));
+    assert!(v_args.contains(&"-c:v:0".to_string()));
+    assert!(v_args.contains(&"-c:v:1".to_string()));
+    assert!(v_args.contains(&"-disposition:v:1".to_string()));
 
     // 2. Audio encode AAC with embed_thumbnail
     let a_opts_aac = AudioEncodeOptions {
@@ -1164,7 +1165,9 @@ fn embed_thumbnail_preserves_attached_pic_in_ffmpeg_args() {
         .collect();
     assert!(!a_args_aac.contains(&"-vn".to_string()));
     assert!(a_args_aac.contains(&"0:a:0?".to_string()));
-    assert!(a_args_aac.contains(&"0:v:disp:attached_pic?".to_string()));
+    assert!(a_args_aac.contains(&"0:disp:attached_pic?".to_string()));
+    assert!(a_args_aac.contains(&"-c:v".to_string()));
+    assert!(a_args_aac.contains(&"-disposition:v".to_string()));
 
     // 3. Audio encode MP3 with embed_thumbnail
     let a_opts_mp3 = AudioEncodeOptions {
@@ -1180,7 +1183,9 @@ fn embed_thumbnail_preserves_attached_pic_in_ffmpeg_args() {
         .collect();
     assert!(!a_args_mp3.contains(&"-vn".to_string()));
     assert!(a_args_mp3.contains(&"0:a:0?".to_string()));
-    assert!(a_args_mp3.contains(&"0:v:disp:attached_pic?".to_string()));
+    assert!(a_args_mp3.contains(&"0:disp:attached_pic?".to_string()));
+    assert!(a_args_mp3.contains(&"-c:v".to_string()));
+    assert!(a_args_mp3.contains(&"-disposition:v".to_string()));
 
     // 4. Audio encode Opus with embed_thumbnail strips video (-vn) due to lack of attached_pic stream support
     let a_opts_opus = AudioEncodeOptions {

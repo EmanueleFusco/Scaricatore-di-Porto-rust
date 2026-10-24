@@ -212,10 +212,7 @@ async fn the_ffmpeg_install_downloads_verifies_and_runs() {
         let text = String::from_utf8_lossy(&output.stdout);
         eprintln!("{text}");
         assert!(output.status.success(), "{name} -version failed");
-        assert!(
-            text.contains("7.0.2"),
-            "expected the pinned 7.0.2, got: {text}"
-        );
+        assert!(text.contains("7.1"), "expected the pinned 7.1, got: {text}");
     }
 }
 

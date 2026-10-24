@@ -1271,7 +1271,7 @@ pub async fn install_tool(
     let staged = match entry.archive_kind {
         // The download itself is the executable, or the gzip already named the
         // one file it contained.
-        manifest::ArchiveKind::None | manifest::ArchiveKind::Gz => outcome.path,
+        manifest::ArchiveKind::None | manifest::ArchiveKind::Gz => outcome.path.clone(),
         _ => crate::services::download::find_executable(&outcome.path, executable).ok_or_else(
             || {
                 AppError::Process(format!(
@@ -1291,6 +1291,38 @@ pub async fn install_tool(
             ))
         })?;
     }
+
+    // If an archive contains companion binaries (e.g. ffmpeg and ffprobe co-located
+    // in the same release archive), install the companion too so we don't download
+    // the archive twice.
+    if entry.archive_kind != manifest::ArchiveKind::None
+        && entry.archive_kind != manifest::ArchiveKind::Gz
+    {
+        let companion_name = match tool_name {
+            FFMPEG => Some(FFPROBE),
+            FFPROBE => Some(FFMPEG),
+            _ => None,
+        };
+        if let Some(comp_tool) = companion_name {
+            if let Some(comp_exe) = manifest
+                .tool(comp_tool)
+                .and_then(|t| t.platforms.get(triple))
+                .and_then(|p| p.executable())
+            {
+                let comp_target = dir.join(comp_exe);
+                if !comp_target.is_file() {
+                    if let Some(comp_staged) =
+                        crate::services::download::find_executable(&outcome.path, comp_exe)
+                    {
+                        let _ = make_executable(&comp_staged);
+                        let _ = fs::rename(&comp_staged, &comp_target);
+                        quarantine_repair(&comp_target).await;
+                    }
+                }
+            }
+        }
+    }
+
     remove_path(&staging);
     // A downloaded binary is quarantined on macOS until this runs; harmless
     // everywhere else.

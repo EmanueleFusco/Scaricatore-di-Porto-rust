@@ -434,25 +434,31 @@ pub fn build_video_encode_args_with_custom_encoder(
         args.push("-map".into());
         args.push("0:a?".into());
         args.push("-map".into());
-        args.push("0:v:disp:attached_pic?".into());
+        args.push("0:disp:attached_pic?".into());
     }
+
+    let v_stream_target = if options.embed_thumbnail {
+        "-c:v:0"
+    } else {
+        "-c:v"
+    };
 
     // Video encoder arguments
     if let Some(custom) = custom_args {
-        args.push("-c:v".into());
+        args.push(v_stream_target.into());
         args.push(encoder_id.into());
         for extra in custom {
             args.push((*extra).into());
         }
     } else if let Some(def) = lookup_encoder(encoder_id) {
-        args.push("-c:v".into());
+        args.push(v_stream_target.into());
         args.push(def.id.into());
         for extra in def.args {
             args.push((*extra).into());
         }
     } else {
         // Fallback to libx264 if unknown
-        args.push("-c:v".into());
+        args.push(v_stream_target.into());
         args.push("libx264".into());
         args.push("-preset".into());
         args.push("medium".into());
@@ -474,10 +480,12 @@ pub fn build_video_encode_args_with_custom_encoder(
     }
 
     if options.embed_thumbnail {
-        // Preserve attached picture disposition without re-encoding it with the video encoder
-        args.push("-c:v:disp:attached_pic".into());
+        // Preserve attached picture disposition without re-encoding it with the video encoder.
+        // Stream 0 is the primary video stream (encoded above with -c:v:0); stream 1 in the output
+        // is the attached picture stream.
+        args.push("-c:v:1".into());
         args.push("copy".into());
-        args.push("-disposition:v:disp:attached_pic".into());
+        args.push("-disposition:v:1".into());
         args.push("attached_pic".into());
     }
 
@@ -532,13 +540,13 @@ pub fn build_audio_encode_args(options: &AudioEncodeOptions) -> Vec<OsString> {
         args.push("-map".into());
         args.push("0:a:0?".into());
         args.push("-map".into());
-        args.push("0:v:disp:attached_pic?".into());
+        args.push("0:disp:attached_pic?".into());
         for arg in options.audio_codec.ffmpeg_args() {
             args.push((*arg).into());
         }
-        args.push("-c:v:disp:attached_pic".into());
+        args.push("-c:v".into());
         args.push("copy".into());
-        args.push("-disposition:v:disp:attached_pic".into());
+        args.push("-disposition:v".into());
         args.push("attached_pic".into());
     } else {
         // Audio only: strip video
@@ -1205,9 +1213,10 @@ mod tests {
             .collect();
 
         assert!(args_str.contains(&"0:V:0?".to_string()));
-        assert!(args_str.contains(&"0:v:disp:attached_pic?".to_string()));
-        assert!(args_str.contains(&"-c:v:disp:attached_pic".to_string()));
-        assert!(args_str.contains(&"-disposition:v:disp:attached_pic".to_string()));
+        assert!(args_str.contains(&"0:disp:attached_pic?".to_string()));
+        assert!(args_str.contains(&"-c:v:0".to_string()));
+        assert!(args_str.contains(&"-c:v:1".to_string()));
+        assert!(args_str.contains(&"-disposition:v:1".to_string()));
     }
 
     #[test]
@@ -1253,8 +1262,8 @@ mod tests {
 
         assert!(!args_str.contains(&"-vn".to_string()));
         assert!(args_str.contains(&"0:a:0?".to_string()));
-        assert!(args_str.contains(&"0:v:disp:attached_pic?".to_string()));
-        assert!(args_str.contains(&"-c:v:disp:attached_pic".to_string()));
-        assert!(args_str.contains(&"-disposition:v:disp:attached_pic".to_string()));
+        assert!(args_str.contains(&"0:disp:attached_pic?".to_string()));
+        assert!(args_str.contains(&"-c:v".to_string()));
+        assert!(args_str.contains(&"-disposition:v".to_string()));
     }
 }

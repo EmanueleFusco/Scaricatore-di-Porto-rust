@@ -214,55 +214,54 @@
       "licenseUrl": "https://ffmpeg.org/legal.html",
       "homepage": "https://ffmpeg.org",
       "versioning": "pinned",
-      "version": "7.0.2",
+      "version": "7.1",
       "minVersion": "4.0.0",
       "note": [
         "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
-        "Static GPLv3 build from eugeneware/ffmpeg-static release b6.1.1,",
-        "which republishes johnvansickle (Linux), evermeet (macOS) and",
-        "Gyan/BtbN (Windows) builds. The Linux x64 binary was run on",
-        "2026-10-23: `ffmpeg -version` reports 7.0.2 and `-encoders` lists",
-        "libopus, libmp3lame and libx264 (spec §5 table). All ten .gz",
-        "checksums below were computed locally from that release.",
-        "Installing ffmpeg also installs ffprobe, which duration probing needs.",
+        "Static GPLv3 build of FFmpeg 7.1 from GyanD/codexffmpeg (Windows essentials)",
+        "and Tyrrrz/FFmpegBin (Linux and macOS builds, bundling FFmpeg 7.1.x with",
+        "libopus, libmp3lame and libx264). Checksums were verified byte-for-byte",
+        "by downloading the upstream release archives.",
+        "Installing ffmpeg also installs ffprobe, which duration probing needs,",
+        "from the same archive.",
         "There is no win32-arm64 asset in this release: the platform is",
         "deliberately absent so the UI says 'not available on this platform'."
       ],
       "platforms": {
         "x86_64-unknown-linux-gnu": {
-          "asset": "ffmpeg-linux-x64.gz",
+          "asset": "ffmpeg-linux-x64.zip",
           "executableName": "ffmpeg",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz",
-          "sha256": "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-x64.zip",
+          "sha256": "be36c8afd5d60e5765f4582f513fda4f0d2e5081661d50002a9fa4506e2dbd47"
         },
         "aarch64-unknown-linux-gnu": {
-          "asset": "ffmpeg-linux-arm64.gz",
+          "asset": "ffmpeg-linux-arm64.zip",
           "executableName": "ffmpeg",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-arm64.gz",
-          "sha256": "754a678672298bc68156adff58aa7385a592c2b30b1d0ae8750c45c915c4bac0"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-arm64.zip",
+          "sha256": "fd02fde00b3b07e2c60ae0a8fdab852ccfb67402c2c96227a131a5e6315f1e85"
         },
         "x86_64-pc-windows-msvc": {
-          "asset": "ffmpeg-win32-x64.gz",
+          "asset": "ffmpeg-7.1-essentials_build.zip",
           "executableName": "ffmpeg.exe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
-          "sha256": "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77"
+          "archiveKind": "zip",
+          "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
+          "sha256": "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc"
         },
         "aarch64-apple-darwin": {
-          "asset": "ffmpeg-darwin-arm64.gz",
+          "asset": "ffmpeg-osx-arm64.zip",
           "executableName": "ffmpeg",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
-          "sha256": "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-arm64.zip",
+          "sha256": "23e59259e4825bebd58547dc740fa01c61dc9f2ab10b8970530151a460f9dc92"
         },
         "x86_64-apple-darwin": {
-          "asset": "ffmpeg-darwin-x64.gz",
+          "asset": "ffmpeg-osx-x64.zip",
           "executableName": "ffmpeg",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
-          "sha256": "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-x64.zip",
+          "sha256": "d9a2b27a5130c02958c6e0c027aa30fe63867eb3e4fbb0be117b0d90da213be0"
         }
       }
     },
@@ -274,7 +273,7 @@
       "licenseUrl": "https://ffmpeg.org/legal.html",
       "homepage": "https://ffmpeg.org",
       "versioning": "pinned",
-      "version": "7.0.2",
+      "version": "7.1",
       "minVersion": "4.0.0",
       "note": [
         "Companion of ffmpeg: same release, same licence, same platforms.",
@@ -283,39 +282,39 @@
       ],
       "platforms": {
         "x86_64-unknown-linux-gnu": {
-          "asset": "ffprobe-linux-x64.gz",
+          "asset": "ffmpeg-linux-x64.zip",
           "executableName": "ffprobe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64.gz",
-          "sha256": "25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-x64.zip",
+          "sha256": "be36c8afd5d60e5765f4582f513fda4f0d2e5081661d50002a9fa4506e2dbd47"
         },
         "aarch64-unknown-linux-gnu": {
-          "asset": "ffprobe-linux-arm64.gz",
+          "asset": "ffmpeg-linux-arm64.zip",
           "executableName": "ffprobe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-arm64.gz",
-          "sha256": "2ab6aba60ee84412dff9188720703376cb4e7aaf7e0b5e43aa8249f2acae5bf8"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-arm64.zip",
+          "sha256": "fd02fde00b3b07e2c60ae0a8fdab852ccfb67402c2c96227a131a5e6315f1e85"
         },
         "x86_64-pc-windows-msvc": {
-          "asset": "ffprobe-win32-x64.gz",
+          "asset": "ffmpeg-7.1-essentials_build.zip",
           "executableName": "ffprobe.exe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64.gz",
-          "sha256": "f309e6223ad89d2fe54bccd420a7709b66fd27540674e92309578ed491a43c8d"
+          "archiveKind": "zip",
+          "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
+          "sha256": "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc"
         },
         "aarch64-apple-darwin": {
-          "asset": "ffprobe-darwin-arm64.gz",
+          "asset": "ffmpeg-osx-arm64.zip",
           "executableName": "ffprobe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64.gz",
-          "sha256": "d986a8ec7b030899fe66a8a288ed809a3543338705a3ce178cfb85869c5d80be"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-arm64.zip",
+          "sha256": "23e59259e4825bebd58547dc740fa01c61dc9f2ab10b8970530151a460f9dc92"
         },
         "x86_64-apple-darwin": {
-          "asset": "ffprobe-darwin-x64.gz",
+          "asset": "ffmpeg-osx-x64.zip",
           "executableName": "ffprobe",
-          "archiveKind": "gz",
-          "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64.gz",
-          "sha256": "d4da574d6e2e197bd259b47d69cf262df9e312af24ad960444f6d806d3d4c186"
+          "archiveKind": "zip",
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-x64.zip",
+          "sha256": "d9a2b27a5130c02958c6e0c027aa30fe63867eb3e4fbb0be117b0d90da213be0"
         }
       }
     },

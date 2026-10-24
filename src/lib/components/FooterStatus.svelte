@@ -116,6 +116,8 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .status__state {
@@ -124,6 +126,8 @@
     gap: var(--space-2);
     color: var(--text);
     font-weight: 600;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   /* Decorative only: the state is spelled out in text (spec §11.9). */
@@ -152,6 +156,7 @@
   }
 
   .status__detail {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
