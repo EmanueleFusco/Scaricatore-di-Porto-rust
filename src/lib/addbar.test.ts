@@ -185,14 +185,14 @@ describe("transcription language resolution (spec §10.2, checklist #11, M5)", (
     expect(normaliseLanguage(undefined)).toBeNull();
   });
 
-  it("defaults transcript language to video language when known and default is auto", () => {
+  it("preserves auto when default is auto even if video language is reported", () => {
     const lang = resolveRowTranscriptLanguage({
       inspectedLanguage: "it-IT",
       currentLanguage: "auto",
       defaultTranscriptLanguage: "auto",
       languageOverridden: false,
     });
-    expect(lang).toBe("it");
+    expect(lang).toBe("auto");
   });
 
   it("preserves manual user override when set", () => {

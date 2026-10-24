@@ -307,7 +307,6 @@ export interface ResolveTranscriptLanguageParams {
  */
 export function resolveRowTranscriptLanguage(params: ResolveTranscriptLanguageParams): string {
   const {
-    inspectedLanguage,
     currentLanguage,
     defaultTranscriptLanguage = "auto",
     languageOverridden = false,
@@ -319,10 +318,7 @@ export function resolveRowTranscriptLanguage(params: ResolveTranscriptLanguagePa
 
   const defaultLang = defaultTranscriptLanguage?.trim().toLowerCase() || "auto";
   if (defaultLang === "auto") {
-    const normalised = normaliseLanguage(inspectedLanguage);
-    if (normalised) {
-      return normalised;
-    }
+    return "auto";
   }
 
   if (currentLanguage && currentLanguage.trim() !== "") {
