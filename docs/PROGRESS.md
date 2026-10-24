@@ -4640,10 +4640,10 @@ Branch `m4-media-processing`.
 - Decisions/deviations (also in DECISIONS.md): D139.
 - Next step: push to `main` and update release tag `v0.1.0`.
 
-## 2026-10-24 — M7 / Upgrade to FFmpeg 7.1, fix thumbnail stream mapping (exit code -22), and prevent footer wrapping (spec §5.1, §5.2, §8.4, §9.2, §11.2)
+## 2026-10-24 — M7 / Upgrade to FFmpeg 9.0.2, fix thumbnail stream mapping (exit code -22), and prevent footer wrapping (spec §5.1, §5.2, §8.4, §9.2, §11.2)
 
 - Done:
-  - Upgraded on-demand `ffmpeg` and `ffprobe` to FFmpeg 7.1 across Windows (`GyanD/codexffmpeg` 7.1), Linux x64/arm64 (`Tyrrrz/FFmpegBin` 7.1.2), and macOS Apple Silicon/Intel (`Tyrrrz/FFmpegBin` 7.1.2) in `tools.manifest.json`.
+  - Upgraded on-demand `ffmpeg` and `ffprobe` to the latest FFmpeg 9.0.2 release across Windows (`GyanD/codexffmpeg` 9.0.2), Linux x64/arm64 (`Tyrrrz/FFmpegBin` 9.0.2), and macOS Apple Silicon/Intel (`Tyrrrz/FFmpegBin` 9.0.2) in `tools.manifest.json`.
   - Added single-pass companion extraction in `tools::install_tool` so installing either `ffmpeg` or `ffprobe` extracts both from the zip archive into `<tools_dir>/ffmpeg/` in a single download.
   - Fixed FFmpeg `exit code Some(-22)` during video/audio encoding of media with attached thumbnails (`embed_thumbnail`):
     - Fixed stream specifiers: changed invalid `-c:v:disp:attached_pic` and `-map 0:v:disp:attached_pic?` to `-map 0:disp:attached_pic?`.

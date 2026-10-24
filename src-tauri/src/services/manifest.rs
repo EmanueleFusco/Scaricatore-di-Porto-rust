@@ -791,7 +791,7 @@ mod tests {
         for name in ["ffmpeg", "ffprobe"] {
             let tool = manifest.tool(name).expect(name);
             assert!(!tool.bundled, "{name} is downloaded on demand");
-            assert_eq!(tool.version.as_deref(), Some("7.1"), "{name}");
+            assert_eq!(tool.version.as_deref(), Some("9.0.2"), "{name}");
             for triple in [
                 "x86_64-unknown-linux-gnu",
                 "aarch64-unknown-linux-gnu",

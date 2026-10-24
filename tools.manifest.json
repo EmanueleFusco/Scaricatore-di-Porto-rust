@@ -214,12 +214,12 @@
       "licenseUrl": "https://ffmpeg.org/legal.html",
       "homepage": "https://ffmpeg.org",
       "versioning": "pinned",
-      "version": "7.1",
+      "version": "9.0.2",
       "minVersion": "4.0.0",
       "note": [
         "NOT bundled (spec §0.7: only yt-dlp and qjs ship in the installer).",
-        "Static GPLv3 build of FFmpeg 7.1 from GyanD/codexffmpeg (Windows essentials)",
-        "and Tyrrrz/FFmpegBin (Linux and macOS builds, bundling FFmpeg 7.1.x with",
+        "Static GPLv3 build of FFmpeg 9.0.2 from GyanD/codexffmpeg (Windows essentials)",
+        "and Tyrrrz/FFmpegBin (Linux and macOS builds, bundling FFmpeg 9.0.2 with",
         "libopus, libmp3lame and libx264). Checksums were verified byte-for-byte",
         "by downloading the upstream release archives.",
         "Installing ffmpeg also installs ffprobe, which duration probing needs,",
@@ -232,36 +232,36 @@
           "asset": "ffmpeg-linux-x64.zip",
           "executableName": "ffmpeg",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-x64.zip",
-          "sha256": "be36c8afd5d60e5765f4582f513fda4f0d2e5081661d50002a9fa4506e2dbd47"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-linux-x64.zip",
+          "sha256": "2483332318255c1001facbc6a6bf91941e5f35651bf8b7d4cfd768e1da18567f"
         },
         "aarch64-unknown-linux-gnu": {
           "asset": "ffmpeg-linux-arm64.zip",
           "executableName": "ffmpeg",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-arm64.zip",
-          "sha256": "fd02fde00b3b07e2c60ae0a8fdab852ccfb67402c2c96227a131a5e6315f1e85"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-linux-arm64.zip",
+          "sha256": "4d756cbae5e3c4af824956325f9d3fb5b624791ae692dc719703cf54991dc67b"
         },
         "x86_64-pc-windows-msvc": {
-          "asset": "ffmpeg-7.1-essentials_build.zip",
+          "asset": "ffmpeg-9.0.2-essentials_build.zip",
           "executableName": "ffmpeg.exe",
           "archiveKind": "zip",
-          "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-          "sha256": "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc"
+          "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+          "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
         },
         "aarch64-apple-darwin": {
           "asset": "ffmpeg-osx-arm64.zip",
           "executableName": "ffmpeg",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-arm64.zip",
-          "sha256": "23e59259e4825bebd58547dc740fa01c61dc9f2ab10b8970530151a460f9dc92"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-osx-arm64.zip",
+          "sha256": "7d22a2893ccd761c3b4214165975e306d6c85c1de188f79f7e2723070c0006e4"
         },
         "x86_64-apple-darwin": {
           "asset": "ffmpeg-osx-x64.zip",
           "executableName": "ffmpeg",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-x64.zip",
-          "sha256": "d9a2b27a5130c02958c6e0c027aa30fe63867eb3e4fbb0be117b0d90da213be0"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-osx-x64.zip",
+          "sha256": "e1938c2df4024c13eeef068f5561e7782ec4003b3f40b428065147e40b92e9a0"
         }
       }
     },
@@ -273,7 +273,7 @@
       "licenseUrl": "https://ffmpeg.org/legal.html",
       "homepage": "https://ffmpeg.org",
       "versioning": "pinned",
-      "version": "7.1",
+      "version": "9.0.2",
       "minVersion": "4.0.0",
       "note": [
         "Companion of ffmpeg: same release, same licence, same platforms.",
@@ -285,36 +285,36 @@
           "asset": "ffmpeg-linux-x64.zip",
           "executableName": "ffprobe",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-x64.zip",
-          "sha256": "be36c8afd5d60e5765f4582f513fda4f0d2e5081661d50002a9fa4506e2dbd47"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-linux-x64.zip",
+          "sha256": "2483332318255c1001facbc6a6bf91941e5f35651bf8b7d4cfd768e1da18567f"
         },
         "aarch64-unknown-linux-gnu": {
           "asset": "ffmpeg-linux-arm64.zip",
           "executableName": "ffprobe",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-linux-arm64.zip",
-          "sha256": "fd02fde00b3b07e2c60ae0a8fdab852ccfb67402c2c96227a131a5e6315f1e85"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-linux-arm64.zip",
+          "sha256": "4d756cbae5e3c4af824956325f9d3fb5b624791ae692dc719703cf54991dc67b"
         },
         "x86_64-pc-windows-msvc": {
-          "asset": "ffmpeg-7.1-essentials_build.zip",
+          "asset": "ffmpeg-9.0.2-essentials_build.zip",
           "executableName": "ffprobe.exe",
           "archiveKind": "zip",
-          "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-          "sha256": "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc"
+          "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+          "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
         },
         "aarch64-apple-darwin": {
           "asset": "ffmpeg-osx-arm64.zip",
           "executableName": "ffprobe",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-arm64.zip",
-          "sha256": "23e59259e4825bebd58547dc740fa01c61dc9f2ab10b8970530151a460f9dc92"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-osx-arm64.zip",
+          "sha256": "7d22a2893ccd761c3b4214165975e306d6c85c1de188f79f7e2723070c0006e4"
         },
         "x86_64-apple-darwin": {
           "asset": "ffmpeg-osx-x64.zip",
           "executableName": "ffprobe",
           "archiveKind": "zip",
-          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/7.1.2/ffmpeg-osx-x64.zip",
-          "sha256": "d9a2b27a5130c02958c6e0c027aa30fe63867eb3e4fbb0be117b0d90da213be0"
+          "url": "https://github.com/Tyrrrz/FFmpegBin/releases/download/9.0.2/ffmpeg-osx-x64.zip",
+          "sha256": "e1938c2df4024c13eeef068f5561e7782ec4003b3f40b428065147e40b92e9a0"
         }
       }
     },
