@@ -4594,3 +4594,21 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: re-run of `CI` on `macos-arm64` / `windows-x64` pending workflow dispatch on updated `v0.1.0` tag.
 - Decisions/deviations (also in DECISIONS.md): none.
 - Next step: re-run the `CI` workflow on the updated `v0.1.0` tag.
+
+## 2026-10-24 — M7 / Fix "Open file" (`open_path` ACL failure) and input focus ring clipping
+
+- Done:
+  - Fixed the "Open file" (`queue.action.open`) and transcript-file buttons in `src/lib/components/QueueItem.svelte` (as well as `reveal` in `QueueItem.svelte` and `QueueGroups.svelte`):
+    - Previously, `QueueItem.svelte` called `openPath(item.file)` from `@tauri-apps/plugin-opener` (`plugin:opener|open_path`) directly from JS. In `tauri-plugin-opener`, `opener:default` only grants `allow-open-url`, `allow-reveal-item-in-dir`, and `allow-default-urls` — it does NOT grant `allow-open-path`, and `plugin:opener|open_path` additionally requires a pre-configured `FsScope` (`Scope::is_path_allowed`), which rejected arbitrary user-chosen download folders with `ForbiddenPath` (silently swallowed by `.catch(() => {})`).
+    - Switched `QueueItem.svelte` and `QueueGroups.svelte` to invoke our backend IPC commands `open_path` and `reveal_path` in `src-tauri/src/commands/system.rs` (spec §3, §9.5), which call `tauri_plugin_opener::open_path` and `tauri_plugin_opener::reveal_item_in_dir` directly in Rust without ACL `FsScope` rejection across Linux, macOS, and Windows. Added a parent-directory fallback in `reveal_path` if the OS file-manager D-Bus/shell highlight service is unavailable.
+  - Fixed the clipped focus glow on `.input` / `.select` controls (such as the queue filter bar in `QueueList.svelte`):
+    - `.queue` in `src/lib/pages/QueuePage.svelte` had `overflow: auto`, which clipped the 4px outward `:focus-visible` outline (`outline: 2px solid var(--focus); outline-offset: 2px`) on the left edge of full-width inputs.
+    - Updated `.input:focus, .input:focus-visible, .select:focus, .select:focus-visible` in `src/lib/styles/app.css` to use an even, non-clipped border + inset ring (`outline: none; border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus)`) that follows `border-radius: var(--radius-md)` uniformly on all four sides, and added `padding: 0 2px; margin: 0 -2px` on `.queue` in `QueuePage.svelte`.
+- Verified by running:
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test` → all frontend tests pass.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass.
+- Not verified / stubbed: none.
+- Decisions/deviations (also in DECISIONS.md): none.
+- Next step: push to `main` and update tag `v0.1.0`.

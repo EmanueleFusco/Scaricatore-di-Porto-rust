@@ -7,7 +7,8 @@
   path, the error with **Copy details** and the last log lines.
 -->
 <script lang="ts">
-  import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { invoke } from "@tauri-apps/api/core";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     actionsFor,
     actionKey,
@@ -179,12 +180,12 @@
     switch (action) {
       case "reveal":
         if (item.file !== null) {
-          await revealItemInDir(item.file).catch(() => {});
+          await invoke("reveal_path", { path: item.file }).catch(() => {});
         }
         return;
       case "open":
         if (item.file !== null) {
-          await openPath(item.file).catch(() => {});
+          await invoke("open_path", { path: item.file }).catch(() => {});
         }
         return;
       case "copyLink":
@@ -570,7 +571,7 @@
               <button
                 type="button"
                 class="btn btn--small"
-                onclick={() => void openPath(path)}
+                onclick={() => void invoke("open_path", { path }).catch(() => {})}
                 title={path}
               >
                 {fileName(path)}

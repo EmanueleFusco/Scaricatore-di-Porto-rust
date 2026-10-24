@@ -8,7 +8,7 @@
   the virtualiser's one-height arithmetic never has to know about headers.
 -->
 <script lang="ts">
-  import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { invoke } from "@tauri-apps/api/core";
   import { groupPercent, groupStats, nonEmptyGroups, type QueueItem } from "$lib/queue";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt } from "$lib/stores/settings.svelte";
@@ -85,7 +85,9 @@
               <button
                 type="button"
                 class="btn btn--small"
-                onclick={() => s.firstFile !== null && void revealItemInDir(s.firstFile).catch(() => {})}
+                onclick={() =>
+                  s.firstFile !== null &&
+                  void invoke("reveal_path", { path: s.firstFile }).catch(() => {})}
               >
                 {tt("queue.group.openFolder")}
               </button>

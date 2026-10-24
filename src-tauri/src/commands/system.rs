@@ -31,6 +31,9 @@ pub async fn open_path(path: String) -> AppResult<()> {
 }
 
 /// Reveal a file in the system file manager (spec §9.5, §11.5).
+///
+/// Falls back to opening the parent directory if the OS file-manager D-Bus /
+/// shell highlight service is unavailable.
 #[tauri::command]
 pub async fn reveal_path(path: String) -> AppResult<()> {
     let p = Path::new(&path);
@@ -40,8 +43,18 @@ pub async fn reveal_path(path: String) -> AppResult<()> {
             format!("path does not exist: {path}"),
         ));
     }
-    tauri_plugin_opener::reveal_item_in_dir(&path)
-        .map_err(|err| ErrorInfo::new(ErrorCode::Io, format!("failed to reveal path: {err}")))
+    if let Err(err) = tauri_plugin_opener::reveal_item_in_dir(&path) {
+        if let Some(parent) = p.parent() {
+            if tauri_plugin_opener::open_path(parent, None::<&str>).is_ok() {
+                return Ok(());
+            }
+        }
+        return Err(ErrorInfo::new(
+            ErrorCode::Io,
+            format!("failed to reveal path: {err}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Probe available video encoders (spec §9.3, cached by ffmpeg path/mtime/version).

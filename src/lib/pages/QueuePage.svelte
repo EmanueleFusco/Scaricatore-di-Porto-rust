@@ -55,9 +55,13 @@
     min-height: 0;
     /* The page is exactly as tall as the window; when even the minimum of the
        add bar plus the list does not fit (a very small window, or a long list
-       of pasted links), this scrolls instead of letting a child paint over the
-       actions and the footer. */
-    overflow: auto;
+       of pasted links), this scrolls vertically instead of letting a child
+       paint over the actions and the footer. `overflow-y: auto` uses the full
+       height of `.shell__main`, while small horizontal padding keeps focus
+       rings and item-flash shadows from being clipped at the container edge. */
+    overflow-y: auto;
+    padding: 0 2px;
+    margin: 0 -2px;
   }
 
   .queue__title {
