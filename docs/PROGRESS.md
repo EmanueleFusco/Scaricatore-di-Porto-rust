@@ -4684,3 +4684,19 @@ Branch `m4-media-processing`.
 - Spec items marked "verify" that I checked: upstream FFmpeg licensing on `https://ffmpeg.org/legal.html` (LGPL 2.1+ / GPL 2.0+).
 - Decisions/deviations (also in DECISIONS.md): D141.
 - Next step: push to `main` and release.
+
+## 2026-10-24 — M7 / Fix cross-platform `unused_mut` in `live_path_dirs` for Linux and macOS CI (spec §5.2)
+
+- Done:
+  - Fixed cross-platform clippy/rustc failure on Linux and macOS CI runners where `let mut dirs = ...` triggered `-D unused-mut` because the mutation occurs inside `#[cfg(windows)]`.
+  - Rebound `dirs` as mutable only inside the Windows block and returned immutable `dirs` directly on `#[cfg(not(windows))]`, resolving the issue cleanly without compiler warnings or lint suppressions.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → passed.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → passed, 0 warnings.
+  - `( cd src-tauri && cargo test )` → all 504 unit and integration tests passed.
+  - `npm.cmd run check` → 0 errors, 0 warnings.
+  - `npm.cmd test -- --run` → 16 test files, 327 passed.
+  - `npm.cmd run check:ci` → 24 CI workflow blocks valid.
+- Not verified / stubbed: none.
+- Decisions/deviations (also in DECISIONS.md): D142.
+- Next step: commit, update tag `v0.1.0`, push to `origin/main` and `origin/v0.1.0`.

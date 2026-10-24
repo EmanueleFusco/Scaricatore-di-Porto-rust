@@ -3608,3 +3608,20 @@ still bilingual: this only concerns the Markdown documentation.
 3. **Dynamic stage status during transcription.** `run_transcribe_stage` in `src-tauri/src/services/queue/engine.rs` previously set `item.progress.label = "transcribing"` regardless of the active step or engine, resulting in `"Transcribing with Whisper…"` (`"Trascrizione con Whisper…"`) displaying even when extracting subtitles or querying Gemini. The backend now emits specific labels (`transcribingSubtitles`, `transcribingWhisper`, `transcribingGemini`) as execution moves through the pipeline stages, and `progressLabelKey` in `src/lib/queue.ts` maps them to translated strings (`"Estrazione sottotitoli…"`, `"Trascrizione con Whisper…"`, `"Trascrizione con Gemini…"`).
 4. **Theme-integrated sleek scrollbars.** Native Windows WebView2 rendered classic Win32 rectangular scrollbars with arrow buttons and gray troughs, contrasting sharply with the dark theme. Added modern standard (`scrollbar-width: thin; scrollbar-color: var(--border) transparent;`) and WebKit pseudo-element rules (`::-webkit-scrollbar` with rounded pills, transparent track, and hidden button arrows) to `src/lib/styles/app.css` matching light and dark theme CSS variables.
 5. **FFmpeg licensing display.** Corrected the license badge in `src/lib/about.ts` and `tools.manifest.json` from `GPL-3.0-or-later` to `LGPL-2.1-or-later / GPL-2.0-or-later`, accurately reflecting the upstream FFmpeg legal statement at `https://ffmpeg.org/legal.html`.
+
+### D142 — Cross-platform mutability in `live_path_dirs` (spec §5.2)
+
+In `src-tauri/src/services/tools.rs`, `live_path_dirs()` reads directories from `PATH` and, on Windows, appends additional entries discovered directly in the User and Machine Registry keys. On non-Windows platforms (Linux, macOS), the Windows Registry block is excluded by `#[cfg(windows)]`. Declaring `let mut dirs = ...` caused CI runners on Linux to fail under `-D warnings` (`error: variable does not need to be mutable`, `-D unused-mut`).
+
+Rather than adding `#[allow(unused_mut)]`, `dirs` is declared immutable on all platforms (`let dirs = path_dirs(...);`), and rebound as mutable only inside the Windows-specific block:
+```rust
+#[cfg(windows)]
+{
+    let mut dirs = dirs;
+    ...
+    dirs
+}
+#[cfg(not(windows))]
+dirs
+```
+This cleanly eliminates the unused mutability warning on Linux and macOS without lint suppressions.

@@ -247,9 +247,10 @@ pub fn path_dirs(path_var: Option<&str>) -> Vec<PathBuf> {
 /// while the app or shell is already running are discovered on refresh without
 /// a reboot.
 pub fn live_path_dirs() -> Vec<PathBuf> {
-    let mut dirs = path_dirs(std::env::var("PATH").ok().as_deref());
+    let dirs = path_dirs(std::env::var("PATH").ok().as_deref());
     #[cfg(windows)]
     {
+        let mut dirs = dirs;
         for raw in windows_registry_path_strings() {
             for candidate in path_dirs(Some(&raw)) {
                 let already_present = dirs.iter().any(|existing| {
@@ -262,7 +263,9 @@ pub fn live_path_dirs() -> Vec<PathBuf> {
                 }
             }
         }
+        dirs
     }
+    #[cfg(not(windows))]
     dirs
 }
 
