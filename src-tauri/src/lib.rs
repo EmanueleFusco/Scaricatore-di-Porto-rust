@@ -50,6 +50,7 @@ fn on_exit(app: &tauri::AppHandle) {
 /// Spec §13.3 prescribes disabling it as the fallback. This is applied before the
 /// webview is created, and an explicit `WEBKIT_DISABLE_DMABUF_RENDERER` value is
 /// always respected.
+#[cfg(any(target_os = "linux", test))]
 fn is_wayland_session(wayland_display: Option<&str>, xdg_session_type: Option<&str>) -> bool {
     wayland_display.is_some_and(|value| !value.is_empty())
         || xdg_session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))

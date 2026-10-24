@@ -4577,3 +4577,16 @@ Branch `m4-media-processing`.
   - `( cd src-tauri && cargo test )` → all 441 unit and integration tests passed.
 - Not verified / stubbed: none.
 - Next step: unchanged.
+
+## 2026-10-24 — M7 / Fix macOS/Windows `gemini_pipeline` integration test key lookup and warnings
+
+- Done:
+  - Fixed the 3 `tests/gemini_pipeline.rs` failures on macOS (`process tests (macos-arm64)`) and Windows: in `src-tauri/src/services/secrets.rs`, `get_gemini_api_key_with()` and `get_gemini_key_status_with()` gated the `<config_dir>/gemini_api_key` fallback file behind `#[cfg(any(target_os = "linux", test))]`. Because Cargo compiles the library crate with `cfg(test)` disabled when linking integration tests in `tests/`, non-Linux runners ignored the test's temporary `<config_dir>/gemini_api_key` file and failed with `GEMINI_KEY_MISSING`. Removed the `#[cfg(any(target_os = "linux", test))]` gate on the read path (`set_gemini_api_key_with` still restricts fallback writes to Linux/unit-test).
+  - Removed the two `unused variable: config_dir` warnings in `secrets.rs` and added `#[cfg(any(target_os = "linux", test))]` to `is_wayland_session()` in `src-tauri/src/lib.rs` to eliminate the `dead_code` warning on macOS and Windows.
+- Verified by running:
+  - `( cd src-tauri && cargo fmt --all -- --check )` → pass.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → pass, 0 warnings.
+  - `( cd src-tauri && cargo test --test gemini_pipeline )` → 20 passed, 0 failed.
+- Not verified / stubbed: re-run of `CI` on `macos-arm64` / `windows-x64` pending workflow dispatch on updated `v0.1.0` tag.
+- Decisions/deviations (also in DECISIONS.md): none.
+- Next step: re-run the `CI` workflow on the updated `v0.1.0` tag.

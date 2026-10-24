@@ -175,16 +175,14 @@ pub fn get_gemini_api_key_with<K: KeyringBackend + ?Sized, E: Fn(&str) -> Option
         }
     }
 
-    // 3. Fallback file (Linux fallback when no Secret Service is available, spec §10.5)
-    #[cfg(any(target_os = "linux", test))]
-    {
-        let path = fallback_key_path(config_dir);
-        if path.is_file() {
-            if let Ok(contents) = fs::read_to_string(&path) {
-                let trimmed = contents.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_owned());
-                }
+    // 3. Fallback file (Linux fallback when no Secret Service is available, spec §10.5;
+    // also checked by integration tests across platforms without touching the OS keyring)
+    let path = fallback_key_path(config_dir);
+    if path.is_file() {
+        if let Ok(contents) = fs::read_to_string(&path) {
+            let trimmed = contents.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
             }
         }
     }
@@ -218,18 +216,16 @@ pub fn get_gemini_key_status_with<K: KeyringBackend + ?Sized, E: Fn(&str) -> Opt
         }
     }
 
-    // 3. Fallback file (Linux fallback when no Secret Service is available, spec §10.5)
-    #[cfg(any(target_os = "linux", test))]
-    {
-        let path = fallback_key_path(config_dir);
-        if path.is_file() {
-            if let Ok(contents) = fs::read_to_string(&path) {
-                if !contents.trim().is_empty() {
-                    return GeminiKeyStatus {
-                        has_key: true,
-                        source: KeySource::File,
-                    };
-                }
+    // 3. Fallback file (Linux fallback when no Secret Service is available, spec §10.5;
+    // also checked by integration tests across platforms without touching the OS keyring)
+    let path = fallback_key_path(config_dir);
+    if path.is_file() {
+        if let Ok(contents) = fs::read_to_string(&path) {
+            if !contents.trim().is_empty() {
+                return GeminiKeyStatus {
+                    has_key: true,
+                    source: KeySource::File,
+                };
             }
         }
     }
