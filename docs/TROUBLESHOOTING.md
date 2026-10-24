@@ -47,7 +47,8 @@ Transcription & Models**.
    extraction failures are fixed by an update.
 2. Try the **nightly** channel if the stable release is behind.
 3. If the message mentions a **JavaScript challenge**, keep the runtime on
-   **Automatic** or install **Deno** when the app offers it.
+   **Automatic** (**Settings → Network & Accounts → JavaScript runtime**) or
+   install **Deno** when the app offers it.
 4. If the site asks for a login, configure **cookies** (see below).
 5. If the site blocks automated requests, enable **Retry blocked requests with
    Chrome impersonation**.
@@ -84,7 +85,8 @@ language. **Subtitles only** intentionally fails when there are no subtitles.
 
 ### Whisper is slow or runs out of memory
 
-Whisper runs on the CPU. A smaller model is faster and uses less RAM; **Small**
+On Windows and Linux Whisper runs on the CPU; on macOS it uses Metal and falls
+back to the CPU if the GPU fails. A smaller model is faster and uses less RAM; **Small**
 is a reasonable choice on 4-core machines, **Turbo** is the best quality/size
 trade-off on modern hardware. Close other memory-heavy applications, and lower
 **CPU threads** only if the rest of the system becomes unresponsive.
@@ -162,10 +164,10 @@ itself. The timestamp is local UI state, not a setting.
 
 ### Linux: the window is black or crashes on Wayland
 
-Some WebKitGTK/GPU combinations cannot allocate DMA-BUF buffers. From this
-version the app disables WebKitGTK's DMA-BUF renderer itself when it detects a
-Wayland session on Linux, so the common case no longer needs environment
-variables. If it still crashes, launch with:
+Some WebKitGTK/GPU combinations cannot allocate DMA-BUF buffers. The app
+disables WebKitGTK's DMA-BUF renderer by itself when it detects a Wayland
+session with the NVIDIA proprietary driver. On other setups, or if it still
+fails, launch with:
 
 ```bash
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
@@ -177,8 +179,8 @@ If the window still crashes, force XWayland:
 GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Scaricatore*.AppImage
 ```
 
-For older builds, `npm run app` applies both workarounds on Wayland. Installed
-packages may still need the variables in the launcher or desktop entry.
+For the `.deb`/`.rpm` packages, add the same variables to the desktop entry's
+`Exec=` line (prefix it with `env`).
 
 ### Linux: the folder picker or "Open file" does nothing
 
@@ -228,7 +230,7 @@ the add bar. Playlists can use a folder per playlist.
 ### "Insufficient disk space"
 
 Free some space and retry. Whisper models are large (the recommended Turbo
-model is about 547 MB), and a transcription may temporarily need room for a WAV
+model is about 574 MB), and a transcription may temporarily need room for a WAV
 and chunks. The models table shows the free space before a download.
 
 ### I want to start over

@@ -4476,3 +4476,20 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: none.
 - Decisions/deviations (also in DECISIONS.md): D138.
 - Next step: unchanged — back up the updater key, add the CI secrets, publish a signed release.
+
+## 2026-10-24 — M7 / Review user-facing docs
+
+- Done: checked `docs/TROUBLESHOOTING.md` and `docs/SUPPORTED_SITES.md` against
+  the UI strings (`src/lib/i18n/en.json`, settings pages) and the backend.
+  Fixed in TROUBLESHOOTING: Turbo model size (574 MB, from `whisper.models.json`),
+  Whisper uses Metal on macOS (`whisper-sidecar.yml`, `-ng` fallback), the
+  automatic DMA-BUF workaround only triggers on Wayland + NVIDIA (`lib.rs`),
+  location of the JavaScript runtime setting, and replaced the developer-only
+  `npm run app` hint with a desktop-entry hint. SUPPORTED_SITES needed no change.
+- Verified by running: grep of every UI label and setting location quoted in
+  the two docs; all match.
+- Not verified / stubbed: the docs describe behaviour; it was checked in code,
+  not by running the app.
+- Found, not fixed (UI, not docs): `job.deno.body`, `job.whisper.body` and
+  `tools.selfTest.hint` show "spec §…" references to end users.
+- Next step: unchanged.
