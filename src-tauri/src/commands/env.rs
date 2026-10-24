@@ -35,6 +35,9 @@ pub struct JobTools {
 /// more on Windows), and it used to happen four times per paste. The cache is
 /// keyed by the override, and the commands that can change a binary clear it.
 pub async fn resolve_job_tools(state: &AppState, settings: &Settings) -> AppResult<JobTools> {
+    let context = state.tools();
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
+
     let ytdlp = resolve_cached(state, settings, manifest::YTDLP)
         .await
         .ok_or_else(|| not_found(manifest::YTDLP))?;
@@ -74,14 +77,12 @@ pub async fn resolve_cached(
     settings: &Settings,
     tool: &str,
 ) -> Option<ResolvedTool> {
-    let override_path = settings
-        .tool_override(tool)
-        .map(std::path::Path::to_path_buf);
+    let context = state.tools();
+    let lookup = context.lookup(settings, tool);
+    let override_path = lookup.override_path.clone();
     if let Some(resolved) = state.cached_tool(tool, override_path.as_deref()) {
         return Some(resolved);
     }
-    let context = state.tools();
-    let lookup = context.lookup(settings, tool);
     let resolved = tools::resolve(tool, &lookup, context.triple(), context.temp_dir()).await;
     if let Some(resolved) = &resolved {
         state.cache_tool(tool, override_path.as_deref(), resolved);

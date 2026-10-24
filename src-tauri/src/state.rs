@@ -922,6 +922,10 @@ pub struct ToolContext {
     bundled_dir: PathBuf,
     temp_dir: Option<PathBuf>,
     data_dir: PathBuf,
+    /// When `Some`, overrides the host OS `PATH` and well-known directories so
+    /// sandboxed test contexts stay hermetic regardless of what tools are
+    /// installed on the developer's machine.
+    custom_path_dirs: Option<Vec<PathBuf>>,
 }
 
 impl ToolContext {
@@ -944,6 +948,7 @@ impl ToolContext {
             bundled_dir,
             temp_dir,
             data_dir,
+            custom_path_dirs: None,
         })
     }
 
@@ -960,6 +965,7 @@ impl ToolContext {
             bundled_dir: root.join("bundled"),
             temp_dir: None,
             data_dir: root,
+            custom_path_dirs: Some(Vec::new()),
         }
     }
 
@@ -972,7 +978,14 @@ impl ToolContext {
             bundled_dir: root.join("bundled"),
             temp_dir: Some(root.join("tmp")),
             data_dir: root.to_path_buf(),
+            custom_path_dirs: Some(Vec::new()),
         }
+    }
+
+    /// Supply explicit `PATH` directories for a sandboxed test context.
+    pub fn with_path_dirs(mut self, path_dirs: Vec<PathBuf>) -> Self {
+        self.custom_path_dirs = Some(path_dirs);
+        self
     }
 
     pub fn manifest(&self) -> &ToolsManifest {
@@ -1018,13 +1031,17 @@ impl ToolContext {
 
     /// Build the spec §5.2 lookup for `tool`, honouring the user's override.
     pub fn lookup(&self, settings: &Settings, tool: &str) -> Lookup {
-        Lookup {
-            override_path: settings.tool_override(tool).map(Path::to_path_buf),
-            tools_dir: self.tools_dir.clone(),
-            bundled_dir: self.bundled_dir.clone(),
-            path_dirs: tools::path_dirs(std::env::var("PATH").ok().as_deref()),
-            well_known_dirs: tools::well_known_dirs(paths::home_dir().as_deref()),
+        let mut lookup = tools::lookup_for(
+            settings,
+            tool,
+            self.bundled_dir.clone(),
+            self.tools_dir.clone(),
+        );
+        if let Some(path_dirs) = &self.custom_path_dirs {
+            lookup.path_dirs = path_dirs.clone();
+            lookup.well_known_dirs = Vec::new();
         }
+        lookup
     }
 }
 

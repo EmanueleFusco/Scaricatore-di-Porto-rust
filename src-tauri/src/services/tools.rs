@@ -137,22 +137,199 @@ pub fn fetched_name(tool: &str, triple: &str) -> String {
 }
 
 /// `…/tools/<tool>/` — lookup order #2 (spec §5.2).
+///
+/// `ffprobe` shares `tools/ffmpeg/` with `ffmpeg`: yt-dlp's
+/// `--ffmpeg-location` flag searches a single directory for both binaries, so
+/// installing them into separate folders would leave `yt-dlp` unable to find
+/// `ffprobe` during post-processing when neither is on the system `PATH`.
 pub fn app_data_dir_for(tools_dir: &Path, tool: &str) -> PathBuf {
-    tools_dir.join(tool)
+    if tool == FFPROBE {
+        tools_dir.join(FFMPEG)
+    } else {
+        tools_dir.join(tool)
+    }
+}
+
+/// Move a previously installed `<tools_dir>/ffprobe/ffprobe[.exe]` into
+/// `<tools_dir>/ffmpeg/ffprobe[.exe]` so `yt-dlp --ffmpeg-location` can find
+/// both binaries in the same directory without re-downloading.
+pub fn migrate_legacy_ffprobe_dir(tools_dir: &Path, triple: &str) {
+    let exe = executable_name(FFPROBE, triple);
+    let legacy_dir = tools_dir.join(FFPROBE);
+    let legacy_bin = legacy_dir.join(&exe);
+    if !legacy_bin.is_file() {
+        return;
+    }
+    let target_dir = app_data_dir_for(tools_dir, FFPROBE);
+    let target_bin = target_dir.join(&exe);
+    if !target_bin.is_file() {
+        if paths::ensure_dir(&target_dir).is_ok()
+            && fs::rename(&legacy_bin, &target_bin).is_err()
+            && fs::copy(&legacy_bin, &target_bin).is_ok()
+        {
+            let _ = make_executable(&target_bin);
+            let _ = fs::remove_file(&legacy_bin);
+        }
+    } else {
+        let _ = fs::remove_file(&legacy_bin);
+    }
+    let _ = fs::remove_dir(&legacy_dir);
+}
+
+/// Remove the app-data copy of `tool` so resolution falls back to the system
+/// install (`PATH` or well-known directories).
+pub fn remove_app_data_tool(tools_dir: &Path, tool: &str, triple: &str) {
+    let exe = executable_name(tool, triple);
+    let target = app_data_dir_for(tools_dir, tool).join(&exe);
+    remove_path(&target);
+    if tool == FFPROBE {
+        let legacy = tools_dir.join(FFPROBE).join(&exe);
+        remove_path(&legacy);
+        let _ = fs::remove_dir(tools_dir.join(FFPROBE));
+    }
+}
+
+/// Expand `%VAR%` placeholders in a single Windows `PATH` entry using the
+/// process environment. Leaves unknown variables and non-Windows strings untouched.
+pub fn expand_percent_vars(entry: &str) -> String {
+    if !entry.contains('%') {
+        return entry.to_owned();
+    }
+    let mut out = String::with_capacity(entry.len());
+    let mut rest = entry;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after_start = &rest[start + 1..];
+        if let Some(end) = after_start.find('%') {
+            let var_name = &after_start[..end];
+            if !var_name.is_empty()
+                && let Some(val) = std::env::var_os(var_name)
+            {
+                out.push_str(&val.to_string_lossy());
+            } else {
+                out.push('%');
+                out.push_str(var_name);
+                out.push('%');
+            }
+            rest = &after_start[end + 1..];
+        } else {
+            out.push('%');
+            out.push_str(after_start);
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Directories from the inherited `PATH` (spec §5.2 #4).
 ///
-/// Read-only by construction: this is the only place `PATH` is touched, and it
+/// Read-only by construction: this is the only place `PATH` is parsed, and it
 /// only ever reads it (spec §4.8, "the app never mutates PATH").
 pub fn path_dirs(path_var: Option<&str>) -> Vec<PathBuf> {
     path_var
         .unwrap_or_default()
         .split(if cfg!(windows) { ';' } else { ':' })
         .filter(|entry| !entry.is_empty())
-        .map(PathBuf::from)
+        .map(|entry| {
+            if cfg!(windows) {
+                PathBuf::from(expand_percent_vars(entry))
+            } else {
+                PathBuf::from(entry)
+            }
+        })
         .filter(|entry| entry.is_absolute())
         .collect()
+}
+
+/// Directories from the process `PATH`, augmented on Windows with the live
+/// User and Machine `Path` values from the Registry so tools added to `PATH`
+/// while the app or shell is already running are discovered on refresh without
+/// a reboot.
+pub fn live_path_dirs() -> Vec<PathBuf> {
+    let mut dirs = path_dirs(std::env::var("PATH").ok().as_deref());
+    #[cfg(windows)]
+    {
+        for raw in windows_registry_path_strings() {
+            for candidate in path_dirs(Some(&raw)) {
+                let already_present = dirs.iter().any(|existing| {
+                    existing
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&candidate.to_string_lossy())
+                });
+                if !already_present {
+                    dirs.push(candidate);
+                }
+            }
+        }
+    }
+    dirs
+}
+
+#[cfg(windows)]
+fn windows_registry_path_strings() -> Vec<String> {
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+        RegGetValueW,
+    };
+    use windows::core::PCWSTR;
+
+    fn read_reg_sz(root: HKEY, subkey: &str, value: &str) -> Option<String> {
+        let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_w: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+        let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+        let mut byte_len: u32 = 0;
+        // SAFETY: `RegGetValueW` with `pvdata == None` queries the required buffer size in bytes.
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(subkey_w.as_ptr()),
+                PCWSTR(value_w.as_ptr()),
+                flags,
+                None,
+                None,
+                Some(&mut byte_len),
+            )
+        };
+        if status.is_err() || byte_len == 0 {
+            return None;
+        }
+        let word_len = (byte_len as usize).div_ceil(2);
+        let mut buf = vec![0u16; word_len];
+        let mut actual_bytes = byte_len;
+        // SAFETY: `buf` is allocated with `word_len` u16 elements (`>= byte_len` bytes).
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(subkey_w.as_ptr()),
+                PCWSTR(value_w.as_ptr()),
+                flags,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut actual_bytes),
+            )
+        };
+        if status.is_err() {
+            return None;
+        }
+        let used_words = (actual_bytes as usize / 2).min(buf.len());
+        let slice = &buf[..used_words];
+        let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+        Some(String::from_utf16_lossy(&slice[..end]))
+    }
+
+    let mut out = Vec::new();
+    if let Some(user_path) = read_reg_sz(HKEY_CURRENT_USER, "Environment", "Path") {
+        out.push(user_path);
+    }
+    if let Some(machine_path) = read_reg_sz(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        "Path",
+    ) {
+        out.push(machine_path);
+    }
+    out
 }
 
 /// Well-known install locations (spec §5.2 #5), in the order given.
@@ -272,6 +449,14 @@ pub fn candidates(tool: &str, lookup: &Lookup, triple: &str) -> Vec<(ToolSource,
         ToolSource::AppData,
         app_data_dir_for(&lookup.tools_dir, tool).join(&file_name),
     ));
+    // Legacy layout before `ffprobe` was co-located in `tools/ffmpeg/`: keep it
+    // as a fallback candidate in case the migration could not move the file.
+    if tool == FFPROBE {
+        out.push((
+            ToolSource::AppData,
+            lookup.tools_dir.join(FFPROBE).join(&file_name),
+        ));
+    }
     out.push((ToolSource::Bundled, lookup.bundled_dir.join(&file_name)));
     // In a real install the bundler has already stripped the target-triple
     // suffix, so the entry above is the only bundled name there is. In a
@@ -535,6 +720,51 @@ pub async fn resolve(
     None
 }
 
+/// First existing file among the `PATH` and well-known candidates for `tool`.
+pub fn first_system_candidate(tool: &str, lookup: &Lookup, triple: &str) -> Option<PathBuf> {
+    let file_name = executable_name(tool, triple);
+    lookup
+        .path_dirs
+        .iter()
+        .chain(lookup.well_known_dirs.iter())
+        .map(|dir| dir.join(&file_name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Resolve `tool` strictly from the system (`PATH` or well-known locations),
+/// ignoring overrides, `appData`, and `bundled`.
+pub async fn resolve_system(
+    tool: &str,
+    lookup: &Lookup,
+    triple: &str,
+    temp_dir: Option<&Path>,
+) -> Option<ResolvedTool> {
+    let file_name = executable_name(tool, triple);
+    let system_candidates = lookup
+        .path_dirs
+        .iter()
+        .map(|dir| (ToolSource::PathEnv, dir.join(&file_name)))
+        .chain(
+            lookup
+                .well_known_dirs
+                .iter()
+                .map(|dir| (ToolSource::WellKnown, dir.join(&file_name))),
+        );
+    for (source, path) in system_candidates {
+        let Some(banner) = probe_version(&path, tool, temp_dir).await else {
+            continue;
+        };
+        return Some(ResolvedTool {
+            name: tool.to_owned(),
+            path,
+            source,
+            version: parse_version_banner(&banner),
+            banner: banner.trim().to_owned(),
+        });
+    }
+    None
+}
+
 /// Every tool we know how to report on, resolved or not.
 ///
 /// A tool that is missing is **not** an error: spec §1.1 asks for "not
@@ -553,6 +783,10 @@ pub struct ToolStatus {
     pub installable: bool,
     pub source: Option<ToolSource>,
     pub path: Option<String>,
+    /// First matching executable found on the system `PATH` or well-known
+    /// directories, so the UI knows when a system install is available even
+    /// while an `appData` or `override` copy is active.
+    pub system_path: Option<String>,
     pub version: Option<String>,
     pub banner: Option<String>,
     pub meets_min_version: bool,
@@ -582,6 +816,8 @@ pub async fn status_of(
         .collect();
 
     let resolved = resolve(tool, lookup, triple, temp_dir).await;
+    let system_path =
+        first_system_candidate(tool, lookup, triple).map(|path| path.display().to_string());
     let entry = manifest.entry(tool, triple);
     let managed = manifest.tool(tool);
 
@@ -593,6 +829,7 @@ pub async fn status_of(
         installable: entry.map(|e| e.is_installable()).unwrap_or(false),
         source: resolved.as_ref().map(|r| r.source),
         path: resolved.as_ref().map(|r| r.path.display().to_string()),
+        system_path,
         version: resolved.as_ref().and_then(|r| r.version.clone()),
         banner: resolved.as_ref().map(|r| r.banner.clone()),
         meets_min_version: resolved
@@ -606,6 +843,19 @@ pub async fn status_of(
 // ---------------------------------------------------------------------------
 // The bundled baseline (spec §5.2.1)
 // ---------------------------------------------------------------------------
+
+/// Does `dir` contain a bundled `yt-dlp` binary (either stripped or suffixed)?
+fn has_bundled_ytdlp(dir: &Path) -> bool {
+    if dir.join("yt-dlp").is_file() || dir.join("yt-dlp.exe").is_file() {
+        return true;
+    }
+    if let Ok(triple) = manifest::current_target_triple() {
+        if dir.join(fetched_name(manifest::YTDLP, &triple)).is_file() {
+            return true;
+        }
+    }
+    false
+}
 
 /// Where the bundled tools live at runtime.
 ///
@@ -627,8 +877,8 @@ pub fn bundled_dir() -> Option<PathBuf> {
     // not as "look somewhere else".
     if cfg!(debug_assertions)
         && let Some(dev_dir) = dev_binaries_dir()
-        && !dir.join("yt-dlp").is_file()
-        && dev_dir.join("yt-dlp").is_file()
+        && !has_bundled_ytdlp(&dir)
+        && has_bundled_ytdlp(&dev_dir)
     {
         return Some(dev_dir);
     }
@@ -645,35 +895,66 @@ fn dev_binaries_dir() -> Option<PathBuf> {
     None
 }
 
+/// Derive a sibling companion binary (`ffprobe` next to `ffmpeg` or vice versa)
+/// from an override path, when that sibling actually exists on disk.
+pub fn sibling_companion_override(
+    base_override: &Path,
+    companion: &str,
+    windows: bool,
+) -> Option<PathBuf> {
+    let dir = if base_override.is_dir() {
+        base_override
+    } else {
+        base_override.parent()?
+    };
+    let file_name = if windows {
+        format!("{companion}.exe")
+    } else {
+        companion.to_owned()
+    };
+    let candidate = dir.join(file_name);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// Build the whole lookup from the environment.
 pub fn lookup_from(
     settings: &crate::state::Settings,
     bundled_dir: PathBuf,
     tools_dir: PathBuf,
 ) -> Lookup {
-    Lookup {
-        override_path: settings
-            .tool_override(manifest::YTDLP)
-            .map(Path::to_path_buf),
-        tools_dir,
-        bundled_dir,
-        path_dirs: path_dirs(std::env::var("PATH").ok().as_deref()),
-        well_known_dirs: well_known_dirs(crate::services::paths::home_dir().as_deref()),
-    }
+    lookup_for(settings, manifest::YTDLP, bundled_dir, tools_dir)
 }
 
-/// The same, for a tool other than yt-dlp (the override map is keyed by name).
+/// The same, for any tool (the override map is keyed by name).
 pub fn lookup_for(
     settings: &crate::state::Settings,
     tool: &str,
     bundled_dir: PathBuf,
     tools_dir: PathBuf,
 ) -> Lookup {
+    let override_path = settings
+        .tool_override(tool)
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            // When the user points `ffmpeg` at a custom binary or folder without
+            // setting a separate `ffprobe` override, use the sibling `ffprobe`
+            // in that same directory if it exists on disk.
+            if tool == FFPROBE {
+                let ff_override = settings.tool_override(FFMPEG)?;
+                sibling_companion_override(ff_override, FFPROBE, cfg!(windows))
+            } else {
+                None
+            }
+        });
     Lookup {
-        override_path: settings.tool_override(tool).map(Path::to_path_buf),
+        override_path,
         tools_dir,
         bundled_dir,
-        path_dirs: path_dirs(std::env::var("PATH").ok().as_deref()),
+        path_dirs: live_path_dirs(),
         well_known_dirs: well_known_dirs(crate::services::paths::home_dir().as_deref()),
     }
 }
@@ -1779,5 +2060,89 @@ mod tests {
         // comment), so the test only has to prove the shape.
         let dir = bundled_dir().expect("a directory next to this executable");
         assert!(dir.is_absolute());
+    }
+
+    #[test]
+    fn ffprobe_shares_the_ffmpeg_app_data_directory_and_migrates_legacy_installs() {
+        assert_eq!(
+            app_data_dir_for(Path::new("/data/tools"), "ffmpeg"),
+            PathBuf::from("/data/tools/ffmpeg")
+        );
+        assert_eq!(
+            app_data_dir_for(Path::new("/data/tools"), "ffprobe"),
+            PathBuf::from("/data/tools/ffmpeg"),
+            "ffprobe must live alongside ffmpeg so yt-dlp --ffmpeg-location finds both"
+        );
+
+        let dir = TempDir::new().expect("temp dir");
+        let tools_dir = dir.path().join("tools");
+        let legacy_dir = tools_dir.join("ffprobe");
+        fs::create_dir_all(&legacy_dir).expect("create legacy dir");
+        let legacy_bin = legacy_dir.join("ffprobe.exe");
+        fs::write(&legacy_bin, b"ffprobe-bytes").expect("write legacy ffprobe");
+
+        migrate_legacy_ffprobe_dir(&tools_dir, WINDOWS);
+
+        let migrated = tools_dir.join("ffmpeg").join("ffprobe.exe");
+        assert!(
+            migrated.is_file(),
+            "ffprobe must be moved into tools/ffmpeg"
+        );
+        assert_eq!(fs::read(&migrated).expect("read"), b"ffprobe-bytes");
+        assert!(!legacy_bin.exists(), "legacy binary must be removed");
+        assert!(
+            !legacy_dir.exists(),
+            "empty legacy directory must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn ffprobe_inherits_a_sibling_override_when_only_ffmpeg_is_overridden() {
+        let dir = TempDir::new().expect("temp dir");
+        let ffmpeg_exe = dir.path().join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
+        let ffprobe_exe = dir.path().join(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        fs::write(&ffmpeg_exe, b"ffmpeg").expect("write ffmpeg");
+        fs::write(&ffprobe_exe, b"ffprobe").expect("write ffprobe");
+
+        let mut settings = crate::state::Settings::default();
+        settings.tool_paths.insert("ffmpeg".to_owned(), ffmpeg_exe);
+        let built = lookup_for(
+            &settings,
+            "ffprobe",
+            PathBuf::from("/app"),
+            PathBuf::from("/data/tools"),
+        );
+        assert_eq!(
+            built.override_path.as_deref(),
+            Some(ffprobe_exe.as_path()),
+            "ffprobe should automatically follow a sibling next to the custom ffmpeg override"
+        );
+    }
+
+    #[test]
+    fn remove_app_data_tool_deletes_the_downloaded_copy() {
+        let dir = TempDir::new().expect("temp dir");
+        let tools_dir = dir.path().join("tools");
+        let ffmpeg_dir = tools_dir.join("ffmpeg");
+        fs::create_dir_all(&ffmpeg_dir).expect("create dir");
+        let ffmpeg_bin = ffmpeg_dir.join("ffmpeg.exe");
+        let ffprobe_bin = ffmpeg_dir.join("ffprobe.exe");
+        fs::write(&ffmpeg_bin, b"ffmpeg").expect("write");
+        fs::write(&ffprobe_bin, b"ffprobe").expect("write");
+
+        remove_app_data_tool(&tools_dir, "ffmpeg", WINDOWS);
+        assert!(!ffmpeg_bin.exists());
+        assert!(ffprobe_bin.exists());
+
+        remove_app_data_tool(&tools_dir, "ffprobe", WINDOWS);
+        assert!(!ffprobe_bin.exists());
     }
 }

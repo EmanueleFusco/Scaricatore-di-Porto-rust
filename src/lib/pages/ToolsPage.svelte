@@ -18,6 +18,7 @@
   import {
     canUpdate,
     canUseOwnPath,
+    canUseSystemPath,
     splitToolBanner,
     toolRoleKey,
     toolState,
@@ -108,13 +109,15 @@
       <tbody>
         {#each rows as tool (tool.name)}
           {@const state = toolState(tool)}
-          <tr>
+          <tr class:tools__row--has-detail={Boolean(tool.path)}>
             <th scope="row" class="tools__name">
-              <div class="tools__name-head">
-                <span>{tool.name}</span>
-                {#if tool.bundled}<span class="tools__badge">{tt("tools.badge.bundled")}</span>{/if}
+              <div class="tools__name-inner">
+                <div class="tools__name-head">
+                  <span>{tool.name}</span>
+                  {#if tool.bundled}<span class="tools__badge">{tt("tools.badge.bundled")}</span>{/if}
+                </div>
+                {#if tool.role}<span class="field__hint">{roleLabel(tool)}</span>{/if}
               </div>
-              {#if tool.role}<span class="field__hint">{roleLabel(tool)}</span>{/if}
             </th>
             <td>{tool.source ? tt(`tools.source.${tool.source}`) : "—"}</td>
             <td>
@@ -131,72 +134,84 @@
               <span class="tools__status" data-state={state.state}>{tt(state.key)}</span>
             </td>
             <td class="tools__actions">
-              {#if canUpdate(tool)}
-                <button
-                  type="button"
-                  class="btn btn--small"
-                  disabled={toolsStore.busy}
-                  onclick={() => void toolsStore.updateYtdlp()}
-                >
-                  {tt("tools.action.update")}
-                </button>
-              {/if}
-              {#if tool.installable && !tool.path}
-                <button
-                  type="button"
-                  class="btn btn--small btn--primary"
-                  disabled={toolsStore.busy}
-                  onclick={() => void toolsStore.install(tool.name)}
-                >
-                  {#if toolsStore.installingTool === tool.name}
-                    {toolsStore.installPercent !== null
-                      ? tt("tools.action.installing", { percent: toolsStore.installPercent })
-                      : tt("tools.action.installingUnknown")}
-                  {:else}
-                    {tt("tools.action.install")}
-                  {/if}
-                </button>
-                {#if toolsStore.installingTool === tool.name}
+              <div class="tools__actions-inner">
+                {#if canUpdate(tool)}
                   <button
                     type="button"
                     class="btn btn--small"
-                    onclick={() => void toolsStore.cancelInstall()}
+                    disabled={toolsStore.busy}
+                    onclick={() => void toolsStore.updateYtdlp()}
                   >
-                    {tt("tools.action.cancel")}
+                    {tt("tools.action.update")}
                   </button>
                 {/if}
-              {:else if state.state === "notYetAvailable"}
-                <span class="field__hint">{tt("tools.install.unavailable")}</span>
-              {/if}
-              <button
-                type="button"
-                class="btn btn--small"
-                disabled={toolsStore.busy}
-                onclick={() => void toolsStore.test(tool.name)}
-              >
-                {tt("tools.action.test")}
-              </button>
-              {#if canUseOwnPath(tool)}
+                {#if tool.installable && !tool.path}
+                  <button
+                    type="button"
+                    class="btn btn--small btn--primary"
+                    disabled={toolsStore.busy}
+                    onclick={() => void toolsStore.install(tool.name)}
+                  >
+                    {#if toolsStore.installingTool === tool.name}
+                      {toolsStore.installPercent !== null
+                        ? tt("tools.action.installing", { percent: toolsStore.installPercent })
+                        : tt("tools.action.installingUnknown")}
+                    {:else}
+                      {tt("tools.action.install")}
+                    {/if}
+                  </button>
+                  {#if toolsStore.installingTool === tool.name}
+                    <button
+                      type="button"
+                      class="btn btn--small"
+                      onclick={() => void toolsStore.cancelInstall()}
+                    >
+                      {tt("tools.action.cancel")}
+                    </button>
+                  {/if}
+                {:else if state.state === "notYetAvailable"}
+                  <span class="field__hint">{tt("tools.install.unavailable")}</span>
+                {/if}
                 <button
                   type="button"
                   class="btn btn--small"
                   disabled={toolsStore.busy}
-                  onclick={() => void chooseOwnPath(tool.name)}
+                  onclick={() => void toolsStore.test(tool.name)}
                 >
-                  <FolderOpenIcon size={14} aria-hidden="true" focusable="false" />
-                  {tt("tools.action.ownPath")}
+                  {tt("tools.action.test")}
                 </button>
-              {/if}
-              {#if tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])}
-                <button
-                  type="button"
-                  class="btn btn--small"
-                  disabled={toolsStore.busy}
-                  onclick={() => void toolsStore.setToolPath(tool.name, null)}
-                >
-                  {tt("tools.action.clearPath")}
-                </button>
-              {/if}
+                {#if canUseOwnPath(tool)}
+                  <button
+                    type="button"
+                    class="btn btn--small"
+                    disabled={toolsStore.busy}
+                    onclick={() => void chooseOwnPath(tool.name)}
+                  >
+                    <FolderOpenIcon size={14} aria-hidden="true" focusable="false" />
+                    {tt("tools.action.ownPath")}
+                  </button>
+                {/if}
+                {#if canUseSystemPath(tool)}
+                  <button
+                    type="button"
+                    class="btn btn--small"
+                    disabled={toolsStore.busy}
+                    onclick={() => void toolsStore.useSystemPath(tool.name)}
+                  >
+                    {tt("tools.action.useSystemPath")}
+                  </button>
+                {/if}
+                {#if tool.source === "override" || Boolean(settingsStore.settings.toolPaths[tool.name])}
+                  <button
+                    type="button"
+                    class="btn btn--small"
+                    disabled={toolsStore.busy}
+                    onclick={() => void toolsStore.setToolPath(tool.name, null)}
+                  >
+                    {tt("tools.action.clearPath")}
+                  </button>
+                {/if}
+              </div>
             </td>
           </tr>
           {#if tool.path}
@@ -362,8 +377,18 @@
   .tools__table td {
     padding: var(--space-2) var(--space-3);
     text-align: left;
-    vertical-align: top;
+    vertical-align: middle;
     border-bottom: 1px solid var(--border);
+  }
+
+  .tools__table tr.tools__row--has-detail > th,
+  .tools__table tr.tools__row--has-detail > td {
+    border-bottom: none;
+  }
+
+  .tools__table tbody tr:last-child > th,
+  .tools__table tbody tr:last-child > td {
+    border-bottom: none;
   }
 
   .tools__table thead th {
@@ -374,10 +399,13 @@
   }
 
   .tools__name {
+    font-weight: 600;
+  }
+
+  .tools__name-inner {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    font-weight: 600;
   }
 
   .tools__name-head {
@@ -412,7 +440,7 @@
     color: var(--danger);
   }
 
-  .tools__actions {
+  .tools__actions-inner {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);

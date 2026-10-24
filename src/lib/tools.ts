@@ -34,6 +34,8 @@ export interface ToolStatus {
   installable: boolean;
   source: ToolSource | null;
   path: string | null;
+  /** First matching executable found on the system PATH or well-known dirs. */
+  systemPath?: string | null;
   version: string | null;
   /** The raw `--version` output, for "Copy details". */
   banner: string | null;
@@ -186,6 +188,21 @@ export function canUseOwnPath(tool: ToolStatus): boolean {
   return tool.availableOnPlatform;
 }
 
+/**
+ * Does the row offer "Use system PATH"?
+ * Shown when the active tool is not already coming from the system (`path` or
+ * `wellKnown`) and either a system binary was detected on disk or a
+ * non-bundled tool is currently using its `appData` / `override` copy (so a
+ * user who just added the tool to `PATH` while the page is open can switch
+ * with one click).
+ */
+export function canUseSystemPath(tool: ToolStatus): boolean {
+  if (!tool.availableOnPlatform) return false;
+  if (tool.source === "path" || tool.source === "wellKnown") return false;
+  if (tool.systemPath) return true;
+  return !tool.bundled && (tool.source === "appData" || tool.source === "override");
+}
+
 /** i18n key for a tool's human-readable role. */
 export function toolRoleKey(name: string): string {
   return `tools.role.${name}`;
@@ -220,6 +237,7 @@ export function normaliseToolStatus(raw: Partial<ToolStatus> | null | undefined)
     installable: raw?.installable === true,
     source: isToolSource(raw?.source) ? raw.source : null,
     path: typeof raw?.path === "string" && raw.path ? raw.path : null,
+    systemPath: typeof raw?.systemPath === "string" && raw.systemPath ? raw.systemPath : null,
     version: typeof raw?.version === "string" && raw.version ? raw.version : null,
     banner: typeof raw?.banner === "string" && raw.banner ? raw.banner : null,
     meetsMinVersion: raw?.meetsMinVersion !== false,

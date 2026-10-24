@@ -46,6 +46,8 @@ pub enum ErrorCode {
     NoSubtitles,
     /// In-app update check or install failed (spec §13.4).
     Update,
+    /// Requested tool was not found on the system PATH or well-known dirs.
+    ToolNotInPath,
 }
 
 impl ErrorCode {
@@ -71,6 +73,7 @@ impl ErrorCode {
             Self::GeminiBlocked => "GEMINI_BLOCKED",
             Self::NoSubtitles => "NO_SUBTITLES",
             Self::Update => "UPDATE",
+            Self::ToolNotInPath => "TOOL_NOT_IN_PATH",
         }
     }
 
@@ -97,6 +100,7 @@ impl ErrorCode {
             Self::GeminiBlocked => "error.geminiBlocked",
             Self::NoSubtitles => "error.noSubtitles",
             Self::Update => "error.update",
+            Self::ToolNotInPath => "error.tools.notInSystemPath",
         }
     }
 }
@@ -258,7 +262,7 @@ mod tests {
     use super::*;
 
     /// Every code, so a new one has to be added here and looked at.
-    const CODES: [ErrorCode; 19] = [
+    const CODES: [ErrorCode; 21] = [
         ErrorCode::Io,
         ErrorCode::Json,
         ErrorCode::Tauri,
@@ -278,6 +282,8 @@ mod tests {
         ErrorCode::GeminiModelNotFound,
         ErrorCode::GeminiBlocked,
         ErrorCode::NoSubtitles,
+        ErrorCode::Update,
+        ErrorCode::ToolNotInPath,
     ];
 
     #[test]

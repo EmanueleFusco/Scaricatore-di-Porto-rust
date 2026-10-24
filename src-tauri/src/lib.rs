@@ -249,6 +249,7 @@ pub fn run() {
             commands::tools::tools_status,
             commands::tools::tools_test,
             commands::tools::tools_set_path,
+            commands::tools::tools_use_system,
             commands::tools::tools_set_ytdlp_channel,
             commands::tools::tools_update_ytdlp,
             commands::tools::tools_install,

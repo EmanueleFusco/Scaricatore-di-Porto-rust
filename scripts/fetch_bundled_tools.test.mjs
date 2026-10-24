@@ -339,10 +339,10 @@ describe("the universal macOS target needs three names per tool", () => {
     // destinationPath is what both passes agree on: one suffix stripped, one
     // kept, depending on which of them is asking.
     expect(destinationPath("/out", "yt-dlp", "universal-apple-darwin")).toBe(
-      "/out/yt-dlp-universal-apple-darwin",
+      join("/out", "yt-dlp-universal-apple-darwin"),
     );
     for (const slice of UNIVERSAL_SLICES) {
-      expect(destinationPath("/out", "yt-dlp", slice)).toBe(`/out/yt-dlp-${slice}`);
+      expect(destinationPath("/out", "yt-dlp", slice)).toBe(join("/out", `yt-dlp-${slice}`));
       expect(lipoArchName(slice)).toMatch(/^(arm64|x86_64)$/);
     }
   });

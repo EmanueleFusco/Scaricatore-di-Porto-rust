@@ -54,6 +54,7 @@ fn tool_names(context: &crate::state::ToolContext) -> Vec<String> {
 /// the tools, and two copies would eventually disagree.
 pub(crate) async fn collect_tools_view(state: &AppState) -> AppResult<ToolsView> {
     let context = state.tools();
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
     let settings = state.settings();
     let mut rows = Vec::new();
     for name in tool_names(context) {
@@ -92,6 +93,7 @@ pub async fn tools_status(state: State<'_, AppState>) -> AppResult<ToolsView> {
 #[tauri::command]
 pub async fn tools_test(state: State<'_, AppState>, tool: String) -> AppResult<ToolStatus> {
     let context = state.tools();
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
     let settings = state.settings();
     let lookup = context.lookup(&settings, &tool);
     // A real probe again: drop what the session remembered.
@@ -140,6 +142,82 @@ pub fn tools_set_path(
     // The override just changed: a remembered probe answers the wrong question.
     state.clear_tool_cache();
     Ok(())
+}
+
+/// Switch `tool` to the copy found on the system `PATH` or well-known install
+/// locations, clearing any custom override and removing any shadowing `appData`
+/// copy once the system binary has been verified.
+#[tauri::command]
+pub async fn tools_use_system(state: State<'_, AppState>, tool: String) -> AppResult<ToolStatus> {
+    use_system_tool(&state, &tool).await
+}
+
+pub(crate) async fn use_system_tool(state: &AppState, tool: &str) -> AppResult<ToolStatus> {
+    let name = tool.trim();
+    if name.is_empty() {
+        return Err(refuse("tools_use_system: the tool name is empty"));
+    }
+    let context = state.tools();
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
+    let mut settings = state.settings();
+    let lookup = context.lookup(&settings, name);
+
+    let system_resolved =
+        tools::resolve_system(name, &lookup, context.triple(), context.temp_dir())
+            .await
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    ErrorCode::ToolNotInPath,
+                    format!("{name} was not found on the system PATH or well-known locations"),
+                )
+            })?;
+
+    let is_bundled = context
+        .manifest()
+        .tool(name)
+        .is_some_and(|declared| declared.bundled);
+
+    if is_bundled {
+        // Bundled tools sit at priority #3 (ahead of PATH #4), so pointing at
+        // the verified system copy uses the override slot.
+        settings
+            .tool_paths
+            .insert(name.to_owned(), system_resolved.path);
+    } else {
+        settings.tool_paths.remove(name);
+        tools::remove_app_data_tool(context.tools_dir(), name, context.triple());
+        // Keep the ffmpeg/ffprobe pair in sync when switching to the system
+        // install so yt-dlp's `--ffmpeg-location` finds both in the system dir.
+        let companion = if name == tools::FFMPEG {
+            Some(tools::FFPROBE)
+        } else if name == tools::FFPROBE {
+            Some(tools::FFMPEG)
+        } else {
+            None
+        };
+        if let Some(comp) = companion {
+            let comp_lookup = context.lookup(&settings, comp);
+            if tools::resolve_system(comp, &comp_lookup, context.triple(), context.temp_dir())
+                .await
+                .is_some()
+            {
+                settings.tool_paths.remove(comp);
+                tools::remove_app_data_tool(context.tools_dir(), comp, context.triple());
+            }
+        }
+    }
+
+    let settings = state.save_settings(settings).app_result()?;
+    state.clear_tool_cache();
+    let fresh_lookup = context.lookup(&settings, name);
+    Ok(tools::status_of(
+        context.manifest(),
+        name,
+        &fresh_lookup,
+        context.triple(),
+        context.temp_dir(),
+    )
+    .await)
 }
 
 /// Update yt-dlp (spec §5.5).
@@ -243,11 +321,12 @@ pub async fn tools_install<R: tauri::Runtime>(
     }
 
     let context = state.tools();
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
     let token = state.start_install();
-    // ffmpeg and ffprobe come from the same release; installing one without the
-    // other would leave duration probing broken with no obvious explanation.
-    let requested: Vec<&str> = if name == tools::FFMPEG {
-        vec![tools::FFMPEG, "ffprobe"]
+    // ffmpeg and ffprobe come from the same release and must live in the same
+    // directory (`tools/ffmpeg/`) so yt-dlp's `--ffmpeg-location` finds both.
+    let requested: Vec<&str> = if name == tools::FFMPEG || name == tools::FFPROBE {
+        vec![tools::FFMPEG, tools::FFPROBE]
     } else {
         vec![name.as_str()]
     };
@@ -352,9 +431,18 @@ pub fn bootstrap_first_run(context: &crate::state::ToolContext) -> Option<PathBu
     if context.triple().is_empty() {
         return None;
     }
-    let bundled = context
+    tools::migrate_legacy_ffprobe_dir(context.tools_dir(), context.triple());
+    let mut bundled = context
         .bundled_dir()
         .join(tools::executable_name(manifest::YTDLP, context.triple()));
+    if cfg!(debug_assertions) && !bundled.is_file() {
+        let suffixed = context
+            .bundled_dir()
+            .join(tools::fetched_name(manifest::YTDLP, context.triple()));
+        if suffixed.is_file() {
+            bundled = suffixed;
+        }
+    }
     if !bundled.is_file() {
         // Development build without a fetch, or a store build: not an error.
         // Logged, because "the Tools page says yt-dlp is missing" is otherwise

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canUpdate,
   canUseOwnPath,
+  canUseSystemPath,
   hasToolProblem,
   InFlightDeduplicator,
   isToolSource,
@@ -31,6 +32,7 @@ function tool(overrides: Partial<ToolStatus> = {}): ToolStatus {
     installable: false,
     source: "appData",
     path: "/data/tools/yt-dlp/yt-dlp",
+    systemPath: null,
     version: "2026.08.19",
     banner: "2026.08.19",
     meetsMinVersion: true,
@@ -116,6 +118,26 @@ describe("action availability", () => {
     expect(canUseOwnPath(tool({ name: "ffmpeg" }))).toBe(true);
     expect(canUseOwnPath(tool({ availableOnPlatform: false }))).toBe(false);
   });
+
+  it("offers 'use system PATH' when a non-bundled tool is in appData or a system copy exists", () => {
+    expect(
+      canUseSystemPath(tool({ name: "ffmpeg", bundled: false, source: "appData" })),
+    ).toBe(true);
+    expect(
+      canUseSystemPath(tool({ name: "ffmpeg", bundled: false, source: "path" })),
+    ).toBe(false);
+    expect(
+      canUseSystemPath(tool({ name: "ffmpeg", bundled: false, source: "wellKnown" })),
+    ).toBe(false);
+    expect(
+      canUseSystemPath(
+        tool({ name: "yt-dlp", bundled: true, source: "appData", systemPath: "/usr/bin/yt-dlp" }),
+      ),
+    ).toBe(true);
+    expect(
+      canUseSystemPath(tool({ name: "yt-dlp", bundled: true, source: "appData", systemPath: null })),
+    ).toBe(false);
+  });
 });
 
 describe("hasToolProblem()", () => {
@@ -142,6 +164,7 @@ describe("normaliseToolStatus()", () => {
       installable: false,
       source: null,
       path: null,
+      systemPath: null,
       version: null,
       banner: null,
       meetsMinVersion: true,
@@ -270,6 +293,7 @@ describe("optional tools never look like a problem", () => {
       installable: true,
       source: null,
       path: null,
+      systemPath: null,
       version: null,
     });
     const ffmpeg = tool({
@@ -278,6 +302,7 @@ describe("optional tools never look like a problem", () => {
       installable: true,
       source: null,
       path: null,
+      systemPath: null,
       version: null,
     });
     expect(toolState(deno)).toEqual({
@@ -297,6 +322,7 @@ describe("optional tools never look like a problem", () => {
       installable: true,
       source: null,
       path: null,
+      systemPath: null,
       version: null,
     });
     expect(toolState(whisper)).toEqual({

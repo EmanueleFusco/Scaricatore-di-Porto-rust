@@ -1255,7 +1255,13 @@ pub fn classify_stderr(stderr_tail: &[String], is_youtube: bool) -> YtdlpErrorCo
     let has = |pattern: &str| text.contains(pattern);
 
     // 1. The obvious, actionable ones first.
-    if has("ffmpeg not found") || has("ffmpeg is not installed") || has("ffmpeg not installed") {
+    if has("ffmpeg not found")
+        || has("ffmpeg is not installed")
+        || has("ffmpeg not installed")
+        || has("ffprobe not found")
+        || has("ffprobe is not installed")
+        || has("ffprobe not installed")
+    {
         return YtdlpErrorCode::FfmpegMissing;
     }
     if has("no space left") || has("enospc") {
@@ -2065,6 +2071,15 @@ mod tests {
         // ffmpeg
         assert_eq!(
             classify(&["ERROR: Postprocessing: ffmpeg not found"], false),
+            YtdlpErrorCode::FfmpegMissing
+        );
+        assert_eq!(
+            classify(
+                &[
+                    "ERROR: Postprocessing: ffprobe not found. Please install or provide the path using --ffmpeg-location"
+                ],
+                true
+            ),
             YtdlpErrorCode::FfmpegMissing
         );
         // A real message from the pinned binary for the audio path.

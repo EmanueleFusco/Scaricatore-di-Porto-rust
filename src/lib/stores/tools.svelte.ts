@@ -146,9 +146,32 @@ class ToolsStore {
       if (!isTauriRuntime()) return;
       await invoke("tools_set_path", { tool, path });
       await this.refresh();
+      if (tool === "ffmpeg" || tool === "ffprobe") {
+        void this.probeEncoders(true);
+      }
       this.clearError();
     } catch (err) {
       this.#fail(err);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** Switch `tool` to the copy on the system `PATH` or well-known directories. */
+  async useSystemPath(tool: string): Promise<ToolStatus | null> {
+    this.busy = true;
+    try {
+      if (!isTauriRuntime()) return null;
+      const status = normaliseToolStatus(await invoke<ToolStatus>("tools_use_system", { tool }));
+      await this.refresh();
+      if (tool === "ffmpeg" || tool === "ffprobe") {
+        void this.probeEncoders(true);
+      }
+      this.clearError();
+      return status;
+    } catch (err) {
+      this.#fail(err);
+      return null;
     } finally {
       this.busy = false;
     }
@@ -183,9 +206,11 @@ class ToolsStore {
       if (!isTauriRuntime()) return null;
       unlisten = await listen<ToolProgressEvent>("tool:progress", (event) => {
         const payload = event.payload;
-        // Installing ffmpeg also installs its ffprobe companion, so both event
-        // names belong to the same progress bar.
-        const companion = tool === "ffmpeg" && payload.tool === "ffprobe";
+        // Installing ffmpeg or ffprobe also installs its companion, so both
+        // event names belong to the same progress bar.
+        const companion =
+          (tool === "ffmpeg" && payload.tool === "ffprobe") ||
+          (tool === "ffprobe" && payload.tool === "ffmpeg");
         if (payload.tool !== tool && !companion) return;
         this.installPercent =
           typeof payload.total === "number" && payload.total > 0
@@ -196,6 +221,9 @@ class ToolsStore {
       // ffmpeg installs ffprobe too, so a single-row patch would leave the
       // companion stale. Re-read the whole table once, after the download.
       await this.refresh();
+      if (tool === "ffmpeg" || tool === "ffprobe") {
+        void this.probeEncoders(true);
+      }
       return status;
     } catch (err) {
       // A cancel is an answer, not a failure; the backend only says the

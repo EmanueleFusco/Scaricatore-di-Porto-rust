@@ -354,3 +354,70 @@ fn inspect_and_download_work_through_the_real_commands_with_a_fake_tool() {
         call(&window, "download_cancel", json!({ "jobId": job_id })).expect("must not fail");
     assert_eq!(value, json!(false));
 }
+
+#[test]
+fn tools_use_system_switches_from_app_data_copy_to_system_path_binary() {
+    let dir = TempDir::new().expect("temp dir");
+    let profile_dir = std::env::current_exe()
+        .expect("test binary path")
+        .parent()
+        .and_then(Path::parent)
+        .expect("<profile>/deps")
+        .to_path_buf();
+    let mut source = profile_dir.join("examples").join("fake_ytdlp");
+    if cfg!(windows) {
+        source.set_extension("exe");
+    }
+
+    let triple =
+        scaricatore_di_porto_lib::services::manifest::current_target_triple().expect("triple");
+    let exe_name = scaricatore_di_porto_lib::services::tools::executable_name("ffmpeg", &triple);
+    let probe_name = scaricatore_di_porto_lib::services::tools::executable_name("ffprobe", &triple);
+
+    // Put both an appData copy (which shadows PATH) and a system PATH copy on disk.
+    let app_ffmpeg_dir = dir.path().join("tools").join("ffmpeg");
+    std::fs::create_dir_all(&app_ffmpeg_dir).expect("app ffmpeg dir");
+    std::fs::copy(&source, app_ffmpeg_dir.join(&exe_name)).expect("copy app ffmpeg");
+    std::fs::copy(&source, app_ffmpeg_dir.join(&probe_name)).expect("copy app ffprobe");
+
+    let sys_bin = dir.path().join("sys_bin");
+    std::fs::create_dir_all(&sys_bin).expect("sys_bin dir");
+    let sys_ffmpeg = sys_bin.join(&exe_name);
+    let sys_ffprobe = sys_bin.join(&probe_name);
+    std::fs::copy(&source, &sys_ffmpeg).expect("copy sys ffmpeg");
+    std::fs::copy(&source, &sys_ffprobe).expect("copy sys ffprobe");
+
+    let tools = scaricatore_di_porto_lib::state::ToolContext::in_dir(dir.path())
+        .with_path_dirs(vec![sys_bin]);
+    let state =
+        AppState::from_path_with_tools(dir.path().join("settings.json"), tools).expect("state");
+    let app = mock_builder()
+        .invoke_handler(tauri::generate_handler![
+            scaricatore_di_porto_lib::commands::tools::tools_status,
+            scaricatore_di_porto_lib::commands::tools::tools_use_system,
+        ])
+        .build(mock_context(noop_assets()))
+        .expect("mock app must build");
+    app.manage(state);
+    let window = webview(&app);
+
+    let initial = call(&window, "tools_status", json!({})).expect("tools_status");
+    let ffmpeg_before = initial["tools"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|entry| entry["name"] == "ffmpeg")
+        .expect("ffmpeg entry");
+    assert_eq!(ffmpeg_before["source"], "appData");
+    assert_eq!(
+        ffmpeg_before["systemPath"],
+        sys_ffmpeg.display().to_string()
+    );
+
+    let switched = call(&window, "tools_use_system", json!({ "tool": "ffmpeg" }))
+        .expect("tools_use_system must succeed");
+    assert_eq!(switched["source"], "path");
+    assert_eq!(switched["path"], sys_ffmpeg.display().to_string());
+    assert!(!app_ffmpeg_dir.join(&exe_name).exists());
+    assert!(!app_ffmpeg_dir.join(&probe_name).exists());
+}

@@ -4612,3 +4612,30 @@ Branch `m4-media-processing`.
 - Not verified / stubbed: none.
 - Decisions/deviations (also in DECISIONS.md): none.
 - Next step: push to `main` and update tag `v0.1.0`.
+
+
+## 2026-10-24 — M7 / Co-locate `ffmpeg` and `ffprobe`, add "Use system PATH" action, and fix Tools table borders (spec §5.2, §8.2, §11.8)
+
+- Done:
+  - Fixed `ERROR: Postprocessing: ffprobe not found` when `ffmpeg` is installed from within the app on a machine without a system `PATH` install:
+    - Updated `app_data_dir_for` in `src-tauri/src/services/tools.rs` so both `ffmpeg` and `ffprobe` share `<tools_dir>/ffmpeg/` across Windows, macOS, and Linux, matching `yt-dlp --ffmpeg-location`'s requirement that both binaries live in the same directory.
+    - Added `migrate_legacy_ffprobe_dir()` to move any existing `<tools_dir>/ffprobe/ffprobe[.exe]` into `<tools_dir>/ffmpeg/` and remove the empty legacy folder automatically on startup, inspection/download, and Tools page actions.
+    - Updated `tools_install` in `src-tauri/src/commands/tools.rs` so installing either `ffmpeg` or `ffprobe` provisions both into `<tools_dir>/ffmpeg/`.
+    - Updated `classify_stderr` in `src-tauri/src/services/ytdlp.rs` so `"ffprobe not found"` / `"ffprobe is not installed"` maps to `YtdlpErrorCode::FfmpegMissing`.
+  - Added automatic sibling companion lookup (`sibling_companion_override`) so a custom override path on `ffmpeg` automatically resolves `ffprobe` from the same folder (and vice versa).
+  - Added `systemPath` detection, live Windows Registry `PATH` reading (`HKCU\Environment` + `HKLM\...\Session Manager\Environment` with `%VAR%` expansion), and the `tools_use_system` command (`Usa dal PATH` / `Use system PATH` button in `ToolsPage.svelte`) so users can switch `ffmpeg` (or any tool with a system binary) from an in-app `appData` copy or custom override to the system `PATH` copy without restarting the app.
+  - Invalidated and re-probed the hardware video encoders cache (`probeEncoders(true)`) whenever `ffmpeg`/`ffprobe` is installed, switched to system `PATH`, or pointed to a custom path.
+  - Fixed dev-mode `bundled_dir()` and `bootstrap_first_run()` lookup on Windows when `yt-dlp.exe` or `yt-dlp-<triple>.exe` is present.
+  - Fixed the misaligned ("broken") horizontal row borders in `src/lib/pages/ToolsPage.svelte` by removing `display: flex` from `th.tools__name` and `td.tools__actions` table cells (`display: table-cell` is preserved on `<th>`/`<td>` and flex layout lives on inner `.tools__name-inner` / `.tools__actions-inner` wrappers) and unifying main-row + detail-row borders.
+  - Made `ToolContext::in_dir` and `ToolContext::isolated` hermetic with respect to the host machine's `PATH` so sandboxed integration tests do not pick up developer-installed binaries, and added `ToolContext::with_path_dirs` for explicit `PATH` testing.
+- Verified by running:
+  - `npm run check` → 0 errors, 0 warnings.
+  - `npm test -- --run` → 16 test files, 327 passed.
+  - `npm run build` → passed.
+  - `( cd src-tauri && cargo fmt --all -- --check )` → passed.
+  - `( cd src-tauri && cargo clippy --all-targets -- -D warnings )` → passed, 0 warnings.
+  - `( cd src-tauri && cargo test )` → all unit and integration tests passed (including new tests for `ffprobe` co-location/migration, sibling companion overrides, `ffprobe not found` classification, and `tools_use_system`).
+- Not verified / stubbed: none.
+- Spec items marked "verify" that I checked: verified `yt-dlp` `--ffmpeg-location` behaviour (requires `ffmpeg` and `ffprobe` in the same directory).
+- Decisions/deviations (also in DECISIONS.md): D139.
+- Next step: push to `main` and update release tag `v0.1.0`.
