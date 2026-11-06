@@ -258,3 +258,29 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none (documentation synthesis only).
 - Decisions/deviations (also in DECISIONS.md): D143.
 - Next step: commit documentation synthesis.
+
+## 2026-11-06 — M7 / Version 0.1.0 functional, UI and cross-platform audit
+
+- Done:
+  - Audited `ad1f67f` (application code identical to local tag `v0.1.0` / `89a4052`); added `docs/AUDIT_0.1.0.md` with prioritized findings, reproduction evidence, UI recommendations and explicit coverage limits.
+  - Launched the current native Windows app, inspected/downloaded the public zoo video, checked unavailable/unsupported/mixed-scheme inputs and the video/playlist choice, and completed loopback direct-video, Opus audio, HLS and HTML5-page downloads.
+  - Exercised parallel slow transfers, pause/resume, cancellation, queue filtering, compact/maximized layouts, the in-app QuickJS self-test, version display and the published update check. Closing during a transfer left no app or app-data tool processes in the subsequent host process inspection.
+  - Reproduced two high-priority defects: encoded output replacement without collision protection, and pending inspection rows stranded by a newer batch. Diagnostic probes also confirmed playlist reverse/order mismatch, whole mixed-batch resubmission and FFmpeg compiler-version misidentification. Recorded additional source-confirmed/platform-inferred defects separately from live reproductions.
+  - Ran real FFmpeg H.264/AAC trim (3.0 s output, original preserved), downloaded/verified the Windows Whisper sidecar and Tiny model, and generated nonempty TXT/SRT/VTT from short English speech. Tiny recognition errors remain; this is not an Italian/recommended-model quality acceptance.
+  - Built the current production executable: 6,961,152 bytes. No installer or update was installed. No functional source, dependencies, tags or remote GitHub state changed.
+  - Stopped the loopback servers, moved diagnostic scripts/fixtures/logs into ignored `src-tauri/target/audit-2026-11-06/`, removed only the nine audit-created queue entries, and verified that the two original history entries were unchanged. Generated media in Downloads remains available for inspection; model/sidecar probe installations were temporary.
+- Verified by running:
+  - `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` -> pass; repeated after removing temporary diagnostic test sources.
+  - `cargo test` -> 637 passed, 5 ignored; `npm.cmd test -- --run` -> 327 passed, 12 skipped, 16 files.
+  - `npm.cmd run check` -> 0 errors, 0 warnings; repeated at the end. `npm.cmd run build` -> pass.
+  - `npm.cmd run check:ci` -> all 24 blocks valid; `npm.cmd run check:release -- v0.1.0` -> pass.
+  - `npm.cmd run tauri build -- --no-bundle` -> pass, production executable compiled in 2m 22s; not independently tested as an installed package.
+  - `real_selftest-d76210a72cb6d09f.exe --ignored --no-capture --test-threads 1 the_self_test_passes_with_the_bundled_tools` -> pass, QuickJS, 25 formats, 8,766 ms; equivalent direct invocation of `the_whisper_sidecar_install_downloads_verifies_and_runs` -> pass.
+  - `node audit-output/store-repros.mjs` -> three undesired behaviors reproduced by the compiled stores/pure request builder before archival; `cargo test --test audit_repros -- --ignored --nocapture` -> three temporary diagnostic probes passed, including a real 32,152,673-byte Tiny model download/checksum/transcription. Diagnostic assertions deliberately observed current defects; they are not fixes or permanent regression expectations.
+  - `npm.cmd run app:binary` -> failed to find an existing Windows release binary; recorded as F10. `git diff --check` -> pass.
+- Not verified / stubbed:
+  - macOS/Linux native acceptance, fresh-machine installer/signing/AV, 1080p/4K/Shorts, a live large playlist, authenticated/live/DRM public providers, hardware encoders, Italian/large-model/long-audio/VAD transcription, real Gemini/summary/cloud cleanup, actual signed self-update, screen readers and a 5,000-row performance run. The folder picker opened but its modal controls were not reliably targetable by the automation helper; this was not classified as an app bug.
+  - Initial sandboxed Vitest/Rust/CI failures were temporary-file/named-object permission restrictions; unsandboxed reruns passed. A Cargo live-test launch hit the open Windows executable lock; direct invocation of the existing test executable passed. The first development instance was stopped to recover an automation-blocked native dialog; the later close-during-transfer check used normal window closure.
+- Spec items marked "verify" that I checked: used the actual FFmpeg/ffprobe help, the sidecar help and manifest-provided model/tool URLs and checksums; confirmed AppImage temporary mounts and the persistent `APPIMAGE` path in official AppImage documentation.
+- Decisions/deviations (also in DECISIONS.md): D144; findings only, awaiting owner triage before implementation. The read-only specification and reference app were not edited.
+- Next step: discuss F01–F02 first, then queue/playlist corrections and the remaining platform/service acceptance matrix.

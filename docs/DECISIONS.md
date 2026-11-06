@@ -936,3 +936,23 @@ boilerplate, and verbose conversational essays (with M0–M1 entries in Italian)
   review fixes folded in) while keeping the M7 and post-M7 blocks detailed at the bottom for
   `AGENTS.md` §10 session startup.
 - Translated and tightened `docs/SPIKES.md` (`S1`–`S6`) into English.
+
+## 2026-11-06 — Version 0.1.0 audit
+
+### D144 — Record audit findings before changing application behavior
+
+The owner requested analysis, live app tests and a report for discussion, rather
+than immediate fixes. `docs/AUDIT_0.1.0.md` therefore records reproduced defects,
+source-confirmed gaps and platform inferences separately. Output collisions and
+inspection lifecycle are the first proposed fixes. No functional changes, new
+dependencies, release/tag changes or GitHub issues were made. Diagnostic probes
+and downloaded fixtures stay under ignored `src-tauri/target/audit-2026-11-06/`.
+The nine audit queue entries were removed with a local backup; the two original
+history entries were verified unchanged.
+
+Windows native tests and short real-tool runs do not complete the specification's
+cross-platform acceptance matrix. In particular, the AppImage launcher risk is
+an inference from `current_exe()` and the official AppImage runtime documentation,
+not a native Linux reproduction. Real Gemini, macOS/Linux UI acceptance and the
+remaining long-audio/provider/installer cases need separate validation. No claim
+of complete acceptance or support-tier promotion follows from the green suite.
