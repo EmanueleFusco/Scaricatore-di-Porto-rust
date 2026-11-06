@@ -1,292 +1,138 @@
 # SPIKES
 
-Prove che **solo il proprietario** puo' fare: servono account, chiavi di firma,
-hardware o un giudizio su com'e' una cosa per l'utente finale. I campi dei
-risultati sono vuoti apposta: li compili tu.
+Manual checks that **only the owner** can perform because they require signing keys, accounts,
+target hardware, or human UX judgement. Empty result cells mean "not checked yet" (never "assumed
+OK").
 
-Ogni voce dice **cosa fare**, **come si fa** e **cosa scrivere**. Una voce vuota
-non e' "tutto bene": e' "non ancora guardato", e in `docs/PROGRESS.md` lo
-scrivi tale e quale.
-
-Riferimento: spec §5.2.1 (notarizzazione e antivirus), §1 (budget di
-dimensione), §14 riga M0 (criteri di uscita).
+References: spec §5.2.1 (notarization and antivirus), §1 (size budget), §7.4 (crash recovery), §14
+row M0 (exit criteria).
 
 ---
 
-## S1 — macOS: firmare e notarizzare l'app **con** yt-dlp e qjs dentro
+## S1 — macOS: sign and notarize the app **with** bundled `yt-dlp` and `qjs`
 
-**Perche' e' una spike, non un test.** `yt-dlp_macos` e' un binario
-PyInstaller: spec §5.2.1 lo dice esplicitamente e pretende che si verifichi se
-notarizza pulito. Se non si puo' notarizzare, il fallback e' gia' deciso nella
-spec: **non includere yt-dlp su macOS e scaricarlo al primo avvio**.
+**Why.** `yt-dlp_macos` is a PyInstaller binary; spec §5.2.1 requires verifying that it notarizes
+cleanly inside the `.app` bundle. If notarization fails and cannot be fixed with entitlements, the
+spec fallback is: **do not bundle `yt-dlp` on macOS and download it on first launch**.
 
-**Come.**
+**How.**
 
-1. Sul runner `macos-latest` scarica i tool:
-   `node scripts/fetch_bundled_tools.mjs --target universal-apple-darwin`
-2. Costruisci: `npx tauri build --target universal-apple-darwin`
-3. Firma con `codesign --options runtime --timestamp` usando l'identita'
-   Developer ID, poi `xcrun notarytool submit ... --wait` e `stapler staple`.
-4. **Controlla che i tool siano dentro la firma.** Il bundler li mette in
-   `Contents/MacOS/` accanto al binario principale e li aggiunge a `sign_paths`
-   (verificato in `tauri-bundler/src/bundle/macos/app.rs`), ma solo se la firma
-   e' attiva: con `--no-sign` non vengono firmati.
+1. Fetch bundled tools: `node scripts/fetch_bundled_tools.mjs --target universal-apple-darwin`
+2. Build: `npx tauri build --target universal-apple-darwin`
+3. Sign with `codesign --options runtime --timestamp` using the Developer ID identity, then
+   `xcrun notarytool submit ... --wait` and `stapler staple`.
+4. Verify that `Contents/MacOS/yt-dlp` and `Contents/MacOS/qjs` are signed alongside the main
+   binary (`tauri-bundler` only signs external binaries when signing is active).
 
-**Cosa puo' andare storto, e cosa scrivere.**
-
-| domanda | risultato |
+| Question | Result |
 | :-- | :-- |
-| `yt-dlp_macos` si firma con hardened runtime? | |
-| Servono entitlement per `yt-dlp_macos`? Quali? | |
-| Il notch accetta l'app **con dentro** i due binari? | |
-| `qjs` universale (lipo di arm64+x86_64) firma e passa? | |
-| Quanto pesa l'app firmata? | |
-| **Se fallisce:** si adotta il fallback "download al primo avvio su macOS"? | |
+| Does `yt-dlp_macos` sign with hardened runtime? | |
+| Are extra entitlements required for `yt-dlp_macos`? Which ones? | |
+| Does `notarytool` accept the `.app` **containing** both bundled binaries? | |
+| Does universal `qjs` (`lipo` of `arm64` + `x86_64`) sign and pass? | |
+| Signed `.dmg` / `.app.zip` size? | |
+| **If it fails:** adopt the "download on first launch on macOS" fallback? | |
 
-**Entitlement da provare se il notarization fallisce** (non sono verificati qui,
-sono i sospetti indicati da spec §5.2.1):
+**Candidate entitlements if notarization fails** (spec §5.2.1):
 
-- `com.apple.security.cs.allow-unsigned-executable-memory` — QuickJS compila il
-  codice a runtime
-- `com.apple.security.cs.disable-library-validation` — PyInstaller carica librerie
-  non firmate dalla sua stessa posizione
-
-Scrivi quale di questi ha risolto il problema: sono informazioni che si perdono.
+- `com.apple.security.cs.allow-unsigned-executable-memory` — QuickJS JIT / runtime codegen
+- `com.apple.security.cs.disable-library-validation` — PyInstaller loading extracted libraries
 
 ---
 
-## S2 — Windows: l'installer firmato su una macchina pulita, Defender acceso
+## S2 — Windows: signed NSIS installer on a clean machine with Defender & SmartScreen enabled
 
-**Perche'.** Spec §5.2.1: "PyInstaller executables sometimes trigger
-antivirus/SmartScreen heuristics". Un installer che SmartScreen blocca e'
-l'unico modo in cui un utente Windows scopre che l'app non parte.
+**Why.** Spec §5.2.1 notes that PyInstaller executables can trigger antivirus / SmartScreen
+heuristics.
 
-**Come.**
+**How.**
 
-1. Scarica l'installer dalla CI: Actions → `bundle (windows-x64)` → artifact
-   `windows-x64` → l'`.exe` di NSIS.
-2. Firmalo con un certificato di code signing
-   (`tauri.conf.json` → `bundle.windows.certificateThumbprint`, o la chiave nei
-   secret di CI).
-3. Copialo su **una macchina Windows vergine**: niente tool installati, Defender
-   acceso, SmartScreen come sta.
-4. Doppio clic, installa, apri.
+1. Download the `windows-x64` NSIS `.exe` installer from CI (`bundle (windows-x64)`).
+2. Sign it with a code-signing certificate (`bundle.windows.certificateThumbprint` or CI secret).
+3. Copy to a clean Windows machine with Defender and SmartScreen enabled, install, and launch.
 
-**Cosa scrivere.**
-
-| domanda | risultato |
+| Question | Result |
 | :-- | :-- |
-| L'installer si apre senza "Windows protected your PC"? | |
-| Defender segnala qualcosa durante l'installazione? | |
-| Quanto dura la prima apertura (estrazione di PyInstaller)? | |
-| L'app si avvia e trova yt-dlp + qjs inclusi? | |
-| `yt-dlp.exe` viene messo in quarantena da Defender? | |
+| Does the installer open without "Windows protected your PC"? | |
+| Does Defender flag anything during installation? | |
+| How long does the first launch / inspection take (PyInstaller unpack)? | |
+| Does the app find the bundled `yt-dlp.exe` and `qjs.exe`? | |
+| Is `yt-dlp.exe` quarantined by Defender? | |
 
 ---
 
-## S3 — Costo di avvio di yt-dlp: singolo file contro variante non impacchettata
+## S3 — `yt-dlp` startup cost: one-file PyInstaller bundle vs unpacked directory variant
 
-**Perche'.** Spec §5.2.1 segnala che i build ufficiali sono bundle PyInstaller
-one-file, **si spacchettano a ogni avvio**, e questa app avvia un processo
-yt-dlp per ogni ispezione e per ogni elemento della coda. Se il costo è
-visibile, la spec chiede di valutare la variante spacchettata.
-
-**Come misurare (non a occhio).**
+**Why.** Spec §5.2.1 notes that official one-file PyInstaller builds unpack on every run. Because we
+cache tool resolution per session (D75), `yt-dlp` is only spawned once per inspection/download. If
+the unpack cost is still noticeable (especially on Windows with Defender), evaluate the unpacked
+zip variant (`yt-dlp_linux.zip` / `yt-dlp_win.zip`, which lacks `-U` self-update and would require
+folder replacement in `tools_update_ytdlp`).
 
 ```bash
-# primo avvio (spacchettamento)
 time ./src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu --version
-# avvii successivi (cache del filesystem)
 for i in 1 2 3 4 5; do
   /usr/bin/time -f "%e s" ./src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu --version >/dev/null
 done
 ```
 
-Ripeti su Windows (`Measure-Command { .\yt-dlp.exe --version }`) e su macOS, e
-poi confronta con la variante spacchettata (`yt-dlp_linux.zip` / `yt-dlp_win.zip`
-dello stesso tag) che si decomprime in una cartella e si esegue da li'.
-
-**Cosa scrivere.**
-
-| piattaforma | one-file, 1° avvio | one-file, media 5 | spacchettato, media 5 |
+| Platform | One-file, 1st run | One-file, avg of 5 | Unpacked zip, avg of 5 |
 | :-- | :-- | :-- | :-- |
-| Linux x64 | | | |
+| Linux x64 | | 0.46 s (D75) | |
 | Windows x64 | | | |
 | macOS arm64 | | | |
 
-**Decisione:** si tiene il one-file o si passa allo spacchettato?
-
-> Nota: la variante non impacchettata **non ha l'auto-aggiornamento integrato**.
-> Se si sceglie quella, il nostro updater (spec §5.5) deve sostituire una
-> cartella invece di un file, e `tools_install`/`tools_update` vanno riscritti di
-> conseguenza. Verificare quale variante pubblica ogni piattaforma.
-
 ---
 
-## S4 — Budget di dimensione dell'installer
+## S4 — Installer size budget (spec §1, D132)
 
-**Perche'.** Spec §1 fissa il binario applicativo a **≤ 15 MB** e dice che
-"installer size ... measure it in M0 and fix the budget then". Il numero va
-deciso qui, non lasciato a un "vediamo".
+**Status (closed in M7 / D132).** Spec §1 fixes the **application binary** at **≤ 15 MB** and
+excludes the Linux AppImage (which embeds WebKitGTK). Linux release measurements with the M7
+updater enabled (2026-10-23, `ubuntu-24.04` / local build):
 
-**Status (M0): measured, not decided.** M7 recorded the Linux measurements in
-D132, without a hard installer-size gate; see the update at the end of this
-section. Measured on 2026-10-13, full build **with** the bundled tools
-(spec §5.2.1).
-
-**Rimisurati dopo D55**, che ha spostato `bundle` da `ubuntu-22.04` a
-`ubuntu-24.04`: i numeri della prima misura erano su 22.04 e **non valgono piu'**.
-Il confronto dice quale dei due il runner cambia, e quanto:
-
-| artefatto | 22.04 (prima) | 24.04 (adesso) | delta |
-| :-- | --: | --: | --: |
-| binario applicativo | 4,81 MiB | **4,70 MiB** | -2,3% |
-| `.deb` | 41,36 MiB | **41,3 MiB** | -0,1% |
-| `.rpm` | 41,36 MiB | **41,3 MiB** | -0,1% |
-| AppImage | 147,27 MiB | **116,4 MiB** | **-21%** |
-
-Con la build su 24.04, che e' quella della CI:
-
-| artefatto | dimensione | dentro il budget? |
+| Artifact | Size | Budget status |
 | :-- | --: | :-- |
-| binario applicativo `scaricatore-di-porto` | **4,70 MiB** | ✅ spec §1 fissa ≤ 15 MB |
-| `.deb` | **41,3 MiB** | da decidere |
-| `.rpm` | **41,3 MiB** | da decidere |
-| AppImage | **116,4 MiB** | escluso dal budget (spec §1: incorpora WebKitGTK) |
-| installer `.exe` (NSIS) | | mancante |
-| `.dmg` macOS arm64 | | mancante |
-| `.app.zip` macOS arm64 | | mancante |
-| `.dmg` macOS universal | | mancante |
-
-Da cui, la composizione dell'installer:
-
-| componente | byte | MiB |
-| :-- | --: | --: |
-| `yt-dlp` (standalone, incluso) | 40 446 224 | 38,6 |
-| `qjs` (QuickJS-NG 0.17.0, incluso) | 2 562 504 | 2,4 |
-| binario applicativo | 5 039 440 -> ~4,7 | 4,8 -> 4,7 |
-| `.deb` effettivo (compresso) | | **41,4** |
-
-Il termine dominante e' **yt-dlp**, che da solo e' il 93 % dell'installer. E' il
-prezzo esatto di "nessun passo di rete al primo avvio" (vedi D30): in cambio si
-paga 38,6 MiB in ogni installazione, anche per chi non scarica mai niente.
-
-Verificato dentro il `.deb`, non supposto:
-
-```
-/usr/bin/scaricatore-di-porto
-/usr/bin/yt-dlp
-/usr/bin/qjs
-```
-
-Tutti e tre nello stesso `PATH` di sistema, che e' dove spec §5.2 vuole i tool
-inclusi.
-
-**M7 update (2026-10-23, English).** The Linux numbers were re-measured with
-the M7 updater enabled: application binary **8.5 MiB**, `.deb` **43.2 MiB**,
-`.rpm` **43.2 MiB**, AppImage **148.9 MiB** (excluded). The application binary
-is under the spec §1 target of 15 MB. The installers are larger because they
-carry the bundled yt-dlp (~38.6 MiB) and qjs; this is expected, and D132
-deliberately sets **no hard installer-size gate**. Windows and macOS numbers
-will come from the first CI bundle on those runners.
-
-**Cosa scrivere.** (historical, pre-M7)
-
-- Budget installer Windows:
-- Budget installer macOS:
-- Budget .deb / .rpm:
-- **Va bene 41 MiB per un'installazione, o il vincolo deve essere piu' stretto?**
-- La decisione su S3 cambia questi numeri?
+| Application binary (`scaricatore-di-porto`) | **8.5 MiB** (4.70 MiB pre-M7) | ✅ Under spec §1 target (≤ 15 MB) |
+| `.deb` / `.rpm` (includes `yt-dlp` 38.6 MiB + `qjs` 2.4 MiB) | **43.2 MiB** | Reported by CI; no hard failure gate (D132) |
+| `.AppImage` | **148.9 MiB** | Excluded by spec §1 (embeds WebKitGTK) |
+| Windows NSIS `*-setup.exe` | | Reported by CI `bundle (windows-x64)` |
+| macOS universal `.dmg` / `.app.zip` | | Reported by CI `bundle-macos-universal` |
 
 ---
 
-## S5 — Prova a mano della cancellazione contro un yt-dlp vero
+## S5 — Manual cancellation check against a live `yt-dlp` process tree
 
-Non e' una spike nel senso stretto (serve la tua macchina, non un account), ma
-nessun test automatico puo' coprirla e resta aperta da M0-B.
+**Why.** `tests/process_tree.rs` verifies tree termination using `fake_tool`. This check confirms
+that cancelling a real in-flight download kills `yt-dlp` and any child `ffmpeg` / `qjs` / `deno`
+processes within ~2 s and leaves no orphans when closing the app mid-download.
 
-M0-B ha provato che l'albero di processi muore con un **programma finto**.
-Questa prova usa `yt-dlp` vero, che a sua volta avvia `ffmpeg` e l'interprete
-JavaScript.
-
-**Come.** Avvia un download vero e premi Annulla a metà. Poi guarda l'elenco dei
-processi del sistema.
-
-**Cosa scrivere.**
-
-| sistema | `yt-dlp` rimasto? | `ffmpeg` rimasto? | `qjs`/`deno` rimasto? | entro ~2 s? |
-| :-- | :-- | :-- | :-- | :-- |
-| Windows x64 | | | | |
-| Linux x64 | | | | |
-| macOS arm64 | | | | |
-
-Poi: chiudere l'app a meta' download lascia processi orfani?
+| System | `yt-dlp` left? | `ffmpeg` left? | `qjs`/`deno` left? | Killed within ~2 s? | Orphans on app quit? |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| Windows x64 | | | | | |
+| Linux x64 | | | | | |
+| macOS arm64 | | | | | |
 
 ---
 
-## S6 — Tier 2 (solo quando un runner lo permette)
+## S6 — Tier 2 targets (`.github/workflows/tier2.yml`, spec §1.1)
 
-Spec §1.1: macOS Intel, Windows ARM64 e Linux arm64 sono **sperimentali, solo
-CI**. Il pulsante `tier2` esiste gia' in `.github/workflows/tier2.yml`.
+Experimental CI-only targets (`workflow_dispatch`):
 
-- [ ] macOS Intel (`macos-15-intel`): build + test verdi?
-- [ ] Windows ARM64 (`windows-11-arm`): build + test verdi?
-- [ ] Linux arm64 (`ubuntu-24.04-arm`): build + test verdi?
-- [ ] yt-dlp e qjs esistono per questi target nel manifest?
-
-Per gli strumenti che **non** esistono come asset su un target, spec §1.1 vuole
-"not available on this platform" nella UI e **non** un fallimento silenzioso.
-**Cosa dice il confronto 22.04 -> 24.04 sul *perché* dei numeri, e vale piu' dei
-numeri.** `.deb` e `.rpm` non si sono mossi (−0,1%), l'AppImage è scesa del 21%.
-Non è rumore: è la differenza fra un pacchetto che **linka dinamicamente** e uno
-che **incorpora**. `.deb` e `.rpm` prendono WebKitGTK dal sistema, quindi
-cambiano solo se cambia il binario; l'AppImage se lo porta dentro, quindi cambia
-se cambia la WebKitGTK del runner su cui è costruita. È la stessa distinzione che
-spec §1 usa per escludere l'AppImage dal budget, resa visiva.
-
-Leversioni di `libwebkit2gtk-4.1-dev` dei due runner, prese dalle pagine dei
-pacchetti Ubuntu: **jammy (22.04) 2.50.4** e **noble (24.04) 2.52.6**. Quindi il
-−21% è *coerente* con un salto di WebKitGTK, ma **non è misurato**: per saperlo
-bisognerebbe aprire l'AppImage e pesare il pezzo. Scritto come inferenza, non
-come fatto.
-
-Il termine dominante non cambia e non può cambiare da qui: `yt-dlp` è un asset
-**scaricato**, non compilato. Il suo contributo all'installer dipende da GitHub,
-non dal runner.
+- [ ] macOS Intel (`macos-15-intel`): build + fake-tool tests green?
+- [ ] Windows ARM64 (`windows-11-arm`): build + fake-tool tests green?
+- [ ] Linux arm64 (`ubuntu-24.04-arm`): build + fake-tool tests green?
+- [ ] Missing platform tool assets cleanly reported as "not available on this platform" in UI (D126)?
 
 ---
 
-## S7 — A crash mid-download: the queue comes back `Interrupted` (D91)
+## S7 — Mid-download crash recovery: item comes back `Interrupted` (spec §7.4, D91)
 
-*Added 2026-10-15, in English per the repository language rule (AGENTS.md,
-D77); the spikes above were written before it.*
+**Why.** `start_item` persists `Downloading` to `queue.json` before spawning the child process (D91).
+Start a real download, wait until progress/speed is updating, then force-kill the app (`kill -9` on
+Linux/macOS or **End task** in Windows Task Manager) and relaunch.
 
-Spec §7.4 asks for different outcomes depending on **how** the app stopped, and
-the automated tests can only produce the one that ends in a clean write. This is
-the check for the row that matters most, because it is the one a user meets the
-first time the app dies on them: no question is asked, the machine is
-mid-download, and the next launch has to be careful.
-
-| how the app stopped | what `queue.json` says | what the next launch must do |
-| :-- | :-- | :-- |
-| quit from the menu, window closed | `cancelled` | **Retry** (nothing to continue) |
-| `kill -9`, power cut, OOM kill | `downloading` | `Interrupted` + a **Resume** button, and it must **not** start by itself |
-| killed between the write and the spawn | `downloading` | `Interrupted` + Resume — one unnecessary click, the cheap direction to be wrong in (D91) |
-
-**How.** Start a real download of something long enough to watch, wait until the
-row shows a speed and some progress, then `kill -9` the app on Linux/macOS, or
-**End task** on the app in the Task Manager on Windows. Relaunch it.
-
-**What to fill in.**
-
-| system | state in `queue.json` right after the kill | row after relaunch | did it start again on its own? | `.part` files still there? |
+| System | `queue.json` state after kill | Row state on relaunch | Auto-started on its own? (must be No) | `.part` files preserved & resumed on **Resume**? |
 | :-- | :-- | :-- | :-- | :-- |
 | Linux x64 | | | | |
 | Windows x64 | | | | |
 | macOS arm64 | | | | |
-
-Then press **Resume**: it must continue from the partial file rather than
-starting over (spec §7.3), and the temp directory must still belong to that
-item (spec §4.10 — the startup sweep must not delete it). The second half of
-this is covered by `queue_engine.rs` and needs no machine; only the first half
-does.
