@@ -95,6 +95,7 @@ npm run tauri build                 # bundle
 * Branch per phase: `m0-skeleton`, `m1-single-video`, … Commit often.
 * Commit message: `<area>: <what> (spec §x.y)` — e.g. `process: kill process tree on Windows via Job Object (spec §4.2)`. **In English**, like everything else on GitHub (see the language section at the top).
 * Never commit: downloaded tool binaries, models, API keys, `.env`, user data. `src-tauri/binaries/` and `target/` stay git-ignored.
+* Keep local audit downloads, generated diagnostic probes, captures and private backups in git-ignored locations; add any new local-only artifact paths to `.gitignore`. Commit application code, reusable regression tests and useful project documentation.
 
 ## 6. Code rules
 

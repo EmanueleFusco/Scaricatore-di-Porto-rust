@@ -284,3 +284,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: used the actual FFmpeg/ffprobe help, the sidecar help and manifest-provided model/tool URLs and checksums; confirmed AppImage temporary mounts and the persistent `APPIMAGE` path in official AppImage documentation.
 - Decisions/deviations (also in DECISIONS.md): D144; findings only, awaiting owner triage before implementation. The read-only specification and reference app were not edited.
 - Next step: discuss F01–F02 first, then queue/playlist corrections and the remaining platform/service acceptance matrix.
+
+## 2026-11-06 — M7 / Keep local audit material out of commits
+
+- Done: added `/audit-output/` and `*.private.json` to `.gitignore`; existing tool/model/build/log exclusions remain in force. Recorded the owner's preference in `AGENTS.md`: local diagnostic artifacts stay ignored; application changes, reusable regression tests and useful documentation are committed.
+- Verified by running: `git check-ignore -v audit-output/probe.mjs sample.private.json audit-cargo-tests.log src-tauri/target/audit-2026-11-06/queue-before-cleanup.private.json` -> all ignored; `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `npm.cmd run check`, `npm.cmd test -- --run`, `npm.cmd run build` -> pass with the pending F01 implementation in the working tree.
+- Not verified / stubbed: no runtime behavior changed by the ignore rules.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): none; explicit owner instruction.
+- Next step: commit the encoded-output collision fix separately.
