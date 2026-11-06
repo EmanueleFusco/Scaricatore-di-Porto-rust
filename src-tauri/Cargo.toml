@@ -1,6 +1,6 @@
 [package]
 name = "scaricatore-di-porto"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scaricatore Di Porto — cross-platform downloader and transcriber"
 authors = ["Scaricatore Di Porto contributors"]
 license = "MIT"

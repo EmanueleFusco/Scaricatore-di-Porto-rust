@@ -372,3 +372,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: installed Tauri appDirectoriesOverride schema/path behavior, existing native control/clipboard APIs; no new tool flag or dependency.
 - Decisions/deviations (also in DECISIONS.md): D152. Native testing found and corrected flex-basis squeezing and smooth-scroll interruption while row measurements changed; temporary geometry instrumentation was removed.
 - Next step: native installed-package/platform/service acceptance on the corresponding hardware/accounts; no release/tag/push is part of this audit fix pass.
+
+## 2026-11-06 — M7 / Prepare the 0.2.0 release version
+
+- Done: aligned package.json, package-lock.json, Cargo.toml, Cargo.lock and tauri.conf.json to 0.2.0 for the planned feature release.
+- Verified by running: `npm.cmd run check:release -- v0.2.0`, `npm.cmd run check:ci` -> all 24 blocks valid, `npm.cmd run check` -> 0 errors/warnings, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> 656 passed, 5 ignored, `npm.cmd test -- --run` -> 357 passed, 12 skipped, `npm.cmd run build`, `git diff --check` -> pass. Initial sandboxed Rust/Node runs hit Windows temp-file permissions; approved unsandboxed reruns passed. One timing-sensitive Rust test failed once in the first full run, passed alone and in the subsequent complete run.
+- Not verified / stubbed: release workflows and built installers have not been run for this version; tag, push and merge remain owner actions.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): version 0.2.0 chosen for the accumulated user-facing features and fixes since 0.1.0.
+- Next step: run the version check and required Rust/frontend checks, commit the version bump, then push and merge before tagging.

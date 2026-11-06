@@ -1,6 +1,6 @@
 {
   "name": "scaricatore-di-porto",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cross-platform downloader and transcriber (Rust + Tauri v2 + Svelte)",
   "type": "module",
   "scripts": {
