@@ -1026,3 +1026,19 @@ Official references checked: [AppImage environment variables](https://docs.appim
 and [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest-single/).
 Cross-platform tests cover quoting, preservation, ownership and legacy recognition;
 actual Linux AppImage menu acceptance remains unexecuted on this Windows host.
+
+### D149 — Make diagnostics and status feedback accurate (F06–F10)
+
+Inspection errors now expose collapsed, selectable technical details and a copy
+action, with configured header values, URL credentials/query values and common
+secret fields redacted. Failed clipboard access leaves a localized manual-copy
+fallback. FFmpeg/ffprobe version parsing is confined to the declared version
+token: nonnumeric git build identifiers are displayed intact but never compared
+as compiler/library versions. Positive rates below display precision show
+`<0.1 Mbit/s`. Manual pause no longer claims a restart; interrupted rows explain
+that the app closed.
+
+The development/release launcher uses fileURLToPath plus path joins and invokes
+the installed Tauri Node entry point or executable directly, without a shell.
+Tests cover spaces, Unicode and percent signs, secret redaction and real banner
+shapes. No new dependency or external tool flag was introduced.

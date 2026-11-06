@@ -330,3 +330,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: AppImage APPIMAGE semantics and freedesktop Exec/string escaping rules in official documentation.
 - Decisions/deviations (also in DECISIONS.md): D148; no dependency added.
 - Next step: commit feedback/diagnostic corrections and implement progressive inspection.
+
+## 2026-11-06 — M7 / Correct inspection diagnostics, versions, rates, pause labels and launcher (F06–F10)
+
+- Done: added collapsed/copyable redacted inspection details with clipboard failure feedback; parsed FFmpeg's own version field and displayed noncomparable build IDs; showed nonzero low-rate activity honestly; separated interruption from manual pause; fixed file URL conversion and shell-free launching on Windows and escaped paths. Added diagnostics/launcher regressions and banner/rate cases.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (652 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 342 passed, 12 skipped; `npm.cmd run build` -> pass. Confirmed installed `@tauri-apps/cli/tauri.js` entry point locally. Native UI acceptance is scheduled after the remaining changes.
+- Not verified / stubbed: native Linux/macOS execution and packaged launcher acceptance; no claim of perfect detection of arbitrary unlabelled secrets.
+- Spec items marked "verify" that I checked: installed Node/Tauri entry point; no new external tool flags.
+- Decisions/deviations (also in DECISIONS.md): D149.
+- Next step: incremental inspection, global inspection concurrency, playlist transcription, presets and queue UI/virtualization.

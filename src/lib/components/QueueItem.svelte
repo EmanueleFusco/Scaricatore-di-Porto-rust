@@ -310,8 +310,8 @@
         {#if item.durationSec !== null}
           · {secondsToClock(item.durationSec)}
         {/if}
-        {#if item.state === "paused" || item.state === "interrupted"}
-          · {tt("queue.item.resumed")}
+        {#if item.state === "interrupted"}
+          · {tt("queue.item.interrupted")}
         {/if}
         {#if item.retryAt !== null}
           · {tt("queue.item.retrying", { attempt: item.autoRetries })}

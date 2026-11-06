@@ -393,6 +393,8 @@ describe("the text the cards show", () => {
     expect(speedMbits(5e6)).toBe(38);
     // One decimal below 1 Mbit/s: a slow download must not read as `0`.
     expect(speedMbits(50_000)).toBe(0.4);
+    expect(speedMbits(1)).toBe("<0.1");
+    expect(speedMbits(6_000)).toBe("<0.1");
     expect(speedMbits(0)).toBeNull();
     expect(speedMbits(null)).toBeNull();
   });

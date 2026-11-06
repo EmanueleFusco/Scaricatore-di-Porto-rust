@@ -17,6 +17,7 @@
   banner on an authentication failure. The transcript options arrive with M4.
 -->
 <script lang="ts">
+  import InspectionError from "$lib/components/InspectionError.svelte";
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
   import DownloadIcon from "lucide-svelte/icons/download";
   import PlusIcon from "lucide-svelte/icons/plus";
@@ -475,6 +476,9 @@
             </button>
           </div>
 
+          {#if row.errorDetail}
+            <InspectionError detail={row.errorDetail} headers={[...settingsStore.settings.customHeaders, row.customHeaders].join("\n")} />
+          {/if}
           {#if row.state === "choice"}
             <div class="add__choice" role="group" aria-label={tt("queue.add.choice.title")}>
               <p class="field__hint">{tt("queue.add.choice.title")}</p>

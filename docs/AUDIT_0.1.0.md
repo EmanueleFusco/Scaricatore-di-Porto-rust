@@ -18,6 +18,8 @@ code therefore matches that tag. No application fixes were applied in this audit
   retained confirmations, and explicit reverse enqueue order (D147).
 - F05: implemented persistent AppImage paths and preservation of managed desktop
   entries (D148); native Linux acceptance still required.
+- F06–F10: corrected inspection details/copy, FFmpeg version parsing, low-speed
+  feedback, pause/interruption wording and shell-free launcher paths (D149).
 - The findings and reproduction notes below describe the audited baseline.
 
 The core download pipeline works in the exercised cases, and the ordinary test

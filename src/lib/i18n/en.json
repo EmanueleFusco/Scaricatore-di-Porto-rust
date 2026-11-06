@@ -101,6 +101,8 @@
   "queue.item.runtime": "Runtime: {runtime}",
   "queue.item.retrying": "Automatic retry {attempt}/2 shortly",
   "queue.item.resumed": "Resumed after a restart",
+  "queue.item.interrupted": "Interrupted when the app closed",
+  "queue.copyFailed": "Copy failed. Select the details and copy them manually.",
   "queue.item.action.pause": "Pause",
   "queue.item.action.resume": "Resume",
   "queue.item.action.cancel": "Cancel",

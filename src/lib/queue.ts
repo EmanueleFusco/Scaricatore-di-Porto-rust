@@ -781,14 +781,14 @@ export function selectRange(
 // ---------------------------------------------------------------------------
 
 /** bytes/s → Mbit/s, the unit the original and spec §8.3 use. */
-export function speedMbits(bytesPerSecond: number | null): number | null {
+export function speedMbits(bytesPerSecond: number | null): number | "<0.1" | null {
   if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
     return null;
   }
   const mbit = (bytesPerSecond * 8) / 1024 / 1024;
   // One decimal below 1 Mbit/s: `0` for a slow download reads as "stalled",
   // and the footer and the cards both show this number.
-  return mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
+  return mbit < 0.05 ? "<0.1" : mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
 }
 
 /**
