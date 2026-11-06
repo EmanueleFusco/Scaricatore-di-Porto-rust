@@ -86,9 +86,9 @@ async function readSignature(assetsDir, artifact) {
   return signature;
 }
 
-/** URL of one release asset. Spaces and other reserved characters are escaped. */
+/** URL of one release asset. GitHub Releases normalizes spaces in asset names to dots. */
 export function releaseAssetUrl(repo, tag, file) {
-  return `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(file)}`;
+  return `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(file.replaceAll(" ", "."))}`;
 }
 
 /**

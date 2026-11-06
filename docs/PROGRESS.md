@@ -391,3 +391,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none.
 - Decisions/deviations (also in DECISIONS.md): none; backward-compatible serde aliases keep existing `snake_case` persisted queue entries working alongside `camelCase` frontend requests.
 - Next step: commit and push to `main` and update tag `v0.2.0` so both stay in sync for manual CI dispatch.
+
+
+## 2026-11-06 — M7 / Normalize spaces to dots in updater manifest asset URLs
+- Done: updated `releaseAssetUrl` in `scripts/generate-latest-json.mjs` (and `scripts/generate-latest-json.test.mjs`) to replace spaces with dots (`.`) before percent-encoding asset filenames, matching GitHub Releases' automatic filename normalization when `gh release create` uploads artifacts whose names contain spaces (`"productName": "Scaricatore Di Porto"`).
+- Verified by running: `npm.cmd test -- --run` -> 357 passed, 12 skipped; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd run check:ci` -> 24 blocks valid; `npm.cmd run check:release -- v0.2.0` -> pass; `curl.exe -sI` against the published `v0.2.0` release assets confirmed `HTTP/1.1 302 Found` for the dot-normalized filenames (`Scaricatore.Di.Porto_0.2.0_x64-setup.exe`, `Scaricatore.Di.Porto_0.2.0_amd64.AppImage`, `Scaricatore.Di.Porto.app.tar.gz`) vs `HTTP/1.1 404 Not Found` for `%20`.
+- Not verified / stubbed: end-to-end installer replacement on the user's machine once the updated `latest.json` is uploaded to the `v0.2.0` GitHub Release.
+- Spec items marked "verify" that I checked: verified live GitHub Releases asset URL normalization on `v0.2.0`.
+- Decisions/deviations (also in DECISIONS.md): none.
+- Next step: upload the corrected `latest.json` to the `v0.2.0` GitHub Release and verify the 0.1.0 -> 0.2.0 in-app update.

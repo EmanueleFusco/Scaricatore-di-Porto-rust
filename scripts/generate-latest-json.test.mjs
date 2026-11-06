@@ -101,12 +101,12 @@ describe("the updater manifest", () => {
     expect(manifest.platforms["linux-x86_64"].url).not.toContain("AppImage.tar.gz");
   });
 
-  it("escapes spaces in the release asset URL", async () => {
+  it("normalizes spaces to dots in the release asset URL to match GitHub Releases", async () => {
     assets();
     const manifest = await build();
     expect(manifest.platforms["linux-x86_64"].url).toBe(
       "https://github.com/EmanueleFusco/Scaricatore-di-Porto-rust/releases/download/v0.1.0/" +
-        "Scaricatore%20Di%20Porto_0.1.0_amd64.AppImage.tar.gz",
+        "Scaricatore.Di.Porto_0.1.0_amd64.AppImage.tar.gz",
     );
   });
 
@@ -162,7 +162,7 @@ describe("the updater manifest", () => {
 
   it("builds a GitHub release URL without double-escaping the tag", () => {
     expect(releaseAssetUrl("owner/repo", "v1.0.0", "a b.AppImage")).toBe(
-      "https://github.com/owner/repo/releases/download/v1.0.0/a%20b.AppImage",
+      "https://github.com/owner/repo/releases/download/v1.0.0/a.b.AppImage",
     );
   });
 });
