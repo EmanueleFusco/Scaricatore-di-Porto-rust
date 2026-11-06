@@ -339,3 +339,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: installed Node/Tauri entry point; no new external tool flags.
 - Decisions/deviations (also in DECISIONS.md): D149.
 - Next step: incremental inspection, global inspection concurrency, playlist transcription, presets and queue UI/virtualization.
+
+## 2026-11-06 — M7 / Stream inspection results and enforce one shared concurrency budget
+
+- Done: added optional Tauri channel feedback per finished row with an ordered final-response fallback; preserved streamed successes on later batch failure; shared three inspection permits across all calls and made permit waits cancellable. Added streaming/failure store regressions and fake-tool integration tests measuring early feedback and a three-process peak across overlapping batches.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --examples`, `cargo test` -> pass (654 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 344 passed, 12 skipped; `npm.cmd run build` -> pass.
+- Not verified / stubbed: native GUI acceptance is scheduled after the UI work. An initial optional-Channel compilation failed; adapted to the verified JavaScriptChannelId API. A targeted peak test initially used the old fake executable (cargo test --examples builds its harness); rebuilding the actual examples fixed the fixture and the final full suite passed.
+- Spec items marked "verify" that I checked: installed Tauri 2.12.3 Channel::new/send, JavaScriptChannelId::channel_on and the frontend Channel constructor.
+- Decisions/deviations (also in DECISIONS.md): D150; no dependency or new external tool flag.
+- Next step: playlist transcription and persisted presets, then variable-height virtualization and queue layout/acceptance.

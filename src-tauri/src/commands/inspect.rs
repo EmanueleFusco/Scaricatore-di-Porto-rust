@@ -1,7 +1,9 @@
 //! The inspect IPC command (spec §6.2): thin, as `commands/` must be.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::State;
+use tauri::ipc::{Channel, JavaScriptChannelId};
 
 use crate::commands::env::resolve_job_tools;
 use crate::error::{AppResult, ErrorCode, ErrorInfo};
@@ -96,7 +98,16 @@ pub async fn inspect_url(
     let service_opts = options.unwrap_or_default().into_service_options(&settings);
 
     let token = state.start_inspection(request_id);
-    let outcome = inspect::inspect_with_options(&environment, &url, &service_opts, token).await;
+    let permit = tokio::select! {
+        biased;
+        _ = token.cancelled() => None,
+        permit = state.inspection_slots().acquire_owned() => permit.ok(),
+    };
+    let outcome = if let Some(_permit) = permit {
+        inspect::inspect_with_options(&environment, &url, &service_opts, token).await
+    } else {
+        InspectOutcome::Cancelled
+    };
     state.finish_inspection(request_id);
 
     match outcome {
@@ -130,7 +141,7 @@ pub fn inspect_cancel(
 
 /// How many URLs the batch inspection runs at once (spec §6.2: "Concurrency:
 /// inspect up to 3 URLs in parallel when many are pasted").
-pub const BATCH_CONCURRENCY: usize = 3;
+pub const BATCH_CONCURRENCY: usize = inspect::INSPECTION_CONCURRENCY;
 
 /// One answer of [`inspect_urls`], in the order the URLs were sent.
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +153,14 @@ pub struct BatchInspectView {
     /// "Errors are inline per link with a Retry/Details action, never a modal").
     pub inspected: Option<Inspected>,
     pub error: Option<ErrorInfo>,
+}
+
+/// Per-row feedback arrives immediately; the final response remains ordered.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchInspectProgress {
+    pub request_id: u64,
+    pub answer: BatchInspectView,
 }
 
 /// Inspect several URLs, up to [`BATCH_CONCURRENCY`] at a time.
@@ -158,11 +177,31 @@ pub struct BatchInspectView {
 /// * the tool resolution happens once for the batch instead of once per URL
 ///   (D75's cache makes that cheap, but once is once).
 #[tauri::command]
-pub async fn inspect_urls(
+pub async fn inspect_urls<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
     state: State<'_, AppState>,
     request_id: u64,
     urls: Vec<String>,
     options: Option<InspectRequestOptions>,
+    on_result: Option<JavaScriptChannelId>,
+) -> AppResult<Vec<BatchInspectView>> {
+    run_inspection_batch(
+        &state,
+        request_id,
+        urls,
+        options,
+        on_result.map(|id| id.channel_on(webview)),
+    )
+    .await
+}
+
+/// Shared command implementation, also driven with Rust channels in integration tests.
+pub async fn run_inspection_batch(
+    state: &AppState,
+    request_id: u64,
+    urls: Vec<String>,
+    options: Option<InspectRequestOptions>,
+    on_result: Option<Channel<BatchInspectProgress>>,
 ) -> AppResult<Vec<BatchInspectView>> {
     let wanted: Vec<String> = urls
         .into_iter()
@@ -173,7 +212,7 @@ pub async fn inspect_urls(
     let batch = state.start_inspection_batch(request_id, &wanted);
     let result = async {
         let settings = state.settings();
-        let tools = resolve_job_tools(&state, &settings).await?;
+        let tools = resolve_job_tools(state, &settings).await?;
         let environment = InspectEnvironment {
             ytdlp: tools.ytdlp.path,
             cookies: ytdlp::cookie_source(
@@ -189,33 +228,32 @@ pub async fn inspect_urls(
         let service_opts = options.unwrap_or_default().into_service_options(&settings);
 
         let mut answers: Vec<Option<BatchInspectView>> = (0..wanted.len()).map(|_| None).collect();
-        let mut next = 0;
-        while next < wanted.len() {
-            let end = (next + BATCH_CONCURRENCY).min(wanted.len());
-            let pending: Vec<(usize, String, tokio_util::sync::CancellationToken)> = batch
-                [next..end]
-                .iter()
-                .enumerate()
-                .map(|(offset, (url, token))| (next + offset, url.clone(), token.clone()))
-                .collect();
-            next = end;
-
-            let mut set = tokio::task::JoinSet::new();
-            for (index, url, token) in pending {
-                let environment = environment.clone();
-                let opts = service_opts.clone();
-                set.spawn(
-                    async move { (index, inspect_one(&environment, &opts, url, token).await) },
-                );
-            }
-            while let Some(joined) = set.join_next().await {
-                // A panicking inspection loses its own row, not the batch: that
-                // answer stays `None` and the frontend shows the row as failed.
-                if let Ok((index, answer)) = joined
-                    && let Some(slot) = answers.get_mut(index)
-                {
-                    *slot = Some(answer);
+        let mut set = tokio::task::JoinSet::new();
+        for (index, (url, token)) in batch.iter().enumerate() {
+            let (url, token) = (url.clone(), token.clone());
+            let environment = environment.clone();
+            let opts = service_opts.clone();
+            let slots = state.inspection_slots();
+            set.spawn(async move {
+                (
+                    index,
+                    inspect_one(&environment, &opts, url, token, slots).await,
+                )
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            // A panicking inspection loses its own row, not the batch: that
+            // answer stays `None` and the frontend shows the row as failed.
+            if let Ok((index, answer)) = joined
+                && let Some(slot) = answers.get_mut(index)
+            {
+                if let Some(channel) = &on_result {
+                    let _ = channel.send(BatchInspectProgress {
+                        request_id,
+                        answer: answer.clone(),
+                    });
                 }
+                *slot = Some(answer);
             }
         }
 
@@ -233,6 +271,7 @@ async fn inspect_one(
     options: &InspectOptions,
     url: String,
     token: tokio_util::sync::CancellationToken,
+    slots: Arc<tokio::sync::Semaphore>,
 ) -> BatchInspectView {
     if !process::is_allowed_url(&url) {
         return BatchInspectView {
@@ -243,7 +282,12 @@ async fn inspect_one(
             url,
         };
     }
-    let outcome = if token.is_cancelled() {
+    let permit = tokio::select! {
+        biased;
+        _ = token.cancelled() => None,
+        permit = slots.acquire_owned() => permit.ok(),
+    };
+    let outcome = if token.is_cancelled() || permit.is_none() {
         InspectOutcome::Cancelled
     } else {
         inspect::inspect_with_options(environment, &url, options, token).await

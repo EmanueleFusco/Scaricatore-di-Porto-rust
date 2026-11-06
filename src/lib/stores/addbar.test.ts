@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel: class {
+  constructor(public onmessage: (event: unknown) => void) {}
+} }));
 vi.mock("$lib/stores/settings.svelte", () => ({
   isTauriRuntime: () => true,
   settingsStore: { settings: { sponsorblockCategories: [], defaultTranscriptLanguage: "auto" } },
@@ -13,6 +15,7 @@ import { addBarStore as store } from "./addbar.svelte";
 interface Pending {
   requestId: number;
   urls: string[];
+  onResult: { onmessage: (event: unknown) => void };
   resolve: (answers: unknown[]) => void;
   reject: (error: unknown) => void;
 }
@@ -28,13 +31,30 @@ beforeEach(() => {
   store.errorKey = null;
   invoke.mockReset();
   pending = [];
-  invoke.mockImplementation((command: string, args: { requestId: number; urls: string[] }) => {
+  invoke.mockImplementation((command: string, args: Omit<Pending, "resolve" | "reject">) => {
     if (command !== "inspect_urls") return Promise.resolve();
     return new Promise<unknown[]>((resolve, reject) => pending.push({ ...args, resolve, reject }));
   });
 });
 
 describe("Add bar inspection lifecycle", () => {
+  it("preserves streamed successes if the remaining batch fails", async () => {
+    const work = store.addLinks([first, second]);
+    pending[0].onResult.onmessage({ requestId: pending[0].requestId, answer: answer(second) });
+    pending[0].reject({ messageKey: "error.io" });
+    await work;
+    expect(store.rows.map((row) => row.state)).toEqual(["error", "ready"]);
+  });
+  it("shows a fast row before its batch completes and ignores late stream events", async () => {
+    const work = store.addLinks([first, second]);
+    pending[0].onResult.onmessage({ requestId: pending[0].requestId, answer: answer(second) });
+    expect(store.rows.map((row) => row.state)).toEqual(["checking", "ready"]);
+    store.clear();
+    pending[0].onResult.onmessage({ requestId: pending[0].requestId, answer: answer(first) });
+    pending[0].resolve([answer(first), answer(second)]);
+    await work;
+    expect(store.rows).toEqual([]);
+  });
   it.each([false, true])("keeps overlapping batches independent (newer first: %s)", async (newerFirst) => {
     const old = store.addLinks([first]);
     const fresh = store.addLinks([second]);

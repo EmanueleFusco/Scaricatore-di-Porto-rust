@@ -170,6 +170,86 @@ fn cancelled_batch_rows_do_not_launch_tools_but_their_peers_still_finish() {
 }
 
 #[test]
+fn batch_results_stream_before_slow_peers_finish() {
+    use scaricatore_di_porto_lib::commands::inspect::run_inspection_batch;
+    let dir = TempDir::new().expect("tempdir");
+    let app = app_with_fakes_in(dir.path());
+    let state = app.state::<AppState>();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let channel = tauri::ipc::Channel::new(move |message| {
+        let payload = message
+            .deserialize::<serde_json::Value>()
+            .expect("progress JSON");
+        let _ = sender.send(payload);
+        Ok(())
+    });
+    tauri::async_runtime::block_on(async {
+        let run = run_inspection_batch(
+            &state,
+            50,
+            vec![
+                "https://youtu.be/slow-inspect".into(),
+                "https://youtu.be/good".into(),
+            ],
+            None,
+            Some(channel),
+        );
+        let observe = async {
+            let first = tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("fast row must arrive first")
+                .expect("progress");
+            assert_eq!(first["requestId"], 50);
+            assert_eq!(first["answer"]["url"], "https://youtu.be/good");
+            state.cancel_inspection_batch(50, None);
+        };
+        let (answers, ()) = tokio::join!(run, observe);
+        let answers = answers.expect("batch");
+        assert_eq!(
+            answers[0].error.as_ref().expect("cancelled").code,
+            "CANCELLED"
+        );
+        assert!(answers[1].inspected.is_some());
+    });
+}
+
+#[test]
+fn overlapping_batches_share_one_three_process_inspection_budget() {
+    use scaricatore_di_porto_lib::commands::inspect::run_inspection_batch;
+    let dir = TempDir::new().expect("tempdir");
+    let app = app_with_fakes_in(dir.path());
+    let state = app.state::<AppState>();
+    tauri::async_runtime::block_on(async {
+        let first = (0..4)
+            .map(|i| format!("https://youtu.be/meter-inspect-a{i}"))
+            .collect();
+        let second = (0..4)
+            .map(|i| format!("https://youtu.be/meter-inspect-b{i}"))
+            .collect();
+        let (a, b) = tokio::join!(
+            run_inspection_batch(&state, 51, first, None, None),
+            run_inspection_batch(&state, 52, second, None, None)
+        );
+        assert_eq!(a.expect("first").len(), 4);
+        assert_eq!(b.expect("second").len(), 4);
+    });
+    let log =
+        std::fs::read_to_string(dir.path().join("bundled/fake-inspect-runs.log")).expect("runs");
+    let mut active = 0;
+    let mut peak = 0;
+    for line in log.lines() {
+        if line.starts_with("start ") {
+            active += 1;
+            peak = peak.max(active);
+        } else if line.starts_with("end ") {
+            active -= 1;
+        }
+    }
+    assert_eq!(active, 0);
+    assert_eq!(peak, 3, "{log}");
+}
+
+#[test]
 fn removing_a_running_batch_row_cancels_its_fake_tool_through_ipc() {
     let dir = TempDir::new().expect("tempdir");
     let app = app_with_fakes_in(dir.path());

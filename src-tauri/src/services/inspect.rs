@@ -23,6 +23,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+pub const INSPECTION_CONCURRENCY: usize = 3;
+
 use crate::error::ErrorInfo;
 use crate::services::jsruntime::{self, RuntimeKind, RuntimeMemory, RuntimeMemoryStore};
 use crate::services::process::{self, LineSink, ToolCommand};

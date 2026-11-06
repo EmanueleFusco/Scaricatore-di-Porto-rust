@@ -12,8 +12,8 @@ code therefore matches that tag. No application fixes were applied in this audit
 - F01: corrected after the audit; unique staging files and no-clobber numbered
   outputs are covered by unit and fake-tool integration regression tests (D145).
 - F02: corrected request ownership, stale replies and row/batch cancellation
-  after the audit (D146). Progressive results within one batch remain a separate
-  UI latency improvement; answers still return when that batch completes.
+  after the audit (D146). Progressive per-row results and the shared three-process
+  inspection budget were subsequently completed and tested (D150).
 - F03/F04: corrected duplicate reconciliation using original request indexes,
   retained confirmations, and explicit reverse enqueue order (D147).
 - F05: implemented persistent AppImage paths and preservation of managed desktop

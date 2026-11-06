@@ -1042,3 +1042,16 @@ The development/release launcher uses fileURLToPath plus path joins and invokes
 the installed Tauri Node entry point or executable directly, without a shell.
 Tests cover spaces, Unicode and percent signs, secret redaction and real banner
 shapes. No new dependency or external tool flag was introduced.
+
+### D150 — Stream inspected rows and share a global process budget
+
+The optional inspection channel now sends each row as soon as it completes while
+the ordered final response remains a fallback for callers without a channel.
+Use the installed Tauri `JavaScriptChannelId`/`channel_on` API for optional IPC
+arguments; `Option<Channel<T>>` is not supported by this Tauri version. Actual
+store tests cover partial success, final failure and stale streaming callbacks.
+One AppState semaphore limits single, batch and paginated inspection work to three
+processes overall. Cancellation interrupts semaphore waits and active tool work.
+Offline fake-tool tests observe a fast result before an indefinitely slow peer,
+then cancel it, and measure a peak of exactly three processes across overlapping
+eight-URL work. This completes the incremental/global-limit follow-ups to D146.

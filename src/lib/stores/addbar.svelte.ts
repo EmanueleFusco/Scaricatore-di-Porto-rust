@@ -13,7 +13,7 @@
  * quality options — are in `$lib/addbar`, so they can be tested without a
  * Svelte runtime.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   isVideoWithListUrl,
   normaliseInspected,
@@ -553,17 +553,22 @@ class AddBarStore {
     await Promise.all(
       [...batches.values()].map(async (batch) => {
         const request = this.#startRequest(batch.rows);
+        const onResult = new Channel<{ requestId: number; answer: unknown }>((event) => {
+          if (event.requestId === request) this.#applyAnswers([event.answer], request, false);
+        });
         try {
           const raw = await invoke<unknown[]>("inspect_urls", {
             requestId: request,
             urls: batch.rows.map((row) => row.url),
             options: batch.options,
+            onResult,
           });
           this.#applyAnswers(raw, request);
         } catch (err) {
           const info = err as Partial<BackendErrorInfo>;
-          for (const row of batch.rows) {
+          for (const row of this.rows) {
             if (this.#rowRequests.get(row.key) !== request) continue;
+            if (row.state !== "checking" && row.state !== "pending") continue;
             this.#patch(row.key, {
               state: "error",
               errorKey: typeof info?.messageKey === "string" ? info.messageKey : "error.tauri",
@@ -578,7 +583,7 @@ class AddBarStore {
   }
 
   /** Fold the batch answers in, by URL: they may arrive out of order. */
-  #applyAnswers(raw: unknown[], request: number): void {
+  #applyAnswers(raw: unknown[], request: number, complete = true): void {
     const answers = new Map<string, Record<string, unknown>>();
     for (const entry of raw) {
       const answer = (entry ?? {}) as Record<string, unknown>;
@@ -589,6 +594,7 @@ class AddBarStore {
       if (row.state !== "checking" && row.state !== "pending") continue;
       const answer = answers.get(row.url);
       if (answer === undefined) {
+        if (!complete) continue;
         this.#patch(row.key, { state: "error", errorKey: "error.tauri", errorDetail: null });
         continue;
       }

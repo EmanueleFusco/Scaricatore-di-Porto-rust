@@ -543,6 +543,7 @@ pub struct AppState {
     /// (spec §6.2 "cancel the previous inspection when the URL changes").
     inspection: Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
     inspection_batches: Mutex<InspectionBatches>,
+    inspection_slots: Arc<tokio::sync::Semaphore>,
     /// The one download job of M1 (the queue arrives in M2).
     job: Mutex<Option<ActiveJob>>,
     /// The on-demand install in flight, so the provisioning UI can cancel it
@@ -617,6 +618,9 @@ impl AppState {
             tools,
             inspection: Mutex::new(None),
             inspection_batches: Mutex::new(InspectionBatches::default()),
+            inspection_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::services::inspect::INSPECTION_CONCURRENCY,
+            )),
             job: Mutex::new(None),
             install: Mutex::new(None),
             tool_cache: Mutex::new(std::collections::HashMap::new()),
@@ -685,6 +689,11 @@ impl AppState {
     /// The remembered runtime decision (spec §5.3.3).
     pub fn runtime_memory(&self) -> &Arc<jsruntime::RuntimeMemoryStore> {
         &self.runtime_memory
+    }
+
+    /// One process budget shared by single URLs, batches and pagination.
+    pub fn inspection_slots(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.inspection_slots)
     }
 
     /// Register a new inspection and cancel the previous one.
