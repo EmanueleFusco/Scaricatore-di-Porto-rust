@@ -400,3 +400,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: verified live GitHub Releases asset URL normalization on `v0.2.0`.
 - Decisions/deviations (also in DECISIONS.md): none.
 - Next step: upload the corrected `latest.json` to the `v0.2.0` GitHub Release and verify the 0.1.0 -> 0.2.0 in-app update.
+
+
+## 2026-11-06 — M7 / Only throttle daily update checks when no update is pending and version matches
+- Done: updated `maybeDailyCheck` and `checkUpdate` in `src/lib/stores/about.svelte.ts` (with pure helpers `shouldSkipDailyUpdateCheck` and `serializeDailyUpdateCheck` in `src/lib/about.ts` and tests in `src/lib/about.test.ts`) so the 24-hour startup cooldown is only recorded when `check.available === false` and only applies to the same app version (`info.version`). When an update is available (`check.available === true`), `sdp.updateCheckedAt` is cleared so closing and reopening the app before installing re-checks at startup instead of suppressing the update banner for 24 hours.
+- Verified by running: `npm.cmd test -- --run` -> 358 passed, 12 skipped; `npm.cmd run check` -> 0 errors/warnings; `git diff --check` -> pass.
+- Not verified / stubbed: none.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): none.
+- Next step: commit and push to `main` and update `v0.2.0` tag.

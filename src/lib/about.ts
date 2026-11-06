@@ -148,3 +148,29 @@ export function canSelfUpdate(bundleType: string | null): boolean {
   if (bundleType === null || bundleType === "") return true;
   return bundleType !== "deb" && bundleType !== "rpm";
 }
+
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Decide whether the automatic startup check should be skipped because this
+ * exact app version already confirmed "no update available" within 24 hours.
+ */
+export function shouldSkipDailyUpdateCheck(
+  storedRaw: string | null,
+  currentVersion: string,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!storedRaw || !currentVersion) return false;
+  try {
+    const parsed = JSON.parse(storedRaw) as { at?: unknown; version?: unknown };
+    if (typeof parsed?.at !== "number" || !Number.isFinite(parsed.at)) return false;
+    if (typeof parsed?.version !== "string" || parsed.version !== currentVersion) return false;
+    return nowMs >= parsed.at && nowMs - parsed.at < UPDATE_CHECK_INTERVAL_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function serializeDailyUpdateCheck(currentVersion: string, nowMs: number = Date.now()): string {
+  return JSON.stringify({ at: nowMs, version: currentVersion });
+}

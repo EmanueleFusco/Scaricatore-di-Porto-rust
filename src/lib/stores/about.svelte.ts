@@ -1,6 +1,6 @@
 /**
  * Store for the About page: build info, updates, diagnostics and logs
- * (spec §11.8, §13.4).
+ * (spec Â§11.8, Â§13.4).
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -8,6 +8,8 @@ import { getBundleType } from "@tauri-apps/api/app";
 import {
   normaliseAppInfo,
   normaliseUpdateCheck,
+  serializeDailyUpdateCheck,
+  shouldSkipDailyUpdateCheck,
   type AppInfo,
   type UpdateCheck,
   type UpdateProgress,
@@ -15,7 +17,6 @@ import {
 import { isTauriRuntime } from "$lib/stores/settings.svelte";
 
 const UPDATE_CHECK_KEY = "sdp.updateCheckedAt";
-const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 class AboutStore {
   info = $state<AppInfo | null>(null);
@@ -49,7 +50,7 @@ class AboutStore {
   }
 
   /**
-   * One check per day, from the shell (spec §13.4).
+   * One check per day, from the shell (spec Â§13.4).
    *
    * The timestamp lives in `localStorage`: it is a UI preference, not a
    * setting the backend needs, and bumping the settings schema for it would
@@ -58,8 +59,8 @@ class AboutStore {
   async maybeDailyCheck(): Promise<void> {
     if (!isTauriRuntime()) return;
     if (this.bundleType === "deb" || this.bundleType === "rpm") return;
-    const last = Number(localStorage.getItem(UPDATE_CHECK_KEY) ?? 0);
-    if (Number.isFinite(last) && Date.now() - last < UPDATE_CHECK_INTERVAL_MS) return;
+    const stored = localStorage.getItem(UPDATE_CHECK_KEY);
+    if (shouldSkipDailyUpdateCheck(stored, this.info?.version ?? "")) return;
     await this.checkUpdate(true);
   }
 
@@ -71,7 +72,14 @@ class AboutStore {
       const check = normaliseUpdateCheck(await invoke<UpdateCheck>("app_update_check"));
       this.update = check;
       this.updateAvailable = check.available;
-      localStorage.setItem(UPDATE_CHECK_KEY, String(Date.now()));
+      if (check.available) {
+        localStorage.removeItem(UPDATE_CHECK_KEY);
+      } else {
+        localStorage.setItem(
+          UPDATE_CHECK_KEY,
+          serializeDailyUpdateCheck(this.info?.version || check.currentVersion),
+        );
+      }
       if (!silent) this.clearError();
     } catch (err) {
       if (!silent) this.#fail(err);

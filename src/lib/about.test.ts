@@ -7,6 +7,8 @@ import {
   canSelfUpdate,
   normaliseAppInfo,
   normaliseUpdateCheck,
+  serializeDailyUpdateCheck,
+  shouldSkipDailyUpdateCheck,
   updatePercent,
   type UpdateProgress,
 } from "$lib/about";
@@ -59,5 +61,15 @@ describe("the About page data", () => {
     expect(names).toContain("yt-dlp");
     expect(names).toContain("ffmpeg / ffprobe");
     expect(LICENSES.every((entry) => entry.url.startsWith("https://"))).toBe(true);
+  });
+
+  it("only throttles daily update checks for the same version within 24 hours", () => {
+    const now = 1_700_000_000_000;
+    const stored = serializeDailyUpdateCheck("0.2.0", now);
+    expect(shouldSkipDailyUpdateCheck(stored, "0.2.0", now + 60_000)).toBe(true);
+    expect(shouldSkipDailyUpdateCheck(stored, "0.1.0", now + 60_000)).toBe(false);
+    expect(shouldSkipDailyUpdateCheck(stored, "0.2.0", now + 25 * 60 * 60 * 1000)).toBe(false);
+    expect(shouldSkipDailyUpdateCheck(String(now), "0.2.0", now + 60_000)).toBe(false);
+    expect(shouldSkipDailyUpdateCheck(null, "0.2.0", now)).toBe(false);
   });
 });
