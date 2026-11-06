@@ -321,3 +321,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none; no new external APIs or dependencies.
 - Decisions/deviations (also in DECISIONS.md): D147.
 - Next step: Linux integration, diagnostics and minor feedback/launcher fixes, then progressive inspection and UI workflows.
+
+## 2026-11-06 — M7 / Preserve Linux package launchers and persist AppImage paths (F05)
+
+- Done: isolated AppImage integration, used the persistent APPIMAGE path and XDG data location, escaped Exec/Icon values, preserved installer/user launchers, and recognized exact legacy transient-mount entries for migration. Added three platform-independent tests.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (652 passed, 5 ignored), with pending F06–F10 feedback fixes present; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 342 passed, 12 skipped; `npm.cmd run build` -> pass. Logs remain ignored under target.
+- Not verified / stubbed: native Linux menu/AppImage acceptance and macOS runtime; this is tested implementation, not a claimed native Linux reproduction.
+- Spec items marked "verify" that I checked: AppImage APPIMAGE semantics and freedesktop Exec/string escaping rules in official documentation.
+- Decisions/deviations (also in DECISIONS.md): D148; no dependency added.
+- Next step: commit feedback/diagnostic corrections and implement progressive inspection.

@@ -16,6 +16,8 @@ code therefore matches that tag. No application fixes were applied in this audit
   UI latency improvement; answers still return when that batch completes.
 - F03/F04: corrected duplicate reconciliation using original request indexes,
   retained confirmations, and explicit reverse enqueue order (D147).
+- F05: implemented persistent AppImage paths and preservation of managed desktop
+  entries (D148); native Linux acceptance still required.
 - The findings and reproduction notes below describe the audited baseline.
 
 The core download pipeline works in the exercised cases, and the ordinary test

@@ -86,50 +86,26 @@ fn apply_webkit_dma_buf_fallback() {
 
 #[cfg(target_os = "linux")]
 fn ensure_linux_desktop_integration<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
-    use std::fs;
-    if let Ok(data_dir) = crate::services::paths::app_data_dir(handle) {
-        let icon_dir = data_dir.join("icons");
-        let _ = fs::create_dir_all(&icon_dir);
-        let icon_path = icon_dir.join("icon.png");
-        let icon_bytes = include_bytes!("../icons/icon.png");
-        let _ = fs::write(&icon_path, icon_bytes);
-
-        if let Some(home) = std::env::var_os("HOME") {
-            let apps_dir = std::path::PathBuf::from(home).join(".local/share/applications");
-            let _ = fs::create_dir_all(&apps_dir);
-            let icon_str = icon_path.to_string_lossy();
-            let exec_str = std::env::current_exe()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "scaricatore-di-porto".to_string());
-
-            let entries = [
-                (
-                    "com.scaricatorediporto.app.desktop",
-                    "com.scaricatorediporto.app",
-                ),
-                ("scaricatore-di-porto.desktop", "scaricatore-di-porto"),
-            ];
-
-            for (filename, wm_class) in entries {
-                let desktop_content = format!(
-                    "[Desktop Entry]\n\
-                     Type=Application\n\
-                     Name=Scaricatore Di Porto\n\
-                     Comment=Downloader and transcriber\n\
-                     Exec=\"{}\" %U\n\
-                     Icon={}\n\
-                     Terminal=false\n\
-                     Categories=Utility;Network;\n\
-                     StartupNotify=true\n\
-                     StartupWMClass={}\n",
-                    exec_str, icon_str, wm_class
-                );
-                let _ = fs::write(apps_dir.join(filename), desktop_content);
-            }
-        }
+    let Some(appimage) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let Ok(data_dir) = crate::services::paths::app_data_dir(handle) else {
+        return;
+    };
+    let xdg_data = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+        });
+    if let Some(xdg_data) = xdg_data {
+        let _ = crate::services::desktop::integrate_appimage(
+            &appimage,
+            &data_dir,
+            &xdg_data.join("applications"),
+        );
     }
 }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]

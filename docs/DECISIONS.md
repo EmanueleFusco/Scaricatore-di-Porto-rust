@@ -1013,3 +1013,16 @@ only refused request snapshots for Add anyway, preserves confirmations across
 later additions and failures, and clears only accepted Add bar rows. Identical
 URLs with different options cannot be confused. Playlist reversal now controls
 enqueue order explicitly while original positions still determine filename prefixes.
+
+### D148 — AppImage shortcuts use the persistent image and respect managed entries (F05)
+
+Automatic integration now runs only with a valid absolute `APPIMAGE` file. Native
+package entries belong to their installers. Use `XDG_DATA_HOME` (or the HOME
+fallback), quote/escape desktop-entry values, and publish atomically. Existing
+installer/user entries are preserved. Only explicitly app-owned entries or the
+exact legacy-generated transient-mount entry are eligible for replacement.
+The obsolete `%U` argument is omitted because the app does not consume open URLs.
+Official references checked: [AppImage environment variables](https://docs.appimage.org/packaging-guide/environment-variables.html)
+and [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest-single/).
+Cross-platform tests cover quoting, preservation, ownership and legacy recognition;
+actual Linux AppImage menu acceptance remains unexecuted on this Windows host.
