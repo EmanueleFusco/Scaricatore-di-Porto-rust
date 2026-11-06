@@ -36,10 +36,11 @@ use crate::state::AppState;
 /// stops the scheduler from starting anything, so nothing can be spawned
 /// between this pass and the end of the process (D96).
 fn on_exit(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<AppState>()
-        && let Some(queue) = state.queue()
-    {
-        queue.shutdown();
+    if let Some(state) = app.try_state::<AppState>() {
+        state.cancel_inspection();
+        if let Some(queue) = state.queue() {
+            queue.shutdown();
+        }
     }
     process::kill_all_running();
 }

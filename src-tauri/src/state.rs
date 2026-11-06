@@ -519,6 +519,17 @@ pub struct Recovery {
     pub detail: Option<String>,
 }
 
+/// One batch owns independent cancellation tokens for its URL rows, in input order.
+pub type InspectionBatch = Vec<(String, tokio_util::sync::CancellationToken)>;
+
+#[derive(Default)]
+struct InspectionBatches {
+    active: BTreeMap<u64, Arc<InspectionBatch>>,
+    // A synchronous cancel IPC may arrive before its async inspection starts.
+    // Keep a bounded set of those requests; None means the entire batch.
+    cancelled: BTreeMap<u64, Option<Vec<String>>>,
+}
+
 /// Runtime state shared with every command.
 pub struct AppState {
     settings: RwLock<Settings>,
@@ -531,6 +542,7 @@ pub struct AppState {
     /// The one inspection in flight, so a new URL cancels the previous one
     /// (spec §6.2 "cancel the previous inspection when the URL changes").
     inspection: Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
+    inspection_batches: Mutex<InspectionBatches>,
     /// The one download job of M1 (the queue arrives in M2).
     job: Mutex<Option<ActiveJob>>,
     /// The on-demand install in flight, so the provisioning UI can cancel it
@@ -604,6 +616,7 @@ impl AppState {
             )),
             tools,
             inspection: Mutex::new(None),
+            inspection_batches: Mutex::new(InspectionBatches::default()),
             job: Mutex::new(None),
             install: Mutex::new(None),
             tool_cache: Mutex::new(std::collections::HashMap::new()),
@@ -701,7 +714,93 @@ impl AppState {
         }
     }
 
-    /// Cancel whatever inspection is running (the URL box was cleared).
+    /// Register independent batches without superseding unrelated URL rows.
+    pub fn start_inspection_batch(&self, request_id: u64, urls: &[String]) -> Arc<InspectionBatch> {
+        let batch = Arc::new(
+            urls.iter()
+                .map(|url| (url.clone(), tokio_util::sync::CancellationToken::new()))
+                .collect::<InspectionBatch>(),
+        );
+        let (previous, cancelled) = {
+            let mut batches = self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (
+                batches.active.insert(request_id, Arc::clone(&batch)),
+                batches.cancelled.remove(&request_id),
+            )
+        };
+        if let Some(previous) = previous {
+            for (_, token) in previous.iter() {
+                token.cancel();
+            }
+        }
+        if let Some(urls) = cancelled {
+            for (url, token) in batch.iter() {
+                if urls.as_ref().is_none_or(|urls| urls.contains(url)) {
+                    token.cancel();
+                }
+            }
+        }
+        batch
+    }
+
+    /// An old completion must not unregister a new batch reusing the same id.
+    pub fn finish_inspection_batch(&self, request_id: u64, batch: &Arc<InspectionBatch>) {
+        let mut batches = self
+            .inspection_batches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if batches
+            .active
+            .get(&request_id)
+            .is_some_and(|current| Arc::ptr_eq(current, batch))
+        {
+            batches.active.remove(&request_id);
+        }
+    }
+
+    /// Cancel selected rows, or the whole batch when no URL filter is supplied.
+    pub fn cancel_inspection_batch(&self, request_id: u64, urls: Option<&[String]>) {
+        let batch = {
+            let mut batches = self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let batch = if urls.is_none() {
+                batches.active.remove(&request_id)
+            } else {
+                batches.active.get(&request_id).cloned()
+            };
+            if batch.is_none() {
+                if let Some(urls) = urls {
+                    if let Some(known) = batches
+                        .cancelled
+                        .entry(request_id)
+                        .or_insert_with(|| Some(Vec::new()))
+                    {
+                        known.extend(urls.iter().cloned());
+                    }
+                } else {
+                    batches.cancelled.insert(request_id, None);
+                }
+                while batches.cancelled.len() > 1024 {
+                    batches.cancelled.pop_first();
+                }
+            }
+            batch
+        };
+        if let Some(batch) = batch {
+            for (url, token) in batch.iter() {
+                if urls.is_none_or(|urls| urls.contains(url)) {
+                    token.cancel();
+                }
+            }
+        }
+    }
+
+    /// Cancel all inspections (the URL box was cleared or the app is exiting).
     pub fn cancel_inspection(&self) {
         let previous = {
             let mut slot = match self.inspection.lock() {
@@ -712,6 +811,18 @@ impl AppState {
         };
         if let Some((_, token)) = previous {
             token.cancel();
+        }
+        let batches = std::mem::take(
+            &mut self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .active,
+        );
+        for batch in batches.into_values() {
+            for (_, token) in batch.iter() {
+                token.cancel();
+            }
         }
     }
 
@@ -1106,6 +1217,62 @@ mod tests {
 
     fn settings_path(dir: &TempDir) -> PathBuf {
         dir.path().join("settings.json")
+    }
+
+    #[test]
+    fn inspection_batches_cancel_selected_rows_without_superseding_other_batches() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec![
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ];
+        let first = state.start_inspection_batch(1, &urls);
+        let second = state.start_inspection_batch(2, &urls);
+        state.cancel_inspection_batch(1, Some(&urls[..1]));
+        assert!(first[0].1.is_cancelled());
+        assert!(!first[1].1.is_cancelled());
+        assert!(second.iter().all(|(_, token)| !token.is_cancelled()));
+        let legacy = state.start_inspection(3);
+        state.cancel_inspection();
+        assert!(legacy.is_cancelled());
+        assert!(
+            first
+                .iter()
+                .chain(second.iter())
+                .all(|(_, token)| token.is_cancelled())
+        );
+    }
+
+    #[test]
+    fn stale_batch_completion_cannot_unregister_a_replacement() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec!["https://example.com/a".into()];
+        let old = state.start_inspection_batch(1, &urls);
+        let fresh = state.start_inspection_batch(1, &urls);
+        assert!(old[0].1.is_cancelled());
+        state.finish_inspection_batch(1, &old);
+        state.cancel_inspection_batch(1, None);
+        assert!(fresh[0].1.is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_arriving_before_async_batch_registration_is_preserved() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec![
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ];
+        state.cancel_inspection_batch(1, Some(&urls[..1]));
+        let selected = state.start_inspection_batch(1, &urls);
+        assert!(selected[0].1.is_cancelled());
+        assert!(!selected[1].1.is_cancelled());
+        state.cancel_inspection_batch(2, None);
+        state.cancel_inspection_batch(2, Some(&urls[..1]));
+        let all = state.start_inspection_batch(2, &urls);
+        assert!(all.iter().all(|(_, token)| token.is_cancelled()));
     }
 
     #[test]

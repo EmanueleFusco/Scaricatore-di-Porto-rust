@@ -11,6 +11,9 @@ code therefore matches that tag. No application fixes were applied in this audit
 
 - F01: corrected after the audit; unique staging files and no-clobber numbered
   outputs are covered by unit and fake-tool integration regression tests (D145).
+- F02: corrected request ownership, stale replies and row/batch cancellation
+  after the audit (D146). Progressive results within one batch remain a separate
+  UI latency improvement; answers still return when that batch completes.
 - The findings and reproduction notes below describe the audited baseline.
 
 The core download pipeline works in the exercised cases, and the ordinary test

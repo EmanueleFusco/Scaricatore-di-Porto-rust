@@ -979,3 +979,28 @@ paths, extension preservation and cleanup, reflecting the corrected contract.
 F01 release measurement: `npm.cmd run tauri build -- --no-bundle` passed in
 2m 13s; Windows x64 executable 6,963,200 bytes, up 2,048 bytes from the audited
 6,961,152-byte executable. The direct tempfile use adds no new runtime crate.
+
+### D146 — Own inspection requests per row and cancel batch work explicitly (F02)
+
+The Add bar now associates each row with its active request instead of dropping
+all earlier batches whenever another request starts. Removing, clearing or
+retrying rows cancels only their associated URLs; old successes and failures
+cannot overwrite a newer inspection or restore removed rows. Pagination follows
+the same ownership rule. Missing backend answers become retryable errors instead
+of permanent checking rows. The checking indicator derives from current rows.
+
+`inspect_cancel` accepts an optional request ID and URL filter; omitted arguments
+retain the previous cancel-all behavior. The backend registers independent
+per-URL tokens before resolving tools and unregisters batches on completion or
+resolution failure. A bounded pending-cancellation map handles synchronous cancel
+IPC arriving before an asynchronous inspection is registered. Reusing an active
+ID cancels its old batch, and an old completion cannot unregister the replacement.
+Application exit cancels inspections before terminating child processes.
+
+Actual rune-store tests compile through the already installed Svelte Vite plugin;
+there is no added dependency. Fake-tool IPC tests cover queued cancellation
+without tool launch, running cancellation, and unaffected peers. Native
+macOS/Linux execution was not performed. This step does not introduce incremental
+batch events: the existing up-to-three-per-call execution and whole-batch reply
+remain. Progressive row results and a global concurrency limit across overlapping
+calls are follow-up work, not acceptance claims from these tests.

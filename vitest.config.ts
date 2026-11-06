@@ -1,12 +1,14 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 /**
- * Standalone vitest config: the pure modules under `src/lib` are tested without
- * the SvelteKit plugin, so no `.svelte-kit` sync is required to run `npm test`.
+ * Compile rune-based stores too, so request races are tested through their
+ * actual implementation. No DOM or SvelteKit runtime is needed.
  */
 export default defineConfig({
+  plugins: [svelte()],
   resolve: {
     alias: {
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
