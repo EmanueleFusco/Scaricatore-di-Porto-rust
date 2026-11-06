@@ -223,7 +223,9 @@ export function emptyQueueState(): QueueState {
 /** What `queue_add` answers (spec §7.3 duplicate detection). */
 export interface AddResult {
   added: string[];
-  duplicates: { url: string; itemId: string; title: string | null }[];
+  duplicates: { url: string; itemId: string; title: string | null; requestIndex?: number }[];
+  /** Reconciled by the store against the submitted immutable request snapshot. */
+  accepted?: AddItemRequest[];
 }
 
 /** What the Add bar sends for one link. */
@@ -517,6 +519,8 @@ export function normaliseAddResult(raw: unknown): AddResult {
             url: asString(duplicate.url),
             itemId: asString(duplicate.itemId),
             title: asNullableString(duplicate.title),
+            ...(Number.isInteger(duplicate.requestIndex) && Number(duplicate.requestIndex) >= 0
+              ? { requestIndex: Number(duplicate.requestIndex) } : {}),
           };
         })
       : [],

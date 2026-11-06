@@ -1004,3 +1004,12 @@ macOS/Linux execution was not performed. This step does not introduce incrementa
 batch events: the existing up-to-three-per-call execution and whole-batch reply
 remain. Progressive row results and a global concurrency limit across overlapping
 calls are follow-up work, not acceptance claims from these tests.
+
+### D147 — Reconcile duplicates by input position and honor playlist order
+
+The queue IPC now reports the original submitted request index for each refused
+duplicate, including when unsupported URLs were filtered out. The frontend retains
+only refused request snapshots for Add anyway, preserves confirmations across
+later additions and failures, and clears only accepted Add bar rows. Identical
+URLs with different options cannot be confused. Playlist reversal now controls
+enqueue order explicitly while original positions still determine filename prefixes.

@@ -312,3 +312,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: existing Svelte Vite compile-module support for `.svelte.ts` rune-store tests and installed Vitest mock APIs; no external tool flags or APIs added.
 - Decisions/deviations (also in DECISIONS.md): D146; backward-compatible optional cancellation filters and bounded pending cancellations. No dependency added.
 - Next step: mixed-duplicate queue handling (F03) and playlist ordering (F04), followed by remaining UI/platform findings and native acceptance.
+
+## 2026-11-06 — M7 / Reconcile mixed duplicates and reverse playlist enqueue order (F03/F04)
+
+- Done: added original request indexes to duplicate results; retained only refused immutable requests for force-add; kept pending confirmations across additions and failed force attempts; cleared only accepted ready rows. Reversed playlists now enqueue in the displayed order while keeping original numbering. Added store regressions for mixed same-URL/different-option requests and retained confirmations, plus reverse/subset numbering coverage.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (648 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 339 passed, 12 skipped; `npm.cmd run build` -> pass. An overlapping first Rust suite could not start process_tree.exe because another process held the Windows executable; the final complete run passed. Logs stay under ignored `src-tauri/target/`.
+- Not verified / stubbed: native acceptance is scheduled after the remaining UI changes; no native macOS/Linux execution.
+- Spec items marked "verify" that I checked: none; no new external APIs or dependencies.
+- Decisions/deviations (also in DECISIONS.md): D147.
+- Next step: Linux integration, diagnostics and minor feedback/launcher fixes, then progressive inspection and UI workflows.

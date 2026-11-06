@@ -206,8 +206,7 @@
     try {
       const result = await queueStore.add(requests);
       if (result.added.length > 0) {
-        addBarStore.clearAdded();
-        queueStore.dismissDuplicates();
+        addBarStore.clearAdded((result.accepted ?? []).map((request) => request.url));
         queueStore.flash(result.added);
         if (mode === "download") await queueStore.prioritize(result.added);
       }
@@ -238,7 +237,7 @@
     busy = "adding";
     try {
       const result = await queueStore.addAnyway();
-      addBarStore.clearAdded();
+      addBarStore.clearAdded((result.accepted ?? []).map((request) => request.url));
       queueStore.flash(result.added);
     } finally {
       busy = "";

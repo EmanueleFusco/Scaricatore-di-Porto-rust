@@ -14,6 +14,8 @@ code therefore matches that tag. No application fixes were applied in this audit
 - F02: corrected request ownership, stale replies and row/batch cancellation
   after the audit (D146). Progressive results within one batch remain a separate
   UI latency improvement; answers still return when that batch completes.
+- F03/F04: corrected duplicate reconciliation using original request indexes,
+  retained confirmations, and explicit reverse enqueue order (D147).
 - The findings and reproduction notes below describe the audited baseline.
 
 The core download pipeline works in the exercised cases, and the ordinary test

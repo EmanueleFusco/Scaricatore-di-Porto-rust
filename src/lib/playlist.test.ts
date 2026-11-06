@@ -168,6 +168,15 @@ describe("names", () => {
 });
 
 describe("buildPlaylistRequests()", () => {
+  it("reverses selected download order while preserving playlist numbering", () => {
+    const list = playlist([entry(1), entry(2), entry(3)]);
+    const requests = buildPlaylistRequests(list, new Set([1, 3]), {
+      groupId: "g", quality: { kind: "best" }, outputDir: null,
+      folderPerPlaylist: false, numbering: true, useArchive: true, reversed: true,
+    });
+    expect(requests.map((item) => item.filenamePrefix)).toEqual(["003 - ", "001 - "]);
+    expect(requests.map((item) => item.url)).toEqual([list.entries[2].url, list.entries[0].url]);
+  });
   const list = playlist([entry(1), entry(2, { available: false }), entry(3), entry(4)]);
   const options = {
     groupId: "g1",

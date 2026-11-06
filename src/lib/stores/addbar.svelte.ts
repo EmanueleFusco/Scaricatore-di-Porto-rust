@@ -519,8 +519,9 @@ class AddBarStore {
   }
 
   /** Drop the rows that were added, keep the rest. */
-  clearAdded(): void {
-    this.rows = this.rows.filter((row) => row.state !== "ready");
+  clearAdded(urls: readonly string[]): void {
+    const added = new Set(urls);
+    this.rows = this.rows.filter((row) => row.state !== "ready" || !added.has(row.url));
   }
 
   /** The per-inspection flags of one row (spec §6.2, §6.4, §11.3). */

@@ -260,6 +260,7 @@ export function formatPlaylistPrefix(position: number, total: number): string {
 // ---------------------------------------------------------------------------
 
 export interface PlaylistAddOptions {
+  reversed?: boolean;
   /** One queue group per playlist, created by the caller. */
   groupId: string;
   quality: QualityChoice;
@@ -289,7 +290,7 @@ export function buildPlaylistRequests(
 ): AddItemRequest[] {
   const chosen = selectable(playlist.entries)
     .filter((entry) => selected.has(entry.index))
-    .sort((a, b) => a.index - b.index);
+    .sort((a, b) => options.reversed ? b.index - a.index : a.index - b.index);
   const total = Math.max(
     playlist.count ?? 0,
     playlist.entries.reduce((max, entry) => Math.max(max, entry.index), 0),

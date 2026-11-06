@@ -102,6 +102,7 @@
     try {
       const groupId = `g-${Date.now().toString(36)}-${row.key}`;
       const options = {
+        reversed,
         groupId,
         quality,
         outputDir: addBarStore.folder,

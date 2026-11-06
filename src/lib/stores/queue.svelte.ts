@@ -78,9 +78,10 @@ class QueueStore {
   errorKey = $state<string | null>(null);
   errorDetail = $state<string | null>(null);
   /** Duplicates refused by the last `queue_add` (spec §7.3 "add anyway?"). */
-  pendingDuplicates = $state<AddResult["duplicates"]>([]);
-  /** What the user was adding, kept so "add anyway" can resend it. */
-  #lastRequest: AddItemRequest[] = [];
+  #refused = $state<{ request: AddItemRequest; duplicate: AddResult["duplicates"][number] }[]>([]);
+  get pendingDuplicates(): AddResult["duplicates"] {
+    return this.#refused.map((entry) => entry.duplicate);
+  }
   #unlisten: UnlistenFn[] = [];
   #listening = false;
 
@@ -163,12 +164,18 @@ class QueueStore {
     if (!isTauriRuntime() || requests.length === 0) {
       return { added: [], duplicates: [] };
     }
-    this.#lastRequest = requests;
     try {
       const result = normaliseAddResult(
         await invoke<unknown>("queue_add", { items: requests, force }),
       );
-      this.pendingDuplicates = result.duplicates;
+      const refusedIndexes = new Set(result.duplicates.map((duplicate) => duplicate.requestIndex));
+      const accepted = requests.filter((_, index) => !refusedIndexes.has(index));
+      if (!force) {
+        this.#refused = [...this.#refused, ...result.duplicates.flatMap((duplicate) => {
+          const request = requests[duplicate.requestIndex ?? -1];
+          return request ? [{ request, duplicate }] : [];
+        })];
+      }
       this.errorKey = null;
       this.errorDetail = null;
       if (result.added.length > 0) {
@@ -176,7 +183,7 @@ class QueueStore {
         // looking empty for one tick.
         await this.load();
       }
-      return result;
+      return { ...result, accepted: accepted.length === result.added.length ? accepted : [] };
     } catch (err) {
       this.#fail(err);
       return { added: [], duplicates: [] };
@@ -185,9 +192,12 @@ class QueueStore {
 
   /** "Add anyway": resend exactly what was refused. */
   async addAnyway(): Promise<AddResult> {
-    const requests = this.#lastRequest;
-    this.pendingDuplicates = [];
-    return this.add(requests, true);
+    const refused = this.#refused;
+    const result = await this.add(refused.map((entry) => entry.request), true);
+    if (result.added.length === refused.length) {
+      this.#refused = this.#refused.filter((entry) => !refused.includes(entry));
+    }
+    return result;
   }
 
   /**
@@ -241,7 +251,7 @@ class QueueStore {
   }
 
   dismissDuplicates(): void {
-    this.pendingDuplicates = [];
+    this.#refused = [];
   }
 
   dismissToast(): void {
