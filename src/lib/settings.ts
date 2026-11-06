@@ -6,6 +6,7 @@
  */
 import type { LangPreference } from "$lib/i18n";
 import type { ThemePreference } from "$lib/theme";
+import { normaliseSavedPresets } from "$lib/presets";
 
 /** Release channel for the yt-dlp updater (spec §5.5, §11.8). */
 export type YtdlpChannel = "stable" | "nightly";
@@ -18,6 +19,8 @@ export type PlaylistUrlBehavior = "ask" | "video" | "playlist";
 
 /** Mirror of the Rust `state::Settings` document (spec §2.6, §2.8, §11.8). */
 export interface Settings {
+  savedPresets: import("$lib/presets").SavedPreset[];
+  lastPreset: string | null;
   schemaVersion: number;
   language: LangPreference;
   theme: ThemePreference;
@@ -145,7 +148,9 @@ export interface BackendErrorInfo {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  schemaVersion: 7,
+  schemaVersion: 8,
+  savedPresets: [],
+  lastPreset: null,
   language: "system",
   theme: "system",
   defaultOutputDir: null,
@@ -282,6 +287,7 @@ function normaliseOptionalTrimmed(value: unknown): string | null {
  * if it worked is worse than not showing it.
  */
 export function normaliseSettings(raw: Partial<Settings> | null | undefined): Settings {
+  const savedPresets = normaliseSavedPresets(raw?.savedPresets);
   const paths: Record<string, string> = {};
   if (raw?.toolPaths && typeof raw.toolPaths === "object") {
     for (const [name, value] of Object.entries(raw.toolPaths)) {
@@ -296,6 +302,8 @@ export function normaliseSettings(raw: Partial<Settings> | null | undefined): Se
         .filter((h) => h !== "")
     : [];
   return {
+    savedPresets,
+    lastPreset: typeof raw?.lastPreset === "string" && savedPresets.some((preset) => preset.id === raw.lastPreset) ? raw.lastPreset : null,
     schemaVersion:
       typeof raw?.schemaVersion === "number" ? raw.schemaVersion : DEFAULT_SETTINGS.schemaVersion,
     language: isLangPreference(raw?.language) ? raw.language : "system",

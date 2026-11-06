@@ -269,6 +269,7 @@ pub struct AddedItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateItem {
+    pub request_index: usize,
     pub url: String,
     pub item_id: String,
     pub title: Option<String>,
@@ -312,7 +313,8 @@ pub async fn queue_add<R: Runtime>(
     let archive_path = state.tools().archive_path();
 
     let mut requests = Vec::with_capacity(items.len());
-    for item in items {
+    let mut source_indexes = Vec::with_capacity(items.len());
+    for (source_index, item) in items.into_iter().enumerate() {
         let url = item.url.trim().to_owned();
         if !process::is_allowed_url(&url) {
             // Spec §2.2: "ignore non-http(s)". A paste of ten links with one
@@ -486,6 +488,7 @@ pub async fn queue_add<R: Runtime>(
                 .or_else(|| Some(settings.default_summary_language.clone())),
         };
 
+        source_indexes.push(source_index);
         requests.push(AddRequest {
             url,
             title: item.title,
@@ -497,7 +500,10 @@ pub async fn queue_add<R: Runtime>(
         });
     }
 
-    let outcome = queue.add(requests, force.unwrap_or(false));
+    let mut outcome = queue.add(requests, force.unwrap_or(false));
+    for duplicate in &mut outcome.duplicates {
+        duplicate.request_index = source_indexes[duplicate.request_index];
+    }
     Ok(to_add_result(outcome))
 }
 
@@ -844,6 +850,7 @@ fn to_add_result(outcome: AddOutcome) -> AddResult {
             .duplicates
             .into_iter()
             .map(|duplicate| DuplicateItem {
+                request_index: duplicate.request_index,
                 url: duplicate.url,
                 item_id: duplicate.item_id,
                 title: duplicate.title,

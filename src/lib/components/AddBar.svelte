@@ -17,11 +17,14 @@
   banner on an authentication failure. The transcript options arrive with M4.
 -->
 <script lang="ts">
+  import TranscriptionOptions from "$lib/components/TranscriptionOptions.svelte";
+  import PresetPicker from "$lib/components/PresetPicker.svelte";
+  import InspectionError from "$lib/components/InspectionError.svelte";
   import FolderOpenIcon from "lucide-svelte/icons/folder-open";
   import DownloadIcon from "lucide-svelte/icons/download";
   import PlusIcon from "lucide-svelte/icons/plus";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import { onMount } from "svelte";
+  import { onMount, untrack, tick } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import CookieBanner from "$lib/components/CookieBanner.svelte";
   import PlaylistPanel from "$lib/components/PlaylistPanel.svelte";
@@ -34,7 +37,6 @@
     explicitChoiceFor,
     parseHeaderLines,
     qualityValue,
-    rowLanguageOptions,
     rowQualityOptions,
     splitLinks,
     tableFormats,
@@ -45,10 +47,7 @@
   import { errorText, isTauriRuntime, settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
   import { toolsStore } from "$lib/stores/tools.svelte";
   import { modelsStore } from "$lib/stores/models.svelte";
-  import { hasKey } from "$lib/i18n";
   import { formatBytes, qualityLabel, type QualityChoice } from "$lib/queue";
-  import { modelLabelKey } from "$lib/models";
-  import { activeLang } from "$lib/stores/settings.svelte";
 
   /** Which of the two actions a click asked for. */
   type AddMode = "download" | "queue";
@@ -61,9 +60,32 @@
   let pasteBlocked = $state(false);
   /** One-shot: the next input comes from a paste, so it skips the debounce. */
   let pasted = $state(false);
+  let expanded = $state(true);
+  let expansionButton = $state<HTMLButtonElement | null>(null);
+  let initialLayout = false;
+  let previousRowCount = 0;
+  $effect(() => { if (settingsStore.loaded) untrack(() => addBarStore.restorePreset()); });
 
   const rows = $derived(addBarStore.rows);
   const readyCount = $derived(addBarStore.readyCount);
+  const checkingCount = $derived(rows.filter((row) => row.state === "pending" || row.state === "checking").length);
+  const failedCount = $derived(rows.filter((row) => row.state === "error" || row.state === "skipped").length);
+  const playlistCount = $derived(rows.filter((row) => row.state === "playlist" || row.state === "choice").length);
+  const rowCount = $derived(rows.length);
+  $effect(() => {
+    if (queueStore.loaded && !initialLayout) {
+      initialLayout = true;
+      if (queueStore.summary.total > 0 && rowCount === 0 && !addBarStore.text) expanded = false;
+    }
+  });
+  $effect(() => { if (rowCount > previousRowCount) expanded = true; previousRowCount = rowCount; });
+
+  async function collapseComposer(generation: number): Promise<void> {
+    if (generation !== addBarStore.rowGeneration || queueStore.pendingDuplicates.length > 0 || addBarStore.text) return;
+    expanded = false;
+    await tick();
+    expansionButton?.focus();
+  }
   /** A ready row has an invalid trim range: submitting it must be blocked (spec §9.2). */
   const hasTrimError = $derived(
     addBarStore.ready.some(
@@ -203,13 +225,14 @@
   ): Promise<void> {
     if (requests.length === 0) return;
     busy = "adding";
+    const generation = addBarStore.rowGeneration;
     try {
       const result = await queueStore.add(requests);
       if (result.added.length > 0) {
-        addBarStore.clearAdded();
-        queueStore.dismissDuplicates();
+        addBarStore.clearAdded((result.accepted ?? []).flatMap((request) => request.clientKey ? [request.clientKey] : []));
         queueStore.flash(result.added);
         if (mode === "download") await queueStore.prioritize(result.added);
+        await collapseComposer(generation);
       }
     } finally {
       busy = "";
@@ -236,10 +259,12 @@
 
   async function addAnyway(): Promise<void> {
     busy = "adding";
+    const generation = addBarStore.rowGeneration;
     try {
       const result = await queueStore.addAnyway();
-      addBarStore.clearAdded();
+      addBarStore.clearAdded((result.accepted ?? []).flatMap((request) => request.clientKey ? [request.clientKey] : []));
       queueStore.flash(result.added);
+      if (result.added.length > 0) await collapseComposer(generation);
     } finally {
       busy = "";
     }
@@ -258,6 +283,7 @@
     addBarStore.dragging = false;
     const text = event.dataTransfer?.getData("text/plain");
     if (text !== undefined && text !== null && text.trim() !== "") {
+      expanded = true;
       pasteBlocked = splitLinks(text).length === 0;
       void addBarStore.dropText(text);
     }
@@ -283,6 +309,7 @@
     const target = event.target as HTMLElement | null;
     if (target !== null && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
     const text = event.clipboardData?.getData("text");
+    if (text?.trim()) expanded = true;
     if (text === undefined || text === null || text.trim() === "") return;
     if (splitLinks(text).length === 0) return;
     event.preventDefault();
@@ -343,8 +370,15 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
 >
+  <header class="add__heading">
+    <h2>{tt("queue.add.label")}</h2>
+    {#if rowCount > 0}<p class="field__hint" role="status">{tt("queue.add.counts", { checking: checkingCount, ready: readyCount, failed: failedCount, playlists: playlistCount })}</p>{/if}
+    <button type="button" class="btn btn--small" bind:this={expansionButton} aria-expanded={expanded} aria-controls={expanded ? "add-composer" : undefined} onclick={() => (expanded = !expanded)}>{tt(expanded ? "queue.add.close" : "queue.add.open")}</button>
+  </header>
+  {#if expanded}
+  <div class="add__body" id="add-composer">
   <div class="field">
-    <label class="field__label" for="add-links">{tt("queue.add.label")}</label>
+    <label class="visually-hidden" for="add-links">{tt("queue.add.label")}</label>
     <textarea
       class="input add__input"
       id="add-links"
@@ -404,6 +438,7 @@
     </div>
   </div>
 
+  <PresetPicker />
   {#if rows.length > 0}
     <ul class="add__rows" aria-label={tt("queue.add.label")}>
       {#each rows as row (row.key)}
@@ -476,6 +511,9 @@
             </button>
           </div>
 
+          {#if row.errorDetail}
+            <InspectionError detail={row.errorDetail} headers={[...settingsStore.settings.customHeaders, row.customHeaders].join("\n")} />
+          {/if}
           {#if row.state === "choice"}
             <div class="add__choice" role="group" aria-label={tt("queue.add.choice.title")}>
               <p class="field__hint">{tt("queue.add.choice.title")}</p>
@@ -504,7 +542,7 @@
 
           {#if row.state === "playlist" && row.inspected?.kind === "playlist"}
             <div class="add__block">
-              <PlaylistPanel {row} playlist={row.inspected} />
+              <PlaylistPanel {row} playlist={row.inspected} onadded={(generation) => void collapseComposer(generation)} />
             </div>
           {/if}
 
@@ -798,182 +836,7 @@
                   </div>
                 {/if}
 
-                <!-- Spec §10.2: Whisper Transcription -->
-                <div class="field">
-                  <span class="field__label">{tt("transcribe.title")}</span>
-                  <label class="add__check">
-                    <input
-                      type="checkbox"
-                      checked={row.transcribe}
-                      onchange={(event) =>
-                        addBarStore.setMediaOptions(row.key, { transcribe: event.currentTarget.checked })}
-                    />
-                    {tt("transcribe.toggle")}
-                  </label>
-
-                  {#if row.transcribe}
-                    {@const activeEngine = row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder}
-                    {@const usesWhisper = activeEngine !== "gemini_only" && activeEngine !== "subtitles_only"}
-
-                    <div class="field">
-                      <label class="field__label" for={`engine-order-${row.key}`}>
-                        {tt("addbar.transcribeEngine")}
-                      </label>
-                      <select
-                        class="select"
-                        id={`engine-order-${row.key}`}
-                        value={activeEngine}
-                        onchange={(event) =>
-                          addBarStore.setMediaOptions(row.key, { transcriptionEngine: event.currentTarget.value })}
-                      >
-                        <option value="subtitles_whisper_gemini">{tt("transcription.engine.subtitlesWhisperGemini")}</option>
-                        <option value="whisper_only">{tt("transcription.engine.whisperOnly")}</option>
-                        <option value="gemini_only">{tt("transcription.engine.geminiOnly")}</option>
-                        <option value="subtitles_only">{tt("transcription.engine.subtitlesOnly")}</option>
-                      </select>
-                      {#if activeEngine === "gemini_only" || activeEngine === "subtitles_whisper_gemini"}
-                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
-                      {/if}
-                    </div>
-
-                    <div class="add__controls">
-                      <div class="field" class:field--disabled={!usesWhisper}>
-                        <label class="field__label" for={`whisper-model-${row.key}`}>
-                          {tt("transcribe.model")}
-                        </label>
-                        <select
-                          class="select"
-                          id={`whisper-model-${row.key}`}
-                          disabled={!usesWhisper}
-                          value={row.whisperModel ?? settingsStore.settings.activeWhisperModel ?? "large-v3-turbo-q5_0"}
-                          onchange={(event) =>
-                            addBarStore.setMediaOptions(row.key, { whisperModel: event.currentTarget.value })}
-                        >
-                          {#if modelsStore.view.models.length > 0}
-                            {#each modelsStore.view.models as model (model.id)}
-                              {@const mKey = modelLabelKey(model.id)}
-                              <option value={model.id}>
-                                {hasKey(activeLang(), mKey) ? tt(mKey) : model.label} ({model.state.kind === "installed" ? tt("models.installed") : tt("models.notInstalled")})
-                              </option>
-                            {/each}
-                          {:else}
-                            <option value="large-v3-turbo-q5_0">Turbo (large-v3-turbo-q5_0)</option>
-                            <option value="small-q5_1">Small (small-q5_1)</option>
-                            <option value="base-q5_1">Base (base-q5_1)</option>
-                            <option value="tiny-q5_1">Tiny (tiny-q5_1)</option>
-                          {/if}
-                        </select>
-                        {#if modelsStore.view.models.length > 0}
-                          {@const selectedModel = modelsStore.view.models.find((m) => m.id === (row.whisperModel ?? settingsStore.settings.activeWhisperModel ?? "large-v3-turbo-q5_0"))}
-                          {#if selectedModel && selectedModel.state.kind !== "installed"}
-                            <button
-                              type="button"
-                              class="btn btn--small"
-                              style="margin-top: 4px;"
-                              disabled={!usesWhisper || modelsStore.busy || (modelsStore.downloadingModelId !== null && modelsStore.downloadingModelId !== selectedModel.id)}
-                              onclick={() => void modelsStore.download(selectedModel.id)}
-                            >
-                              {#if modelsStore.downloadingModelId === selectedModel.id}
-                                {modelsStore.downloadPercent !== null
-                                  ? tt("models.action.downloading", { percent: modelsStore.downloadPercent })
-                                  : tt("models.action.downloadingUnknown")}
-                              {:else}
-                                {tt("job.whisperModel.download")}
-                              {/if}
-                            </button>
-                          {/if}
-                        {/if}
-                        {#if toolsStore.view.tools.length > 0}
-                          {@const whisperInstalled = toolsStore.view.tools.some((t) => t.name === "sdp-whisper" && t.path !== null)}
-                          {#if !whisperInstalled}
-                            <button
-                              type="button"
-                              class="btn btn--small"
-                              style="margin-top: 4px;"
-                              disabled={!usesWhisper || toolsStore.installingTool !== null}
-                              onclick={() => void toolsStore.install("sdp-whisper")}
-                            >
-                              {#if toolsStore.installingTool === "sdp-whisper"}
-                                {toolsStore.installPercent !== null
-                                  ? tt("tools.action.installing", { percent: toolsStore.installPercent })
-                                  : tt("tools.action.installingUnknown")}
-                              {:else}
-                                {tt("job.whisper.install")}
-                              {/if}
-                            </button>
-                          {/if}
-                        {/if}
-                      </div>
-
-                      <div class="field">
-                        <label class="field__label" for={`whisper-lang-${row.key}`}>
-                          {tt("transcribe.language")}
-                        </label>
-                        <select
-                          class="select"
-                          id={`whisper-lang-${row.key}`}
-                          value={row.transcriptLanguage ?? settingsStore.settings.defaultTranscriptLanguage ?? "auto"}
-                          onchange={(event) =>
-                            addBarStore.setMediaOptions(row.key, { transcriptLanguage: event.currentTarget.value })}
-                        >
-                          {#each rowLanguageOptions(row.inspected?.kind === "video" ? row.inspected.language : null, row.transcriptLanguage) as opt (opt.value)}
-                            <option value={opt.value}>
-                              {opt.labelKey ? (opt.value === "auto" ? tt(opt.labelKey) : `${tt(opt.labelKey)} (${opt.value})`) : opt.label}
-                            </option>
-                          {/each}
-                        </select>
-                      </div>
-                    </div>
-
-                    <label class="add__check">
-                      <input
-                        type="checkbox"
-                        checked={row.translateToEnglish}
-                        onchange={(event) =>
-                          addBarStore.setMediaOptions(row.key, { translateToEnglish: event.currentTarget.checked })}
-                      />
-                      {tt("transcribe.translateToEnglish")}
-                    </label>
-
-                    <label class="add__check">
-                      <input
-                        type="checkbox"
-                        checked={row.transcriptsSubfolder}
-                        onchange={(event) =>
-                          addBarStore.setMediaOptions(row.key, { transcriptsSubfolder: event.currentTarget.checked })}
-                      />
-                      {tt("transcribe.subfolder")}
-                    </label>
-
-                    <label class="add__check">
-                      <input
-                        type="checkbox"
-                        checked={row.summarize}
-                        onchange={(event) =>
-                          addBarStore.setMediaOptions(row.key, { summarize: event.currentTarget.checked })}
-                      />
-                      {tt("addbar.summarize")}
-                    </label>
-                    {#if row.summarize}
-                      <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
-                    {/if}
-                    {#if !settingsStore.settings.geminiPrivacyHintDismissed && ((row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "gemini_only" || (row.transcriptionEngine ?? settingsStore.settings.transcriptionEngineOrder) === "subtitles_whisper_gemini" || row.summarize)}
-                      <div class="add__duplicates" role="status">
-                        <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
-                        <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
-                        <div class="add__actions">
-                          <button
-                            type="button"
-                            class="btn btn--small"
-                            onclick={() => void settingsStore.update({ geminiPrivacyHintDismissed: true })}
-                          >
-                            {tt("common.dismiss")}
-                          </button>
-                        </div>
-                      </div>
-                    {/if}
-                  {/if}
-                </div>
+                <TranscriptionOptions {row} onchange={(patch) => addBarStore.setMediaOptions(row.key, patch)} />
 
                 <div class="field">
                   <label class="field__label" for={`more-ref-${row.key}`}>{tt("queue.add.more.referer")}</label>
@@ -1060,11 +923,14 @@
     </div>
   {/if}
 
+  </div>
   <div class="add__footer">
     <div class="add__status">
       <p class="field__hint" role="status">
         {#if readyCount > 0}
           {ttCount("queue.add.ready", readyCount)}
+        {:else if checkingCount > 0}
+          {tt("queue.add.inspecting")}
         {:else if rows.length > 0}
           {tt("queue.add.none")}
         {/if}
@@ -1097,6 +963,7 @@
       </button>
     </div>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -1105,10 +972,16 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    /* Never squeezed: on a window too small for everything, the page scrolls
-       (`.queue`), and the textarea keeps its size. */
-    flex: none;
+    flex: 0 1 auto;
+    max-height: 54%;
+    min-height: 52px;
   }
+
+  .add__heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); flex: none; }
+  .add__heading h2 { font-size: 14px; flex: 1; }
+  .add__heading .field__hint { flex: 1 1 200px; }
+  .add__body { display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; overflow-y: auto; padding-right: var(--space-1); }
+  .add__footer { flex: none; }
 
   .add--dragging {
     border-color: var(--accent);
@@ -1166,8 +1039,7 @@
     list-style: none;
     /* A long inspection list scrolls inside the card so the queue below it
        keeps a usable height. */
-    max-height: min(32vh, 360px);
-    overflow-y: auto;
+    flex: none;
   }
 
   .add__row {

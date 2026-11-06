@@ -5,7 +5,7 @@
   title and folder, "7/42" with a thin progress bar, and the group actions
   (Pause, Resume, Retry failed, Open folder, Remove). The items themselves stay
   in the virtualised list below; collapsing a group only filters them out, so
-  the virtualiser's one-height arithmetic never has to know about headers.
+  group headers remain independent of the item virtualizer's measured offsets.
 -->
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";

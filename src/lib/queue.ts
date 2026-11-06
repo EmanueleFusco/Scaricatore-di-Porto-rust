@@ -223,11 +223,15 @@ export function emptyQueueState(): QueueState {
 /** What `queue_add` answers (spec §7.3 duplicate detection). */
 export interface AddResult {
   added: string[];
-  duplicates: { url: string; itemId: string; title: string | null }[];
+  duplicates: { url: string; itemId: string; title: string | null; requestIndex?: number }[];
+  /** Reconciled by the store against the submitted immutable request snapshot. */
+  accepted?: AddItemRequest[];
 }
 
 /** What the Add bar sends for one link. */
 export interface AddItemRequest {
+  /** Frontend ownership only; stripped before IPC and external-tool execution. */
+  clientKey?: string;
   url: string;
   title: string | null;
   site: string | null;
@@ -517,6 +521,8 @@ export function normaliseAddResult(raw: unknown): AddResult {
             url: asString(duplicate.url),
             itemId: asString(duplicate.itemId),
             title: asNullableString(duplicate.title),
+            ...(Number.isInteger(duplicate.requestIndex) && Number(duplicate.requestIndex) >= 0
+              ? { requestIndex: Number(duplicate.requestIndex) } : {}),
           };
         })
       : [],
@@ -713,6 +719,19 @@ export function actionsFor(
   return actions;
 }
 
+/** Keep common actions visible and retain every secondary action in the overflow. */
+export function actionLayout(state: ItemState, hasFile: boolean, isRemoteUrl = true): { primary: ItemAction[]; more: ItemAction[] } {
+  const all = actionsFor(state, hasFile, isRemoteUrl);
+  const preferred: ItemAction[] = isActive(state) ? ["pause", "cancel"]
+    : state === "paused" || state === "interrupted" ? ["resume", "cancel"]
+    : state === "failed" || state === "cancelled" ? ["retry", "remove"]
+    : state === "done" && hasFile ? ["open", "reveal"]
+    : state === "queued" ? ["moveToTop", "cancel"] : ["copyLink"];
+  const primary = preferred.filter((action) => all.includes(action));
+  if (primary.length === 0 && all.length > 0) primary.push(all[0]);
+  return { primary, more: all.filter((action) => !primary.includes(action)) };
+}
+
 /** i18n key of an action button. */
 export function actionKey(action: ItemAction): string {
   return `queue.item.action.${action}`;
@@ -777,14 +796,14 @@ export function selectRange(
 // ---------------------------------------------------------------------------
 
 /** bytes/s → Mbit/s, the unit the original and spec §8.3 use. */
-export function speedMbits(bytesPerSecond: number | null): number | null {
+export function speedMbits(bytesPerSecond: number | null): number | "<0.1" | null {
   if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
     return null;
   }
   const mbit = (bytesPerSecond * 8) / 1024 / 1024;
   // One decimal below 1 Mbit/s: `0` for a slow download reads as "stalled",
   // and the footer and the cards both show this number.
-  return mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
+  return mbit < 0.05 ? "<0.1" : mbit >= 1 ? Math.round(mbit) : Math.round(mbit * 10) / 10;
 }
 
 /**

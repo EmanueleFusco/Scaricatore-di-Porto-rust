@@ -19,7 +19,7 @@ use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 /// Default filename for `--download-archive` under `<app-data>/` (spec §6.2.4,
 /// §8.2, §11.8).
@@ -159,6 +159,76 @@ fn de_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Language, D::Er
     Ok(language_from_str(raw.trim().to_ascii_lowercase().as_str()).unwrap_or_default())
 }
 
+/// A reusable media/transcription preset. Network credentials are never preset data.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SavedPreset {
+    pub id: String,
+    pub name: String,
+    pub quality: String,
+    pub options: serde_json::Value,
+}
+
+impl SavedPreset {
+    fn normalise(&mut self) -> bool {
+        self.id = self.id.trim().to_owned();
+        self.name = self.name.trim().chars().take(80).collect();
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || self.name.is_empty()
+            || !matches!(
+                self.quality.as_str(),
+                "best"
+                    | "audio"
+                    | "max2160"
+                    | "max1440"
+                    | "max1080"
+                    | "max720"
+                    | "max480"
+                    | "max360"
+            )
+        {
+            return false;
+        }
+        if !self.options.is_object() {
+            self.options = serde_json::json!({});
+        }
+        if let Some(options) = self.options.as_object_mut() {
+            options.retain(|key, value| match key.as_str() {
+                "encode"
+                | "keepOriginal"
+                | "autoPlay"
+                | "embedMetadata"
+                | "embedThumbnail"
+                | "embedChapters"
+                | "transcribe"
+                | "transcriptLanguageOverridden"
+                | "translateToEnglish"
+                | "transcriptsSubfolder"
+                | "summarize" => value.is_boolean(),
+                "videoCodec"
+                | "audioCodec"
+                | "sponsorblockMode"
+                | "whisperModel"
+                | "transcriptLanguage"
+                | "transcriptionEngine"
+                | "geminiModel"
+                | "summaryLanguage" => {
+                    value.is_null()
+                        || value
+                            .as_str()
+                            .is_some_and(|s| s.len() <= 128 && !s.chars().any(char::is_control))
+                }
+                "sponsorblockCategories" => value.as_array().is_some_and(|a| {
+                    a.len() <= 16 && a.iter().all(|v| v.as_str().is_some_and(|s| s.len() <= 32))
+                }),
+                _ => false,
+            });
+        }
+        true
+    }
+}
+
 /// The persisted configuration document (spec §2.6, §2.8).
 ///
 /// Every field has a default, unknown keys are ignored, and the file is written
@@ -166,6 +236,8 @@ fn de_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Language, D::Er
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    pub saved_presets: Vec<SavedPreset>,
+    pub last_preset: Option<String>,
     pub schema_version: u32,
     #[serde(deserialize_with = "de_language")]
     pub language: Language,
@@ -288,6 +360,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
+            saved_presets: Vec::new(),
+            last_preset: None,
             language: Language::default(),
             theme: Theme::default(),
             default_output_dir: None,
@@ -346,6 +420,17 @@ impl Settings {
     /// Normalise anything a user (or an older build) may have stored.
     pub fn normalise(&mut self) {
         self.schema_version = SETTINGS_SCHEMA_VERSION;
+        let mut seen = std::collections::HashSet::new();
+        self.saved_presets
+            .retain_mut(|preset| preset.normalise() && seen.insert(preset.id.clone()));
+        self.saved_presets.truncate(20);
+        if !self
+            .saved_presets
+            .iter()
+            .any(|preset| Some(&preset.id) == self.last_preset.as_ref())
+        {
+            self.last_preset = None;
+        }
         if self.sponsorblock_categories.is_empty() {
             self.sponsorblock_categories = vec![
                 "sponsor".to_owned(),
@@ -519,6 +604,17 @@ pub struct Recovery {
     pub detail: Option<String>,
 }
 
+/// One batch owns independent cancellation tokens for its URL rows, in input order.
+pub type InspectionBatch = Vec<(String, tokio_util::sync::CancellationToken)>;
+
+#[derive(Default)]
+struct InspectionBatches {
+    active: BTreeMap<u64, Arc<InspectionBatch>>,
+    // A synchronous cancel IPC may arrive before its async inspection starts.
+    // Keep a bounded set of those requests; None means the entire batch.
+    cancelled: BTreeMap<u64, Option<Vec<String>>>,
+}
+
 /// Runtime state shared with every command.
 pub struct AppState {
     settings: RwLock<Settings>,
@@ -531,6 +627,8 @@ pub struct AppState {
     /// The one inspection in flight, so a new URL cancels the previous one
     /// (spec §6.2 "cancel the previous inspection when the URL changes").
     inspection: Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
+    inspection_batches: Mutex<InspectionBatches>,
+    inspection_slots: Arc<tokio::sync::Semaphore>,
     /// The one download job of M1 (the queue arrives in M2).
     job: Mutex<Option<ActiveJob>>,
     /// The on-demand install in flight, so the provisioning UI can cancel it
@@ -604,6 +702,10 @@ impl AppState {
             )),
             tools,
             inspection: Mutex::new(None),
+            inspection_batches: Mutex::new(InspectionBatches::default()),
+            inspection_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::services::inspect::INSPECTION_CONCURRENCY,
+            )),
             job: Mutex::new(None),
             install: Mutex::new(None),
             tool_cache: Mutex::new(std::collections::HashMap::new()),
@@ -674,6 +776,11 @@ impl AppState {
         &self.runtime_memory
     }
 
+    /// One process budget shared by single URLs, batches and pagination.
+    pub fn inspection_slots(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.inspection_slots)
+    }
+
     /// Register a new inspection and cancel the previous one.
     pub fn start_inspection(&self, request_id: u64) -> tokio_util::sync::CancellationToken {
         let token = tokio_util::sync::CancellationToken::new();
@@ -701,7 +808,93 @@ impl AppState {
         }
     }
 
-    /// Cancel whatever inspection is running (the URL box was cleared).
+    /// Register independent batches without superseding unrelated URL rows.
+    pub fn start_inspection_batch(&self, request_id: u64, urls: &[String]) -> Arc<InspectionBatch> {
+        let batch = Arc::new(
+            urls.iter()
+                .map(|url| (url.clone(), tokio_util::sync::CancellationToken::new()))
+                .collect::<InspectionBatch>(),
+        );
+        let (previous, cancelled) = {
+            let mut batches = self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (
+                batches.active.insert(request_id, Arc::clone(&batch)),
+                batches.cancelled.remove(&request_id),
+            )
+        };
+        if let Some(previous) = previous {
+            for (_, token) in previous.iter() {
+                token.cancel();
+            }
+        }
+        if let Some(urls) = cancelled {
+            for (url, token) in batch.iter() {
+                if urls.as_ref().is_none_or(|urls| urls.contains(url)) {
+                    token.cancel();
+                }
+            }
+        }
+        batch
+    }
+
+    /// An old completion must not unregister a new batch reusing the same id.
+    pub fn finish_inspection_batch(&self, request_id: u64, batch: &Arc<InspectionBatch>) {
+        let mut batches = self
+            .inspection_batches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if batches
+            .active
+            .get(&request_id)
+            .is_some_and(|current| Arc::ptr_eq(current, batch))
+        {
+            batches.active.remove(&request_id);
+        }
+    }
+
+    /// Cancel selected rows, or the whole batch when no URL filter is supplied.
+    pub fn cancel_inspection_batch(&self, request_id: u64, urls: Option<&[String]>) {
+        let batch = {
+            let mut batches = self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let batch = if urls.is_none() {
+                batches.active.remove(&request_id)
+            } else {
+                batches.active.get(&request_id).cloned()
+            };
+            if batch.is_none() {
+                if let Some(urls) = urls {
+                    if let Some(known) = batches
+                        .cancelled
+                        .entry(request_id)
+                        .or_insert_with(|| Some(Vec::new()))
+                    {
+                        known.extend(urls.iter().cloned());
+                    }
+                } else {
+                    batches.cancelled.insert(request_id, None);
+                }
+                while batches.cancelled.len() > 1024 {
+                    batches.cancelled.pop_first();
+                }
+            }
+            batch
+        };
+        if let Some(batch) = batch {
+            for (url, token) in batch.iter() {
+                if urls.is_none_or(|urls| urls.contains(url)) {
+                    token.cancel();
+                }
+            }
+        }
+    }
+
+    /// Cancel all inspections (the URL box was cleared or the app is exiting).
     pub fn cancel_inspection(&self) {
         let previous = {
             let mut slot = match self.inspection.lock() {
@@ -712,6 +905,18 @@ impl AppState {
         };
         if let Some((_, token)) = previous {
             token.cancel();
+        }
+        let batches = std::mem::take(
+            &mut self
+                .inspection_batches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .active,
+        );
+        for batch in batches.into_values() {
+            for (_, token) in batch.iter() {
+                token.cancel();
+            }
         }
     }
 
@@ -1109,6 +1314,62 @@ mod tests {
     }
 
     #[test]
+    fn inspection_batches_cancel_selected_rows_without_superseding_other_batches() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec![
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ];
+        let first = state.start_inspection_batch(1, &urls);
+        let second = state.start_inspection_batch(2, &urls);
+        state.cancel_inspection_batch(1, Some(&urls[..1]));
+        assert!(first[0].1.is_cancelled());
+        assert!(!first[1].1.is_cancelled());
+        assert!(second.iter().all(|(_, token)| !token.is_cancelled()));
+        let legacy = state.start_inspection(3);
+        state.cancel_inspection();
+        assert!(legacy.is_cancelled());
+        assert!(
+            first
+                .iter()
+                .chain(second.iter())
+                .all(|(_, token)| token.is_cancelled())
+        );
+    }
+
+    #[test]
+    fn stale_batch_completion_cannot_unregister_a_replacement() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec!["https://example.com/a".into()];
+        let old = state.start_inspection_batch(1, &urls);
+        let fresh = state.start_inspection_batch(1, &urls);
+        assert!(old[0].1.is_cancelled());
+        state.finish_inspection_batch(1, &old);
+        state.cancel_inspection_batch(1, None);
+        assert!(fresh[0].1.is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_arriving_before_async_batch_registration_is_preserved() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = AppState::from_path(settings_path(&dir)).expect("state");
+        let urls = vec![
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ];
+        state.cancel_inspection_batch(1, Some(&urls[..1]));
+        let selected = state.start_inspection_batch(1, &urls);
+        assert!(selected[0].1.is_cancelled());
+        assert!(!selected[1].1.is_cancelled());
+        state.cancel_inspection_batch(2, None);
+        state.cancel_inspection_batch(2, Some(&urls[..1]));
+        let all = state.start_inspection_batch(2, &urls);
+        assert!(all.iter().all(|(_, token)| token.is_cancelled()));
+    }
+
+    #[test]
     fn missing_fields_get_their_defaults() {
         let s: Settings = serde_json::from_str("{}").expect("parse");
         assert_eq!(s, Settings::default());
@@ -1116,6 +1377,30 @@ mod tests {
         assert_eq!(s.language, Language::System);
         assert_eq!(s.theme, Theme::System);
         assert!(s.default_output_dir.is_none());
+    }
+
+    #[test]
+    fn saved_presets_migrate_round_trip_and_never_store_network_fields() {
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 7,
+            "savedPresets": [{ "id": "p1", "name": " Podcast ", "quality": "audio", "options": {
+                "transcribe": true, "audioCodec": "opus", "customHeaders": "fake-secret", "url": "https://private.example", "trimStart": "10"
+            } }], "lastPreset": "p1"
+        })).expect("parse");
+        settings.normalise();
+        assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(settings.saved_presets[0].name, "Podcast");
+        assert_eq!(
+            settings.saved_presets[0].options,
+            serde_json::json!({"transcribe": true, "audioCodec": "opus"})
+        );
+        let dir = TempDir::new().expect("tempdir");
+        let path = settings_path(&dir);
+        Settings::save(&path, &settings).expect("save");
+        assert_eq!(Settings::load(&path).expect("load").settings, settings);
+        settings.saved_presets.clear();
+        settings.normalise();
+        assert!(settings.last_preset.is_none());
     }
 
     #[test]

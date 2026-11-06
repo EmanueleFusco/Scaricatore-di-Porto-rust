@@ -208,6 +208,13 @@ fn challenge_warning() {
 }
 
 fn inspect_url(args: &[String], url: &str, runtime: &str) -> i32 {
+    if url.contains("meter-inspect") {
+        append_line("fake-inspect-runs.log", &format!("start {url}"));
+        thread::sleep(Duration::from_millis(150));
+        print!("{VIDEO_JSON}");
+        append_line("fake-inspect-runs.log", &format!("end {url}"));
+        return 0;
+    }
     if url.contains("antibot-retry") {
         let impersonated = args
             .windows(2)

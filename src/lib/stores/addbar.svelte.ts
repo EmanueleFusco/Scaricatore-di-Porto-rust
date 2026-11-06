@@ -13,7 +13,7 @@
  * quality options — are in `$lib/addbar`, so they can be tested without a
  * Svelte runtime.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   isVideoWithListUrl,
   normaliseInspected,
@@ -29,6 +29,7 @@ import { isTauriRuntime, settingsStore } from "$lib/stores/settings.svelte";
 import { queueStore } from "$lib/stores/queue.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
 import type { BackendErrorInfo } from "$lib/settings";
+import { defaultPresetOptions, presetOptions, type PresetOptions, type SavedPreset } from "$lib/presets";
 
 /** One link being added, and how far along its inspection is. */
 export interface AddRow {
@@ -93,14 +94,62 @@ class AddBarStore {
   /** The preset applied to rows that have no per-row choice. */
   preset = $state("best");
   folder = $state<string | null>(null);
-  checking = $state(false);
   dragging = $state(false);
   errorKey = $state<string | null>(null);
   errorDetail = $state<string | null>(null);
 
   #counter = 0;
-  /** Bumped for every batch; an answer older than this is dropped. */
-  #request = 0;
+  get rowGeneration(): number { return this.#counter; }
+  #presetsRestored = false;
+  #presetOptions: PresetOptions = {};
+
+  restorePreset(): void {
+    if (this.#presetsRestored) return;
+    this.#presetsRestored = true;
+    this.#applyPreset(settingsStore.settings.lastPreset ?? null);
+  }
+
+  #applyPreset(id: string | null): void {
+    const saved = settingsStore.settings.savedPresets?.find((preset) => preset.id === id);
+    this.preset = saved?.quality ?? "best";
+    this.#presetOptions = saved ? presetOptions(saved.options) : {};
+    const options = { ...defaultPresetOptions(settingsStore.settings), ...this.#presetOptions };
+    this.rows = this.rows.map((row) => ({ ...row, ...options, quality: null,
+      encode: options.encode === true || row.trimStart.trim() !== "" || row.trimEnd.trim() !== "",
+    }));
+  }
+
+  async selectPreset(id: string | null): Promise<boolean> {
+    if (!await settingsStore.update({ lastPreset: id })) return false;
+    this.#applyPreset(id);
+    return true;
+  }
+
+  async savePreset(name: string): Promise<boolean> {
+    const label = Array.from(name.trim()).slice(0, 80).join("");
+    if (!label) return false;
+    const presets = settingsStore.settings.savedPresets;
+    const existing = presets.find((entry) => entry.name.toLocaleLowerCase() === label.toLocaleLowerCase());
+    if (!existing && presets.length >= 20) return false;
+    const saved: SavedPreset = { id: existing?.id ?? crypto.randomUUID(), name: label,
+      quality: this.preset,
+      options: presetOptions(this.rows[0] ?? defaultPresetOptions(settingsStore.settings)),
+    };
+    if (!await settingsStore.update({ savedPresets: [...presets.filter((entry) => entry.id !== saved.id), saved], lastPreset: saved.id })) return false;
+    this.#applyPreset(saved.id);
+    return true;
+  }
+
+  async deletePreset(id: string): Promise<boolean> {
+    const lastPreset = settingsStore.settings.lastPreset === id ? null : settingsStore.settings.lastPreset;
+    if (!await settingsStore.update({ savedPresets: settingsStore.settings.savedPresets.filter((entry) => entry.id !== id), lastPreset })) return false;
+    this.#applyPreset(lastPreset);
+    return true;
+  }
+  /** Unique across a webview reload; each request belongs to its own rows. */
+  #request = Date.now() * 1000;
+  #rowRequests = new Map<string, number>();
+  #requests = new Map<number, Map<string, string>>();
   /** The pending debounced inspection, if one is waiting (spec §11.3). */
   #timer: ReturnType<typeof setTimeout> | null = null;
   /** Spec §2.9: a URL inspected before answers without a second round-trip. */
@@ -113,6 +162,10 @@ class AddBarStore {
 
   get readyCount(): number {
     return this.ready.length;
+  }
+
+  get checking(): boolean {
+    return this.rows.some((row) => row.state === "checking" || row.state === "pending");
   }
 
   get hasRows(): boolean {
@@ -207,6 +260,7 @@ class AddBarStore {
         geminiModel: settingsStore.settings.defaultGeminiModel,
         summarize: settingsStore.settings.defaultSummarize,
         summaryLanguage: settingsStore.settings.defaultSummaryLanguage,
+        ...presetOptions(this.#presetOptions),
       };
     });
     if (rows.length === 0) return;
@@ -313,14 +367,16 @@ class AddBarStore {
     if (!isTauriRuntime() || row === undefined || row.inspected?.kind !== "playlist") return;
     if (row.loadingMore) return;
     const known = row.inspected;
+    const request = this.#startRequest([row]);
     this.#patch(key, { loadingMore: true });
     try {
       const [from, to] = nextPageRange(known.entries.length, PLAYLIST_PAGE_SIZE);
       const raw = await invoke<unknown[]>("inspect_urls", {
-        requestId: ++this.#request,
+        requestId: request,
         urls: [row.url],
         options: { ...this.#optionsOf(row), itemRange: [from, to] },
       });
+      if (this.#rowRequests.get(key) !== request) return;
       const answer = (raw[0] ?? {}) as Record<string, unknown>;
       if (!answer.inspected) {
         this.#patch(key, { loadingMore: false });
@@ -341,8 +397,11 @@ class AddBarStore {
         },
       });
     } catch (err) {
+      if (this.#rowRequests.get(key) !== request) return;
       this.#patch(key, { loadingMore: false });
       this.#fail(err);
+    } finally {
+      this.#finishRequest(request);
     }
   }
 
@@ -407,15 +466,15 @@ class AddBarStore {
   }
 
   removeRow(key: string): void {
+    this.#cancelRows(new Set([key]));
     this.rows = this.rows.filter((row) => row.key !== key);
   }
 
   clear(): void {
     this.#cancelTimer();
-    this.#request += 1;
+    this.#cancelRows(new Set(this.rows.map((row) => row.key)));
     this.rows = [];
     this.text = "";
-    this.checking = false;
     // Spec §2.9: the cache is cleared by Clear.
     this.#cache.clear();
   }
@@ -466,6 +525,7 @@ class AddBarStore {
       const headers = parseHeaderLines(row.customHeaders);
       return {
         url: row.url,
+        clientKey: row.key,
         title: video?.title ?? null,
         site: video?.site ?? null,
         durationSec: video?.duration ?? null,
@@ -509,8 +569,9 @@ class AddBarStore {
   }
 
   /** Drop the rows that were added, keep the rest. */
-  clearAdded(): void {
-    this.rows = this.rows.filter((row) => row.state !== "ready");
+  clearAdded(keys: readonly string[]): void {
+    const added = new Set(keys);
+    this.rows = this.rows.filter((row) => !added.has(row.key));
   }
 
   /** The per-inspection flags of one row (spec §6.2, §6.4, §11.3). */
@@ -526,8 +587,6 @@ class AddBarStore {
 
   async #check(rows: AddRow[]): Promise<void> {
     if (!isTauriRuntime() || rows.length === 0) return;
-    this.#request += 1;
-    const request = this.#request;
     this.#mark(rows.map((row) => row.key), "checking");
 
     // One batch per distinct set of flags: the backend takes one `options` per
@@ -541,50 +600,54 @@ class AddBarStore {
       batches.set(id, batch);
     }
 
-    try {
-      await Promise.all(
-        [...batches.values()].map(async (batch) => {
-          try {
-            const raw = await invoke<unknown[]>("inspect_urls", {
-              requestId: request,
-              urls: batch.rows.map((row) => row.url),
-              options: batch.options,
+    await Promise.all(
+      [...batches.values()].map(async (batch) => {
+        const request = this.#startRequest(batch.rows);
+        const onResult = new Channel<{ requestId: number; answer: unknown }>((event) => {
+          if (event.requestId === request) this.#applyAnswers([event.answer], request, false);
+        });
+        try {
+          const raw = await invoke<unknown[]>("inspect_urls", {
+            requestId: request,
+            urls: batch.rows.map((row) => row.url),
+            options: batch.options,
+            onResult,
+          });
+          this.#applyAnswers(raw, request);
+        } catch (err) {
+          const info = err as Partial<BackendErrorInfo>;
+          for (const row of this.rows) {
+            if (this.#rowRequests.get(row.key) !== request) continue;
+            if (row.state !== "checking" && row.state !== "pending") continue;
+            this.#patch(row.key, {
+              state: "error",
+              errorKey: typeof info?.messageKey === "string" ? info.messageKey : "error.tauri",
+              errorDetail: typeof info?.detail === "string" ? info.detail : null,
             });
-            if (request !== this.#request) return; // stale answer (spec §12.12)
-            this.#applyAnswers(raw);
-          } catch (err) {
-            if (request !== this.#request) return;
-            const info = err as Partial<BackendErrorInfo>;
-            for (const row of batch.rows) {
-              this.#patch(row.key, {
-                state: "error",
-                errorKey: typeof info?.messageKey === "string" ? info.messageKey : "error.tauri",
-                errorDetail: typeof info?.detail === "string" ? info.detail : null,
-              });
-            }
           }
-        }),
-      );
-    } finally {
-      if (request === this.#request) {
-        this.checking = this.rows.some(
-          (row) => row.state === "checking" || row.state === "pending",
-        );
-      }
-    }
+        } finally {
+          this.#finishRequest(request);
+        }
+      }),
+    );
   }
 
   /** Fold the batch answers in, by URL: they may arrive out of order. */
-  #applyAnswers(raw: unknown[]): void {
+  #applyAnswers(raw: unknown[], request: number, complete = true): void {
     const answers = new Map<string, Record<string, unknown>>();
     for (const entry of raw) {
       const answer = (entry ?? {}) as Record<string, unknown>;
       answers.set(typeof answer.url === "string" ? answer.url : "", answer);
     }
     for (const row of this.rows) {
+      if (this.#rowRequests.get(row.key) !== request) continue;
       if (row.state !== "checking" && row.state !== "pending") continue;
       const answer = answers.get(row.url);
-      if (answer === undefined) continue;
+      if (answer === undefined) {
+        if (!complete) continue;
+        this.#patch(row.key, { state: "error", errorKey: "error.tauri", errorDetail: null });
+        continue;
+      }
       const error = answer.error as Partial<BackendErrorInfo> | null | undefined;
       if (error !== null && error !== undefined) {
         this.#patch(row.key, {
@@ -639,9 +702,37 @@ class AddBarStore {
   #mark(keys: string[], state: AddRow["state"]): void {
     const set = new Set(keys);
     this.rows = this.rows.map((row) => (set.has(row.key) ? { ...row, state } : row));
-    this.checking = this.rows.some(
-      (row) => row.state === "checking" || row.state === "pending",
-    );
+  }
+
+  #startRequest(rows: AddRow[]): number {
+    this.#cancelRows(new Set(rows.map((row) => row.key)));
+    const request = ++this.#request;
+    this.#requests.set(request, new Map(rows.map((row) => [row.key, row.url])));
+    for (const row of rows) this.#rowRequests.set(row.key, request);
+    return request;
+  }
+
+  #finishRequest(request: number): void {
+    for (const key of this.#requests.get(request)?.keys() ?? []) {
+      if (this.#rowRequests.get(key) === request) this.#rowRequests.delete(key);
+    }
+    this.#requests.delete(request);
+  }
+
+  #cancelRows(keys: ReadonlySet<string>): void {
+    for (const [request, rows] of this.#requests) {
+      const urls: string[] = [];
+      for (const [key, url] of rows) {
+        if (!keys.has(key)) continue;
+        urls.push(url);
+        rows.delete(key);
+        if (this.#rowRequests.get(key) === request) this.#rowRequests.delete(key);
+      }
+      if (urls.length > 0 && isTauriRuntime()) {
+        void invoke("inspect_cancel", { requestId: request, urls }).catch(() => {});
+      }
+      if (rows.size === 0) this.#requests.delete(request);
+    }
   }
 
   #patch(key: string, patch: Partial<AddRow>): void {

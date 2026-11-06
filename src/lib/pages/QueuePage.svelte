@@ -28,13 +28,12 @@
   <QueueList />
 
   <div class="queue__actions">
+    <button type="button" class="btn" disabled={summary.pausedAll || summary.running + summary.queued === 0} onclick={() => void queueStore.pauseAll()}>
+      {tt("queue.list.pauseAll")}
+    </button>
     {#if summary.pausedAll || hasParked}
       <button type="button" class="btn" onclick={() => void queueStore.resumeAll()}>
         {tt("queue.list.resumeAll")}
-      </button>
-    {:else}
-      <button type="button" class="btn" disabled={summary.running === 0} onclick={() => void queueStore.pauseAll()}>
-        {tt("queue.list.pauseAll")}
       </button>
     {/if}
     <button type="button" class="btn" disabled={!hasFailed} onclick={() => void queueStore.retryFailed()}>
@@ -50,16 +49,12 @@
   .queue {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
     height: 100%;
     min-height: 0;
-    /* The page is exactly as tall as the window; when even the minimum of the
-       add bar plus the list does not fit (a very small window, or a long list
-       of pasted links), this scrolls vertically instead of letting a child
-       paint over the actions and the footer. `overflow-y: auto` uses the full
-       height of `.shell__main`, while small horizontal padding keeps focus
-       rings and item-flash shadows from being clipped at the container edge. */
-    overflow-y: auto;
+    /* The composer and queue own their scroll areas; keep global actions
+       inside the window. Horizontal padding preserves visible focus rings. */
+    overflow: hidden;
     padding: 0 2px;
     margin: 0 -2px;
   }

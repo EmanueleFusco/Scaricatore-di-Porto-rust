@@ -69,6 +69,9 @@ Thumbs.db
 !.vscode/extensions.json
 
 # --- Test artefacts ---
+# Local audit downloads, generated probes and captures are not source fixtures.
+/audit-output/
+*.private.json
 # The fake tools (`src-tauri/tests/bin/`) write their media file where the app
 # tells them to. They refuse to run without `--paths home:` precisely because a
 # probe used to fall through to "download" and leave one of these in the folder

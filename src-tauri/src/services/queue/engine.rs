@@ -106,6 +106,7 @@ pub enum Outcome {
 /// (spec §7.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateRef {
+    pub request_index: usize,
     pub url: String,
     pub item_id: String,
     pub title: Option<String>,
@@ -360,7 +361,7 @@ impl QueueEngine {
                 .map(|item| (item.duplicate_key(), item.id.clone()))
                 .collect();
 
-            for request in requests {
+            for (request_index, request) in requests.into_iter().enumerate() {
                 let item = request.into_item(next_id(), now);
                 let key = item.duplicate_key();
                 let duplicate = held
@@ -370,6 +371,7 @@ impl QueueEngine {
                 match (duplicate, force) {
                     (Some(item_id), false) => {
                         outcome.duplicates.push(DuplicateRef {
+                            request_index,
                             url: item.url,
                             item_id,
                             title: item.title,

@@ -2,26 +2,25 @@
   The queue list (spec §11.2, §11.7).
 
   Virtualised: only the rows in the viewport (plus an overscan) exist in the
-  DOM, so a 5 000-item queue scrolls like a 10-item one. The scroll maths is
-  the pure `visibleRange()` of `$lib/queue`, which is unit-tested; this
-  component only wires it to a scroll event.
+  DOM. Prefix offsets use each card's measured height, including expanded
+  details and wrapped actions. Pure range/offset helpers are unit-tested
+  against 5 000 mixed-height rows.
 -->
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, tick } from "svelte";
   import QueueGroups from "$lib/components/QueueGroups.svelte";
   import QueueItemRow from "$lib/components/QueueItem.svelte";
   import {
     actionsFor,
     filterQueueItems,
     itemsOutsideCollapsed,
-    scrollOffsetFor,
     selectRange,
     toggleSelected,
     visibleItems,
-    visibleRange,
     type ItemAction,
     type QueueItem,
   } from "$lib/queue";
+  import { rowOffsets, variableVisibleRange, variableScrollOffset } from "$lib/virtual-list";
   import { isInteractiveTarget, isTypingTarget, shortcutAction } from "$lib/shortcuts";
   import { queueStore } from "$lib/stores/queue.svelte";
   import { tt, ttCount } from "$lib/stores/settings.svelte";
@@ -34,7 +33,7 @@
   let filterInput = $state<HTMLInputElement | null>(null);
   let scrollTop = $state(0);
   let viewportHeight = $state(VIEWPORT_FALLBACK);
-  let rowHeight = $state(ROW_HEIGHT_FALLBACK);
+  let heights = $state<Record<string, number>>({});
 
   /** Groups the user folded away (spec §11.5): their items leave the list. */
   let collapsed = $state<Set<string>>(new Set());
@@ -52,7 +51,8 @@
   const canResume = $derived(selectedItems.some((item) => hasAction(item, "resume")));
   const canCancel = $derived(selectedItems.some((item) => hasAction(item, "cancel")));
 
-  const range = $derived(visibleRange(scrollTop, viewportHeight, rowHeight, items.length));
+  const offsets = $derived(rowOffsets(items.map((item) => item.id), heights, ROW_HEIGHT_FALLBACK));
+  const range = $derived(variableVisibleRange(scrollTop, viewportHeight, offsets));
   const shown = $derived(visibleItems(items, range));
 
   function toggleGroup(id: string): void {
@@ -123,6 +123,8 @@
 
   function onWindowKeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
+    void navigateRows(event);
+    if (event.defaultPrevented) return;
     const action = shortcutAction(
       event,
       isTypingTarget(event.target),
@@ -150,6 +152,10 @@
   // keep acting on rows that no longer exist.
   $effect(() => {
     const live = new Set(allItems.map((item) => item.id));
+    const previousHeights = untrack(() => heights);
+    if (Object.keys(previousHeights).some((id) => !live.has(id))) {
+      heights = Object.fromEntries(Object.entries(previousHeights).filter(([id]) => live.has(id)));
+    }
     const kept = [...selectedIds].filter((id) => live.has(id));
     if (kept.length !== selectedIds.size) {
       selectedIds = new Set(kept);
@@ -164,45 +170,49 @@
     }
   }
 
-  /**
-   * The distance between two rows, in px: the height of a card plus the gap.
-   *
-   * The cards have the same shape whatever the state (head, bar, one status
-   * line, actions), so one pitch fits them all; the tallest covers a narrow
-   * window where one state's buttons wrap and another's do not. Measured rather
-   * than taken from a constant: the padding rows have to match the rows that
-   * are really drawn, or the window scrolls to the wrong place.
-   */
-  function measureRow(): void {
-    if (scroller === null) return;
-    const rows = scroller.querySelectorAll<HTMLElement>(".item");
-    if (rows.length === 0) return;
-    const first = rows[0].getBoundingClientRect();
-    const gap = Number.parseFloat(getComputedStyle(scroller).rowGap) || 0;
-    const pitch =
-      rows.length >= 2
-        ? Math.round(rows[1].getBoundingClientRect().top - first.top)
-        : Math.round(first.height + gap);
-    if (pitch > 0 && Math.abs(pitch - rowHeight) > 2) {
-      rowHeight = pitch;
-    }
+  function measured(id: string, height: number): void {
+    const previous = heights[id] ?? ROW_HEIGHT_FALLBACK;
+    if (Math.abs(previous - height) < 0.5) return;
+    const index = items.findIndex((item) => item.id === id);
+    const atEnd = scroller !== null && (
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 2 ||
+      offsets[offsets.length - 1] - scrollTop - viewportHeight <= 8
+    );
+    const above = index >= 0 && offsets[index + 1] <= scrollTop;
+    heights = { ...heights, [id]: height };
+    if (atEnd || above) queueMicrotask(() => {
+      if (scroller !== null) { scroller.scrollTop = atEnd ? scroller.scrollHeight : scroller.scrollTop + height - previous; scrollTop = scroller.scrollTop; }
+    });
   }
 
   $effect(() => {
-    const el = scroller;
-    if (el === null) return;
-    const observer = new ResizeObserver(() => measureRow());
-    observer.observe(el);
+    const element = scroller;
+    if (element === null) return;
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (Math.abs(width - element.clientWidth) > 1) { heights = {}; width = element.clientWidth; }
+      viewportHeight = element.clientHeight || VIEWPORT_FALLBACK;
+      scrollTop = element.scrollTop;
+    });
+    observer.observe(element);
     return () => observer.disconnect();
   });
 
-  // Re-measure whenever the rendered slice changes: a row that went from
-  // downloading to done has a different height, and so does a window resize.
-  $effect(() => {
-    void shown;
-    untrack(() => measureRow());
-  });
-
+  async function navigateRows(event: KeyboardEvent): Promise<void> {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !target.matches(".item__title[data-queue-id]")) return;
+    const index = items.findIndex((item) => item.id === target.dataset.queueId);
+    const next = event.key === "ArrowDown" ? index + 1 : event.key === "ArrowUp" ? index - 1
+      : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
+    if (next < 0 || next >= items.length) return;
+    event.preventDefault();
+    const offset = variableScrollOffset(next, offsets, scrollTop, viewportHeight);
+    if (offset !== null && scroller !== null) { scroller.scrollTop = offset; scrollTop = offset; }
+    await tick();
+    for (const row of scroller?.querySelectorAll<HTMLElement>(".item__title[data-queue-id]") ?? []) {
+      if (row.dataset.queueId === items[next]?.id) { row.focus({ preventScroll: true }); break; }
+    }
+  }
   /**
    * Bring a freshly added row into view (D104).
    *
@@ -219,12 +229,10 @@
       const element = scroller;
       if (element === null) return;
       const index = items.findIndex((item) => item.id === ids[0]);
-      const offset = scrollOffsetFor(index, rowHeight, element.scrollTop, element.clientHeight);
+      const offset = variableScrollOffset(index, offsets, element.scrollTop, element.clientHeight);
       if (offset === null) return;
-      const reduced =
-        typeof window !== "undefined" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      element.scrollTo({ top: offset, behavior: reduced ? "auto" : "smooth" });
+      // Height corrections during a smooth scroll would cancel its destination.
+      element.scrollTo({ top: offset, behavior: "auto" });
     });
   });
 </script>
@@ -339,6 +347,7 @@
       {#each shown as item (item.id)}
         <QueueItemRow
           {item}
+          onmeasure={measured}
           selected={selectedIds.has(item.id)}
           onselect={onSelect}
         />
@@ -357,20 +366,20 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-    flex: 1 1 auto;
-    /* A floor, not a fixed height: on a window too small for everything, the
-       page scrolls (see `.queue`) instead of the list painting over the
-       actions below it. */
-    min-height: 160px;
+    flex: 1 1 0;
+    /* A zero flex basis prevents a huge virtual spacer from squeezing the
+       composer below the size of its fixed controls. */
+    min-height: 120px;
   }
 
   .list__viewport {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: 0;
+    overflow-anchor: none;
     padding-right: var(--space-1);
   }
 

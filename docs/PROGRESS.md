@@ -258,3 +258,126 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none (documentation synthesis only).
 - Decisions/deviations (also in DECISIONS.md): D143.
 - Next step: commit documentation synthesis.
+
+## 2026-11-06 — M7 / Version 0.1.0 functional, UI and cross-platform audit
+
+- Done:
+  - Audited `ad1f67f` (application code identical to local tag `v0.1.0` / `89a4052`); added `docs/AUDIT_0.1.0.md` with prioritized findings, reproduction evidence, UI recommendations and explicit coverage limits.
+  - Launched the current native Windows app, inspected/downloaded the public zoo video, checked unavailable/unsupported/mixed-scheme inputs and the video/playlist choice, and completed loopback direct-video, Opus audio, HLS and HTML5-page downloads.
+  - Exercised parallel slow transfers, pause/resume, cancellation, queue filtering, compact/maximized layouts, the in-app QuickJS self-test, version display and the published update check. Closing during a transfer left no app or app-data tool processes in the subsequent host process inspection.
+  - Reproduced two high-priority defects: encoded output replacement without collision protection, and pending inspection rows stranded by a newer batch. Diagnostic probes also confirmed playlist reverse/order mismatch, whole mixed-batch resubmission and FFmpeg compiler-version misidentification. Recorded additional source-confirmed/platform-inferred defects separately from live reproductions.
+  - Ran real FFmpeg H.264/AAC trim (3.0 s output, original preserved), downloaded/verified the Windows Whisper sidecar and Tiny model, and generated nonempty TXT/SRT/VTT from short English speech. Tiny recognition errors remain; this is not an Italian/recommended-model quality acceptance.
+  - Built the current production executable: 6,961,152 bytes. No installer or update was installed. No functional source, dependencies, tags or remote GitHub state changed.
+  - Stopped the loopback servers, moved diagnostic scripts/fixtures/logs into ignored `src-tauri/target/audit-2026-11-06/`, removed only the nine audit-created queue entries, and verified that the two original history entries were unchanged. Generated media in Downloads remains available for inspection; model/sidecar probe installations were temporary.
+- Verified by running:
+  - `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` -> pass; repeated after removing temporary diagnostic test sources.
+  - `cargo test` -> 637 passed, 5 ignored; `npm.cmd test -- --run` -> 327 passed, 12 skipped, 16 files.
+  - `npm.cmd run check` -> 0 errors, 0 warnings; repeated at the end. `npm.cmd run build` -> pass.
+  - `npm.cmd run check:ci` -> all 24 blocks valid; `npm.cmd run check:release -- v0.1.0` -> pass.
+  - `npm.cmd run tauri build -- --no-bundle` -> pass, production executable compiled in 2m 22s; not independently tested as an installed package.
+  - `real_selftest-d76210a72cb6d09f.exe --ignored --no-capture --test-threads 1 the_self_test_passes_with_the_bundled_tools` -> pass, QuickJS, 25 formats, 8,766 ms; equivalent direct invocation of `the_whisper_sidecar_install_downloads_verifies_and_runs` -> pass.
+  - `node audit-output/store-repros.mjs` -> three undesired behaviors reproduced by the compiled stores/pure request builder before archival; `cargo test --test audit_repros -- --ignored --nocapture` -> three temporary diagnostic probes passed, including a real 32,152,673-byte Tiny model download/checksum/transcription. Diagnostic assertions deliberately observed current defects; they are not fixes or permanent regression expectations.
+  - `npm.cmd run app:binary` -> failed to find an existing Windows release binary; recorded as F10. `git diff --check` -> pass.
+- Not verified / stubbed:
+  - macOS/Linux native acceptance, fresh-machine installer/signing/AV, 1080p/4K/Shorts, a live large playlist, authenticated/live/DRM public providers, hardware encoders, Italian/large-model/long-audio/VAD transcription, real Gemini/summary/cloud cleanup, actual signed self-update, screen readers and a 5,000-row performance run. The folder picker opened but its modal controls were not reliably targetable by the automation helper; this was not classified as an app bug.
+  - Initial sandboxed Vitest/Rust/CI failures were temporary-file/named-object permission restrictions; unsandboxed reruns passed. A Cargo live-test launch hit the open Windows executable lock; direct invocation of the existing test executable passed. The first development instance was stopped to recover an automation-blocked native dialog; the later close-during-transfer check used normal window closure.
+- Spec items marked "verify" that I checked: used the actual FFmpeg/ffprobe help, the sidecar help and manifest-provided model/tool URLs and checksums; confirmed AppImage temporary mounts and the persistent `APPIMAGE` path in official AppImage documentation.
+- Decisions/deviations (also in DECISIONS.md): D144; findings only, awaiting owner triage before implementation. The read-only specification and reference app were not edited.
+- Next step: discuss F01–F02 first, then queue/playlist corrections and the remaining platform/service acceptance matrix.
+
+## 2026-11-06 — M7 / Keep local audit material out of commits
+
+- Done: added `/audit-output/` and `*.private.json` to `.gitignore`; existing tool/model/build/log exclusions remain in force. Recorded the owner's preference in `AGENTS.md`: local diagnostic artifacts stay ignored; application changes, reusable regression tests and useful documentation are committed.
+- Verified by running: `git check-ignore -v audit-output/probe.mjs sample.private.json audit-cargo-tests.log src-tauri/target/audit-2026-11-06/queue-before-cleanup.private.json` -> all ignored; `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `npm.cmd run check`, `npm.cmd test -- --run`, `npm.cmd run build` -> pass with the pending F01 implementation in the working tree.
+- Not verified / stubbed: no runtime behavior changed by the ignore rules.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): none; explicit owner instruction.
+- Next step: commit the encoded-output collision fix separately.
+
+## 2026-11-06 — M7 / Preserve encoded results and isolate concurrent staging files (F01)
+
+- Done: kept the default encoded filename for the first result and selected a numbered name when occupied, using no-clobber publication instead of overwrite-on-rename. Each encode owns a unique same-filesystem staging file. Video/audio results, existing clips and source-retention behavior are covered by reusable fake-tool regression tests, including simultaneous encodes.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` -> pass; `cargo test` -> 642 passed, 5 ignored; `cargo test --test ffmpeg_encode` -> 23 passed; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 327 passed, 12 skipped; `npm.cmd run build` -> pass. One newly added unit assertion initially compared TempPath values directly; corrected it to compare owned paths before the successful full run.
+- Not verified / stubbed: native macOS/Linux execution and removable-filesystem acceptance; optimized build/size comparison still running. No new real network/media acceptance was claimed.
+- Spec items marked "verify" that I checked: cached tempfile 3.27.0 `Builder::tempfile_in`, `into_temp_path`, `TempPath::persist_noclobber`, and Windows/Unix no-replace implementation; `cargo tree -i tempfile --edges normal` confirms the updater already ships this runtime dependency.
+- Decisions/deviations (also in DECISIONS.md): D145; suffix colliding outputs instead of replacing them. No new crate or feature added to the runtime dependency graph.
+- Next step: fix per-row inspection lifecycle/cancellation (F02), and record the release build result when available.
+- Release follow-up: `npm.cmd run tauri build -- --no-bundle` passed in 2m 13s; Windows x64 executable 6,963,200 bytes (+2,048 bytes against the audit baseline). Installer and native macOS/Linux acceptance remain unverified.
+
+## 2026-11-06 — M7 / Isolate inspection requests and cancel removed rows (F02)
+
+- Done: assigned inspection ownership per request/row instead of one global generation. Concurrent batches, retries and playlist pagination no longer invalidate unrelated rows; stale successes/errors are ignored and omitted answers become retryable errors. Removing/clearing rows sends targeted cancellation. The backend owns per-URL tokens, preserves cancel-before-registration requests, unregisters finished batches, and cancels inspections on app exit. Added nine actual rune-store regression cases, three state tests and three IPC tests, including cancellation of an already running fake tool and prevention of queued tool launch.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` -> pass; `cargo test` -> 648 passed, 5 ignored; `cargo test --test m1_ipc batch_ -- --nocapture` -> 2 passed; `npm.cmd test -- --run` -> 336 passed, 12 skipped, 17 files; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd run build` -> pass; `git diff --check` -> pass. Rust/Vitest commands ran outside the Windows filesystem sandbox as in the audit; logs remain under ignored `src-tauri/target/`.
+- Not verified / stubbed: no additional native GUI or real-provider acceptance for this change; no native macOS/Linux execution. The API still returns one complete batch, with up to three inspections per call. Incremental row results/global concurrency across overlapping calls remain follow-up improvements.
+- Spec items marked "verify" that I checked: existing Svelte Vite compile-module support for `.svelte.ts` rune-store tests and installed Vitest mock APIs; no external tool flags or APIs added.
+- Decisions/deviations (also in DECISIONS.md): D146; backward-compatible optional cancellation filters and bounded pending cancellations. No dependency added.
+- Next step: mixed-duplicate queue handling (F03) and playlist ordering (F04), followed by remaining UI/platform findings and native acceptance.
+
+## 2026-11-06 — M7 / Reconcile mixed duplicates and reverse playlist enqueue order (F03/F04)
+
+- Done: added original request indexes to duplicate results; retained only refused immutable requests for force-add; kept pending confirmations across additions and failed force attempts; cleared only accepted ready rows. Reversed playlists now enqueue in the displayed order while keeping original numbering. Added store regressions for mixed same-URL/different-option requests and retained confirmations, plus reverse/subset numbering coverage.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (648 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 339 passed, 12 skipped; `npm.cmd run build` -> pass. An overlapping first Rust suite could not start process_tree.exe because another process held the Windows executable; the final complete run passed. Logs stay under ignored `src-tauri/target/`.
+- Not verified / stubbed: native acceptance is scheduled after the remaining UI changes; no native macOS/Linux execution.
+- Spec items marked "verify" that I checked: none; no new external APIs or dependencies.
+- Decisions/deviations (also in DECISIONS.md): D147.
+- Next step: Linux integration, diagnostics and minor feedback/launcher fixes, then progressive inspection and UI workflows.
+
+## 2026-11-06 — M7 / Preserve Linux package launchers and persist AppImage paths (F05)
+
+- Done: isolated AppImage integration, used the persistent APPIMAGE path and XDG data location, escaped Exec/Icon values, preserved installer/user launchers, and recognized exact legacy transient-mount entries for migration. Added three platform-independent tests.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (652 passed, 5 ignored), with pending F06–F10 feedback fixes present; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 342 passed, 12 skipped; `npm.cmd run build` -> pass. Logs remain ignored under target.
+- Not verified / stubbed: native Linux menu/AppImage acceptance and macOS runtime; this is tested implementation, not a claimed native Linux reproduction.
+- Spec items marked "verify" that I checked: AppImage APPIMAGE semantics and freedesktop Exec/string escaping rules in official documentation.
+- Decisions/deviations (also in DECISIONS.md): D148; no dependency added.
+- Next step: commit feedback/diagnostic corrections and implement progressive inspection.
+
+## 2026-11-06 — M7 / Correct inspection diagnostics, versions, rates, pause labels and launcher (F06–F10)
+
+- Done: added collapsed/copyable redacted inspection details with clipboard failure feedback; parsed FFmpeg's own version field and displayed noncomparable build IDs; showed nonzero low-rate activity honestly; separated interruption from manual pause; fixed file URL conversion and shell-free launching on Windows and escaped paths. Added diagnostics/launcher regressions and banner/rate cases.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (652 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 342 passed, 12 skipped; `npm.cmd run build` -> pass. Confirmed installed `@tauri-apps/cli/tauri.js` entry point locally. Native UI acceptance is scheduled after the remaining changes.
+- Not verified / stubbed: native Linux/macOS execution and packaged launcher acceptance; no claim of perfect detection of arbitrary unlabelled secrets.
+- Spec items marked "verify" that I checked: installed Node/Tauri entry point; no new external tool flags.
+- Decisions/deviations (also in DECISIONS.md): D149.
+- Next step: incremental inspection, global inspection concurrency, playlist transcription, presets and queue UI/virtualization.
+
+## 2026-11-06 — M7 / Stream inspection results and enforce one shared concurrency budget
+
+- Done: added optional Tauri channel feedback per finished row with an ordered final-response fallback; preserved streamed successes on later batch failure; shared three inspection permits across all calls and made permit waits cancellable. Added streaming/failure store regressions and fake-tool integration tests measuring early feedback and a three-process peak across overlapping batches.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --examples`, `cargo test` -> pass (654 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 344 passed, 12 skipped; `npm.cmd run build` -> pass.
+- Not verified / stubbed: native GUI acceptance is scheduled after the UI work. An initial optional-Channel compilation failed; adapted to the verified JavaScriptChannelId API. A targeted peak test initially used the old fake executable (cargo test --examples builds its harness); rebuilding the actual examples fixed the fixture and the final full suite passed.
+- Spec items marked "verify" that I checked: installed Tauri 2.12.3 Channel::new/send, JavaScriptChannelId::channel_on and the frontend Channel constructor.
+- Decisions/deviations (also in DECISIONS.md): D150; no dependency or new external tool flag.
+- Next step: playlist transcription and persisted presets, then variable-height virtualization and queue layout/acceptance.
+
+## 2026-11-06 — M7 / Complete personal presets and playlist transcription workflows
+
+- Done: added settings schema 8 with allowlisted named presets and remembered selection; added save/update/select/delete UI and application to existing/new rows. Shared transcription controls between links/playlists, exposed Gemini model and summary language, and snapshotted transcription settings per selected playlist entry with the existing cloud privacy confirmation. Added preset sanitization/round-trip/application/deletion tests, playlist snapshots and cloud/off-state tests, plus a backend migration/persistence regression.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (655 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 350 passed, 12 skipped; `npm.cmd run build` -> pass. An initial new test used method syntax for the existing Settings::save associated function; corrected before the passing full run.
+- Not verified / stubbed: native UI acceptance is next; no real Gemini request, billing or native macOS/Linux acceptance.
+- Spec items marked "verify" that I checked: existing Settings::save/load signature; no new external tool flag or dependency.
+- Decisions/deviations (also in DECISIONS.md): D151; presets deliberately exclude private/source-specific settings.
+- Next step: queue-centric layout, compact actions/completed rows, variable-height virtualization and native Windows acceptance.
+
+## 2026-11-06 — M7 / Complete queue-centric UI and native regression acceptance
+
+- Done: added a capped/collapsible composer with checking/ready/error/playlist counts; retained unsubmitted work on collapse; protected newly pasted rows with a generation check. Kept common card actions visible and secondary actions accessible through disclosure/context controls, compacted completed cards, distinguished pause/interruption, and exposed Pause all alongside Resume all in mixed queues. Added per-ID ResizeObserver measurements, prefix-based variable-height virtualization, resize/removal cleanup, end/anchor preservation, title keyboard navigation and reliable immediate scrolling to new items. Smaller playlists use a bounded list height. Source client keys now reconcile accepted rows and are stripped before IPC; added source-row race and original duplicate-index regressions.
+- Verified by running:
+  - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass: 656 passed, 5 ignored.
+  - `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 357 passed, 12 skipped, 23 files; `npm.cmd run build` -> pass; `npm.cmd run check:ci` -> 24 blocks valid; `npm.cmd run check:release -- v0.1.0` -> pass.
+  - Native Windows acceptance using an isolated identifier/config and `appDirectoriesOverride`: 5,000 synthetic rows, measured expanded cards/end navigation, dark/default and light/640×520 layouts, keyboard detail copy, preset save/restart restore, real unsupported-page feedback, actual progressive fake-tool results, and playlist selection/reversal/Whisper-only option snapshots. The native playlist queued C then A with original numbering; missing Whisper produced the expected local-tool error, not a claimed successful real transcription.
+  - Actual `npm.cmd run app:binary` in an ignored copied fixture path with spaces, Unicode and percent signs -> exit 0 and existing audit instance focused. Final reloaded-source enqueue collapsed the composer and showed the highlighted new row at the end of 5,005 items.
+  - Verified one active audit fake process before closing during inspection, then zero after close; also verified no audit app/Vite server remained. All generated content stays ignored under target; personal app data was not used.
+- Release verification: `npm.cmd run tauri build -- --no-bundle` passed in 2m 28s; optimized Windows executable 7,015,424 bytes (+54,272 bytes from the 6,961,152-byte baseline). No new runtime dependency was added; downloaded binaries/models, fixtures, captures and private settings remain ignored.
+- Not verified / stubbed: native macOS/Linux, fresh installer/signing/AV, real Gemini, long/Italian/VAD transcription, public provider matrix and full screen-reader/performance certification remain environment/service acceptance tasks. Live updates were not reliably reflected during iterative UI work, so the final relevant checks used an explicit frontend reload. Initial screenshot timeouts were recovered by raising the hidden-launched window; inaccessible offscreen UI actions were replaced with scrolling/keyboard navigation. An initial sandboxed CIM query was denied; the verified process counts came from the successful approved read-only rerun.
+- Spec items marked "verify" that I checked: installed Tauri appDirectoriesOverride schema/path behavior, existing native control/clipboard APIs; no new tool flag or dependency.
+- Decisions/deviations (also in DECISIONS.md): D152. Native testing found and corrected flex-basis squeezing and smooth-scroll interruption while row measurements changed; temporary geometry instrumentation was removed.
+- Next step: native installed-package/platform/service acceptance on the corresponding hardware/accounts; no release/tag/push is part of this audit fix pass.
+
+## 2026-11-06 — M7 / Prepare the 0.2.0 release version
+
+- Done: aligned package.json, package-lock.json, Cargo.toml, Cargo.lock and tauri.conf.json to 0.2.0 for the planned feature release.
+- Verified by running: `npm.cmd run check:release -- v0.2.0`, `npm.cmd run check:ci` -> all 24 blocks valid, `npm.cmd run check` -> 0 errors/warnings, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> 656 passed, 5 ignored, `npm.cmd test -- --run` -> 357 passed, 12 skipped, `npm.cmd run build`, `git diff --check` -> pass. Initial sandboxed Rust/Node runs hit Windows temp-file permissions; approved unsandboxed reruns passed. One timing-sensitive Rust test failed once in the first full run, passed alone and in the subsequent complete run.
+- Not verified / stubbed: release workflows and built installers have not been run for this version; tag, push and merge remain owner actions.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): version 0.2.0 chosen for the accumulated user-facing features and fixes since 0.1.0.
+- Next step: run the version check and required Rust/frontend checks, commit the version bump, then push and merge before tagging.

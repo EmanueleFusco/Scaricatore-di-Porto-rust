@@ -503,6 +503,14 @@ pub fn candidates(tool: &str, lookup: &Lookup, triple: &str) -> Vec<(ToolSource,
 /// Returns `None` when there is no such token, because a version we cannot read
 /// must not be compared against `minVersion` (spec §5.1).
 pub fn parse_version_banner(text: &str) -> Option<String> {
+    // FFmpeg git builds may have no comparable release version. Never scan
+    // their copyright/compiler/library lines for a substitute version.
+    if let Some(token) = ffmpeg_version_token(text) {
+        let token = token.trim_start_matches(['n', 'v']);
+        let clean = token.split('-').next()?;
+        return (clean.contains('.') && manifest::parse_version(clean).is_some())
+            .then(|| clean.to_owned());
+    }
     for line in text.lines() {
         for token in line.split_whitespace() {
             let digits = token.trim_start_matches(|c: char| !c.is_ascii_digit());
@@ -523,6 +531,17 @@ pub fn parse_version_banner(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn ffmpeg_version_token(text: &str) -> Option<&str> {
+    text.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        if matches!(words.next(), Some("ffmpeg" | "ffprobe")) && words.next() == Some("version") {
+            words.next()
+        } else {
+            None
+        }
+    })
 }
 
 /// The arguments that make a tool print its version.
@@ -833,7 +852,11 @@ pub async fn status_of(
         source: resolved.as_ref().map(|r| r.source),
         path: resolved.as_ref().map(|r| r.path.display().to_string()),
         system_path,
-        version: resolved.as_ref().and_then(|r| r.version.clone()),
+        version: resolved.as_ref().and_then(|r| {
+            r.version
+                .clone()
+                .or_else(|| ffmpeg_version_token(&r.banner).map(str::to_owned))
+        }),
         banner: resolved.as_ref().map(|r| r.banner.clone()),
         meets_min_version: resolved
             .as_ref()
@@ -1851,6 +1874,21 @@ mod tests {
         // A bare number is not a version: `qjs --version` printing "0" must not
         // become 0.0.0 and then be compared to 0.12.0.
         assert_eq!(parse_version_banner("1"), None);
+    }
+
+    #[test]
+    fn ffmpeg_git_builds_never_borrow_compiler_or_library_versions() {
+        let banner = "ffmpeg version 2026-11-02-git-abcdef-full_build Copyright\nbuilt with gcc 16.2.0\nlibavutil 61.2.3";
+        assert_eq!(parse_version_banner(banner), None);
+        assert_eq!(
+            ffmpeg_version_token(banner),
+            Some("2026-11-02-git-abcdef-full_build")
+        );
+        assert_eq!(
+            parse_version_banner("ffprobe version n9.0.2-custom\nbuilt with gcc 16.2.0"),
+            Some("9.0.2".into())
+        );
+        assert_eq!(ffmpeg_version_token("2026.08.19"), None);
     }
 
     #[test]

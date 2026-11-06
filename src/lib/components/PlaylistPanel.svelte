@@ -12,7 +12,8 @@
   functions of `$lib/playlist`.
 -->
 <script lang="ts">
-  import { QUALITY_PRESETS, choiceOf } from "$lib/addbar";
+  import { QUALITY_PRESETS, choiceOf, transcriptionRequest, usesGemini } from "$lib/addbar";
+  import TranscriptionOptions from "$lib/components/TranscriptionOptions.svelte";
   import { secondsToClock, type PlaylistInfo } from "$lib/inspect";
   import {
     buildPlaylistRequests,
@@ -34,7 +35,7 @@
   import { queueStore } from "$lib/stores/queue.svelte";
   import { settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
 
-  let { row, playlist }: { row: AddRow; playlist: PlaylistInfo } = $props();
+  let { row, playlist, onadded }: { row: AddRow; playlist: PlaylistInfo; onadded?: (generation: number) => void } = $props();
 
   /** Fixed row height: the virtualiser needs one, and a title never wraps. */
   const ROW_HEIGHT = 34;
@@ -58,9 +59,14 @@
   let anchor = $state<number | null>(null);
   let scrollTop = $state(0);
   let busy = $state(false);
+  let pendingPrivacy = $state(false);
+  $effect(() => {
+    if (settingsStore.settings.lastPreset !== null) presetValue = addBarStore.preset;
+  });
 
   const visible = $derived(orderEntries(filterEntries(playlist.entries, query), reversed));
-  const range = $derived(visibleRange(scrollTop, VIEWPORT_HEIGHT, ROW_HEIGHT, visible.length));
+  const viewportHeight = $derived(Math.min(VIEWPORT_HEIGHT, Math.max(ROW_HEIGHT * 2, visible.length * ROW_HEIGHT)));
+  const range = $derived(visibleRange(scrollTop, viewportHeight, ROW_HEIGHT, visible.length));
   const shown = $derived(visibleItems(visible, range));
   const warningKey = $derived(playlistWarningKey(playlist));
   const duration = $derived(secondsToClock(totalDuration(playlist.entries)));
@@ -98,10 +104,18 @@
 
   async function add(): Promise<void> {
     if (selected.size === 0 || busy) return;
+    if (!settingsStore.settings.geminiPrivacyHintDismissed && usesGemini(row, settingsStore.settings.transcriptionEngineOrder)) {
+      pendingPrivacy = true;
+      return;
+    }
     busy = true;
+    const generation = addBarStore.rowGeneration;
     try {
       const groupId = `g-${Date.now().toString(36)}-${row.key}`;
       const options = {
+        clientKey: row.key,
+        transcription: transcriptionRequest(row),
+        reversed,
         groupId,
         quality,
         outputDir: addBarStore.folder,
@@ -123,6 +137,7 @@
       if (result.added.length > 0) {
         queueStore.flash(result.added);
         addBarStore.removeRow(row.key);
+        onadded?.(generation);
       } else if (result.duplicates.length === 0) {
         await queueStore.removeGroup(groupId);
       }
@@ -212,7 +227,7 @@
     class="pl__list"
     role="group"
     aria-label={tt("playlist.list.label")}
-    style:height={`${VIEWPORT_HEIGHT}px`}
+    style:height={`${viewportHeight}px`}
     onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
   >
     <div style:height={`${range.topPad}px`}></div>
@@ -290,6 +305,21 @@
       {/if}
     </div>
   </div>
+
+  <details class="pl__transcription">
+    <summary>{tt("transcribe.title")}</summary>
+    <TranscriptionOptions {row} onchange={(patch) => addBarStore.setMediaOptions(row.key, patch)} />
+  </details>
+  {#if pendingPrivacy}
+    <div role="alert">
+      <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+      <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+      <button type="button" class="btn btn--primary" onclick={async () => {
+        if (await settingsStore.update({ geminiPrivacyHintDismissed: true })) { pendingPrivacy = false; await add(); }
+      }}>{tt("common.confirm")}</button>
+      <button type="button" class="btn" onclick={() => (pendingPrivacy = false)}>{tt("common.cancel")}</button>
+    </div>
+  {/if}
 
   <footer class="pl__foot">
     <p class="field__hint" role="status">

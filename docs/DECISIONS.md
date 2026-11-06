@@ -936,3 +936,174 @@ boilerplate, and verbose conversational essays (with M0–M1 entries in Italian)
   review fixes folded in) while keeping the M7 and post-M7 blocks detailed at the bottom for
   `AGENTS.md` §10 session startup.
 - Translated and tightened `docs/SPIKES.md` (`S1`–`S6`) into English.
+
+## 2026-11-06 — Version 0.1.0 audit
+
+### D144 — Record audit findings before changing application behavior
+
+The owner requested analysis, live app tests and a report for discussion, rather
+than immediate fixes. `docs/AUDIT_0.1.0.md` therefore records reproduced defects,
+source-confirmed gaps and platform inferences separately. Output collisions and
+inspection lifecycle are the first proposed fixes. No functional changes, new
+dependencies, release/tag changes or GitHub issues were made. Diagnostic probes
+and downloaded fixtures stay under ignored `src-tauri/target/audit-2026-11-06/`.
+The nine audit queue entries were removed with a local backup; the two original
+history entries were verified unchanged.
+
+Windows native tests and short real-tool runs do not complete the specification's
+cross-platform acceptance matrix. In particular, the AppImage launcher risk is
+an inference from `current_exe()` and the official AppImage runtime documentation,
+not a native Linux reproduction. Real Gemini, macOS/Linux UI acceptance and the
+remaining long-audio/provider/installer cases need separate validation. No claim
+of complete acceptance or support-tier promotion follows from the green suite.
+
+### D145 — Preserve encoded results with no-clobber publication (F01)
+
+The specification names `<stem>-encoded.<ext>` but does not define collisions.
+Keep that name for the first result; publish later results as
+`<stem>-encoded (1).<ext>`, etc. Each encode owns a unique staging file on the
+destination filesystem and publishes with `tempfile::TempPath::persist_noclobber`,
+retrying only a destination collision. This prevents a check-then-rename race
+between jobs. Delete the source only after successful publication, according to
+the existing keep-original option. Failures preserve both existing outputs and
+the source.
+
+The `tempfile` API and Windows/Unix no-replace implementations were checked in
+the cached 3.27.0 source. It is now a direct runtime dependency, but was already
+shipped transitively by `tauri-plugin-updater`: no new crate or feature is added.
+The optimized binary-size comparison is pending the release build. Fake-tool
+tests cover video/audio collisions, simultaneous jobs, source retention and
+staging cleanup. The previous fixed-partial-name unit test now checks unique
+paths, extension preservation and cleanup, reflecting the corrected contract.
+
+F01 release measurement: `npm.cmd run tauri build -- --no-bundle` passed in
+2m 13s; Windows x64 executable 6,963,200 bytes, up 2,048 bytes from the audited
+6,961,152-byte executable. The direct tempfile use adds no new runtime crate.
+
+### D146 — Own inspection requests per row and cancel batch work explicitly (F02)
+
+The Add bar now associates each row with its active request instead of dropping
+all earlier batches whenever another request starts. Removing, clearing or
+retrying rows cancels only their associated URLs; old successes and failures
+cannot overwrite a newer inspection or restore removed rows. Pagination follows
+the same ownership rule. Missing backend answers become retryable errors instead
+of permanent checking rows. The checking indicator derives from current rows.
+
+`inspect_cancel` accepts an optional request ID and URL filter; omitted arguments
+retain the previous cancel-all behavior. The backend registers independent
+per-URL tokens before resolving tools and unregisters batches on completion or
+resolution failure. A bounded pending-cancellation map handles synchronous cancel
+IPC arriving before an asynchronous inspection is registered. Reusing an active
+ID cancels its old batch, and an old completion cannot unregister the replacement.
+Application exit cancels inspections before terminating child processes.
+
+Actual rune-store tests compile through the already installed Svelte Vite plugin;
+there is no added dependency. Fake-tool IPC tests cover queued cancellation
+without tool launch, running cancellation, and unaffected peers. Native
+macOS/Linux execution was not performed. This step does not introduce incremental
+batch events: the existing up-to-three-per-call execution and whole-batch reply
+remain. Progressive row results and a global concurrency limit across overlapping
+calls are follow-up work, not acceptance claims from these tests.
+
+### D147 — Reconcile duplicates by input position and honor playlist order
+
+The queue IPC now reports the original submitted request index for each refused
+duplicate, including when unsupported URLs were filtered out. The frontend retains
+only refused request snapshots for Add anyway, preserves confirmations across
+later additions and failures, and clears only accepted Add bar rows. Identical
+URLs with different options cannot be confused. Playlist reversal now controls
+enqueue order explicitly while original positions still determine filename prefixes.
+
+### D148 — AppImage shortcuts use the persistent image and respect managed entries (F05)
+
+Automatic integration now runs only with a valid absolute `APPIMAGE` file. Native
+package entries belong to their installers. Use `XDG_DATA_HOME` (or the HOME
+fallback), quote/escape desktop-entry values, and publish atomically. Existing
+installer/user entries are preserved. Only explicitly app-owned entries or the
+exact legacy-generated transient-mount entry are eligible for replacement.
+The obsolete `%U` argument is omitted because the app does not consume open URLs.
+Official references checked: [AppImage environment variables](https://docs.appimage.org/packaging-guide/environment-variables.html)
+and [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest-single/).
+Cross-platform tests cover quoting, preservation, ownership and legacy recognition;
+actual Linux AppImage menu acceptance remains unexecuted on this Windows host.
+
+### D149 — Make diagnostics and status feedback accurate (F06–F10)
+
+Inspection errors now expose collapsed, selectable technical details and a copy
+action, with configured header values, URL credentials/query values and common
+secret fields redacted. Failed clipboard access leaves a localized manual-copy
+fallback. FFmpeg/ffprobe version parsing is confined to the declared version
+token: nonnumeric git build identifiers are displayed intact but never compared
+as compiler/library versions. Positive rates below display precision show
+`<0.1 Mbit/s`. Manual pause no longer claims a restart; interrupted rows explain
+that the app closed.
+
+The development/release launcher uses fileURLToPath plus path joins and invokes
+the installed Tauri Node entry point or executable directly, without a shell.
+Tests cover spaces, Unicode and percent signs, secret redaction and real banner
+shapes. No new dependency or external tool flag was introduced.
+
+### D150 — Stream inspected rows and share a global process budget
+
+The optional inspection channel now sends each row as soon as it completes while
+the ordered final response remains a fallback for callers without a channel.
+Use the installed Tauri `JavaScriptChannelId`/`channel_on` API for optional IPC
+arguments; `Option<Channel<T>>` is not supported by this Tauri version. Actual
+store tests cover partial success, final failure and stale streaming callbacks.
+One AppState semaphore limits single, batch and paginated inspection work to three
+processes overall. Cancellation interrupts semaphore waits and active tool work.
+Offline fake-tool tests observe a fast result before an indefinitely slow peer,
+then cancel it, and measure a peak of exactly three processes across overlapping
+eight-URL work. This completes the incremental/global-limit follow-ups to D146.
+
+### D151 — Persist personal presets and snapshot playlist transcription options
+
+Settings schema 8 adds up to 20 named media/transcription presets and the last
+selected preset ID. Older settings retain defaults. Both frontend and backend
+allowlist preset fields: no URLs, network headers, credentials, output paths or
+per-source trim times. The Add bar supports save/update/select/delete and applies
+the selected preset to current/new rows. Backend migration/save-load tests and
+actual-store tests cover persistence, application and deletion.
+
+Single links and playlists share the same transcription controls, including engine,
+Whisper model/language/translation, Gemini model, summary language and output
+subfolder. Every selected playlist entry receives its own immutable transcription
+snapshot. Cloud-capable playlist requests use the existing explicit privacy
+confirmation before enqueueing. Pure tests cover per-entry options, disabled
+transcription/summary behavior and cloud-engine selection. No paid API call or
+new native macOS/Linux acceptance was performed.
+
+### D152 — Keep queue work visible and measure every rendered card
+
+The composer is collapsible, capped and separately scrollable; successful enqueue
+collapses it while retaining unsubmitted rows. A row-generation check prevents an
+older submission from hiding newly pasted work, and duplicate confirmations stay
+open. Counts distinguish checking, ready, failed and playlist rows. The queue owns
+a stable viewport and keeps global actions on screen; mixed parked/running queues
+can expose both Pause all and Resume all.
+
+Cards retain at most two primary actions, with native disclosure/context access to
+all secondary actions and Escape/outside-click dismissal. Completed cards are
+shorter with de-emphasized progress. Focusable titles support arrow/Home/End
+navigation. The virtualizer uses measured per-ID heights and prefix offsets,
+remeasures on resize/details changes, discards removed measurements and preserves
+scroll anchors/end position. Enqueue scrolling is immediate: measurement updates
+can interrupt native smooth scrolling before its destination. Pure tests cover
+5,000 mixed-height entries and every action/state combination.
+
+Native testing exposed a huge-spacer flex-basis issue that squeezed the composer;
+the queue/scroller now use zero flex bases. Windows tests exercised 5,000 synthetic
+rows, expanded cards, end navigation, dark/default and light/minimum-size layouts,
+preset save/restart, error details/copy, streaming results and playlist option/order
+snapshots. Frontend-only client keys reconcile accepted source rows without clearing
+a replacement with the same URL; they are stripped before IPC. Regression tests
+cover that race and original duplicate indexes after unsupported URL filtering.
+
+All native artifacts live under ignored target directories using a distinct Tauri
+identifier and verified `appDirectoriesOverride`; no personal queue/settings were
+used. Source-only tests cannot certify native macOS/Linux UI, screen readers,
+signing/installers or real Gemini billing/cloud behavior. No new dependency.
+
+Final optimized Windows measurement: `npm.cmd run tauri build -- --no-bundle`
+passed in 2m 28s. The executable is 7,015,424 bytes, +54,272 bytes versus the
+6,961,152-byte audited baseline. No installer or signed update was installed.

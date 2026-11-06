@@ -1,6 +1,6 @@
 [package]
 name = "scaricatore-di-porto"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scaricatore Di Porto — cross-platform downloader and transcriber"
 authors = ["Scaricatore Di Porto contributors"]
 license = "MIT"
@@ -40,6 +40,9 @@ tauri-plugin-process = "2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Unique encode staging files and no-clobber publication on Windows/macOS/Linux.
+# Already pinned in Cargo.lock and used by the integration suite (D145).
+tempfile = "3"
 
 # Provisioning (spec §5.2). Feature list is the one spec §1 line 49 fixes:
 # `default-features = false` + rustls, **no OpenSSL**, stream for the download
@@ -128,7 +131,6 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
-tempfile = "3"
 # The downloader tests compute the sha256 of the body they serve, so they
 # check the real implementation instead of restating a constant.
 sha2 = "0.10"
