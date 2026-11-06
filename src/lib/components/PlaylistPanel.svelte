@@ -12,7 +12,8 @@
   functions of `$lib/playlist`.
 -->
 <script lang="ts">
-  import { QUALITY_PRESETS, choiceOf } from "$lib/addbar";
+  import { QUALITY_PRESETS, choiceOf, transcriptionRequest, usesGemini } from "$lib/addbar";
+  import TranscriptionOptions from "$lib/components/TranscriptionOptions.svelte";
   import { secondsToClock, type PlaylistInfo } from "$lib/inspect";
   import {
     buildPlaylistRequests,
@@ -58,6 +59,10 @@
   let anchor = $state<number | null>(null);
   let scrollTop = $state(0);
   let busy = $state(false);
+  let pendingPrivacy = $state(false);
+  $effect(() => {
+    if (settingsStore.settings.lastPreset !== null) presetValue = addBarStore.preset;
+  });
 
   const visible = $derived(orderEntries(filterEntries(playlist.entries, query), reversed));
   const range = $derived(visibleRange(scrollTop, VIEWPORT_HEIGHT, ROW_HEIGHT, visible.length));
@@ -98,10 +103,15 @@
 
   async function add(): Promise<void> {
     if (selected.size === 0 || busy) return;
+    if (!settingsStore.settings.geminiPrivacyHintDismissed && usesGemini(row, settingsStore.settings.transcriptionEngineOrder)) {
+      pendingPrivacy = true;
+      return;
+    }
     busy = true;
     try {
       const groupId = `g-${Date.now().toString(36)}-${row.key}`;
       const options = {
+        transcription: transcriptionRequest(row),
         reversed,
         groupId,
         quality,
@@ -291,6 +301,21 @@
       {/if}
     </div>
   </div>
+
+  <details class="pl__transcription">
+    <summary>{tt("transcribe.title")}</summary>
+    <TranscriptionOptions {row} onchange={(patch) => addBarStore.setMediaOptions(row.key, patch)} />
+  </details>
+  {#if pendingPrivacy}
+    <div role="alert">
+      <p class="field__hint">{tt("transcription.gemini.privacyNotice")}</p>
+      <p class="field__hint">{tt("settings.transcription.geminiSummaryPrivacyHint")}</p>
+      <button type="button" class="btn btn--primary" onclick={async () => {
+        if (await settingsStore.update({ geminiPrivacyHintDismissed: true })) { pendingPrivacy = false; await add(); }
+      }}>{tt("common.confirm")}</button>
+      <button type="button" class="btn" onclick={() => (pendingPrivacy = false)}>{tt("common.cancel")}</button>
+    </div>
+  {/if}
 
   <footer class="pl__foot">
     <p class="field__hint" role="status">

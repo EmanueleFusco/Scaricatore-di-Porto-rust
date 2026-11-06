@@ -29,6 +29,7 @@ import { isTauriRuntime, settingsStore } from "$lib/stores/settings.svelte";
 import { queueStore } from "$lib/stores/queue.svelte";
 import type { AddItemRequest, QualityChoice } from "$lib/queue";
 import type { BackendErrorInfo } from "$lib/settings";
+import { defaultPresetOptions, presetOptions, type PresetOptions, type SavedPreset } from "$lib/presets";
 
 /** One link being added, and how far along its inspection is. */
 export interface AddRow {
@@ -98,6 +99,52 @@ class AddBarStore {
   errorDetail = $state<string | null>(null);
 
   #counter = 0;
+  #presetsRestored = false;
+  #presetOptions: PresetOptions = {};
+
+  restorePreset(): void {
+    if (this.#presetsRestored) return;
+    this.#presetsRestored = true;
+    this.#applyPreset(settingsStore.settings.lastPreset ?? null);
+  }
+
+  #applyPreset(id: string | null): void {
+    const saved = settingsStore.settings.savedPresets?.find((preset) => preset.id === id);
+    this.preset = saved?.quality ?? "best";
+    this.#presetOptions = saved ? presetOptions(saved.options) : {};
+    const options = { ...defaultPresetOptions(settingsStore.settings), ...this.#presetOptions };
+    this.rows = this.rows.map((row) => ({ ...row, ...options, quality: null,
+      encode: options.encode === true || row.trimStart.trim() !== "" || row.trimEnd.trim() !== "",
+    }));
+  }
+
+  async selectPreset(id: string | null): Promise<boolean> {
+    if (!await settingsStore.update({ lastPreset: id })) return false;
+    this.#applyPreset(id);
+    return true;
+  }
+
+  async savePreset(name: string): Promise<boolean> {
+    const label = Array.from(name.trim()).slice(0, 80).join("");
+    if (!label) return false;
+    const presets = settingsStore.settings.savedPresets;
+    const existing = presets.find((entry) => entry.name.toLocaleLowerCase() === label.toLocaleLowerCase());
+    if (!existing && presets.length >= 20) return false;
+    const saved: SavedPreset = { id: existing?.id ?? crypto.randomUUID(), name: label,
+      quality: this.preset,
+      options: presetOptions(this.rows[0] ?? defaultPresetOptions(settingsStore.settings)),
+    };
+    if (!await settingsStore.update({ savedPresets: [...presets.filter((entry) => entry.id !== saved.id), saved], lastPreset: saved.id })) return false;
+    this.#applyPreset(saved.id);
+    return true;
+  }
+
+  async deletePreset(id: string): Promise<boolean> {
+    const lastPreset = settingsStore.settings.lastPreset === id ? null : settingsStore.settings.lastPreset;
+    if (!await settingsStore.update({ savedPresets: settingsStore.settings.savedPresets.filter((entry) => entry.id !== id), lastPreset })) return false;
+    this.#applyPreset(lastPreset);
+    return true;
+  }
   /** Unique across a webview reload; each request belongs to its own rows. */
   #request = Date.now() * 1000;
   #rowRequests = new Map<string, number>();
@@ -212,6 +259,7 @@ class AddBarStore {
         geminiModel: settingsStore.settings.defaultGeminiModel,
         summarize: settingsStore.settings.defaultSummarize,
         summaryLanguage: settingsStore.settings.defaultSummaryLanguage,
+        ...presetOptions(this.#presetOptions),
       };
     });
     if (rows.length === 0) return;

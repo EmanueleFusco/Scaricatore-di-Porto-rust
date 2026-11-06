@@ -1055,3 +1055,20 @@ processes overall. Cancellation interrupts semaphore waits and active tool work.
 Offline fake-tool tests observe a fast result before an indefinitely slow peer,
 then cancel it, and measure a peak of exactly three processes across overlapping
 eight-URL work. This completes the incremental/global-limit follow-ups to D146.
+
+### D151 — Persist personal presets and snapshot playlist transcription options
+
+Settings schema 8 adds up to 20 named media/transcription presets and the last
+selected preset ID. Older settings retain defaults. Both frontend and backend
+allowlist preset fields: no URLs, network headers, credentials, output paths or
+per-source trim times. The Add bar supports save/update/select/delete and applies
+the selected preset to current/new rows. Backend migration/save-load tests and
+actual-store tests cover persistence, application and deletion.
+
+Single links and playlists share the same transcription controls, including engine,
+Whisper model/language/translation, Gemini model, summary language and output
+subfolder. Every selected playlist entry receives its own immutable transcription
+snapshot. Cloud-capable playlist requests use the existing explicit privacy
+confirmation before enqueueing. Pure tests cover per-entry options, disabled
+transcription/summary behavior and cloud-engine selection. No paid API call or
+new native macOS/Linux acceptance was performed.

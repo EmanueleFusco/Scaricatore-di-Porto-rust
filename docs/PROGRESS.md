@@ -348,3 +348,12 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: installed Tauri 2.12.3 Channel::new/send, JavaScriptChannelId::channel_on and the frontend Channel constructor.
 - Decisions/deviations (also in DECISIONS.md): D150; no dependency or new external tool flag.
 - Next step: playlist transcription and persisted presets, then variable-height virtualization and queue layout/acceptance.
+
+## 2026-11-06 — M7 / Complete personal presets and playlist transcription workflows
+
+- Done: added settings schema 8 with allowlisted named presets and remembered selection; added save/update/select/delete UI and application to existing/new rows. Shared transcription controls between links/playlists, exposed Gemini model and summary language, and snapshotted transcription settings per selected playlist entry with the existing cloud privacy confirmation. Added preset sanitization/round-trip/application/deletion tests, playlist snapshots and cloud/off-state tests, plus a backend migration/persistence regression.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` -> pass (655 passed, 5 ignored); `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 350 passed, 12 skipped; `npm.cmd run build` -> pass. An initial new test used method syntax for the existing Settings::save associated function; corrected before the passing full run.
+- Not verified / stubbed: native UI acceptance is next; no real Gemini request, billing or native macOS/Linux acceptance.
+- Spec items marked "verify" that I checked: existing Settings::save/load signature; no new external tool flag or dependency.
+- Decisions/deviations (also in DECISIONS.md): D151; presets deliberately exclude private/source-specific settings.
+- Next step: queue-centric layout, compact actions/completed rows, variable-height virtualization and native Windows acceptance.

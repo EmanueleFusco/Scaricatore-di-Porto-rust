@@ -13,6 +13,29 @@
  */
 import type { FormatLite } from "$lib/inspect";
 import type { QualityChoice } from "$lib/queue";
+import type { AddItemRequest } from "$lib/queue";
+
+export type TranscriptionRequest = Pick<AddItemRequest, "transcribe" | "whisperModel" | "transcriptLanguage" | "translateToEnglish" | "transcriptsSubfolder" | "transcriptionEngine" | "geminiModel" | "summarize" | "summaryLanguage">;
+
+/** A per-item snapshot shared by single links and every entry in a playlist. */
+export function transcriptionRequest(options: TranscriptionRequest): TranscriptionRequest {
+  return {
+    transcribe: options.transcribe === true,
+    whisperModel: options.whisperModel ?? null,
+    transcriptLanguage: options.transcriptLanguage ?? "auto",
+    translateToEnglish: options.translateToEnglish === true,
+    transcriptsSubfolder: options.transcriptsSubfolder === true,
+    transcriptionEngine: options.transcriptionEngine ?? null,
+    geminiModel: options.geminiModel ?? null,
+    summarize: options.transcribe === true && options.summarize === true,
+    summaryLanguage: options.summaryLanguage ?? "auto",
+  };
+}
+
+export function usesGemini(options: TranscriptionRequest, defaultEngine: string): boolean {
+  const engine = options.transcriptionEngine ?? defaultEngine;
+  return options.transcribe === true && (options.summarize === true || engine === "gemini_only" || engine === "subtitles_whisper_gemini");
+}
 
 /** The heights the preset offers, tallest first. */
 export const PRESET_HEIGHTS: readonly number[] = [2160, 1440, 1080, 720, 480, 360];

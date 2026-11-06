@@ -19,7 +19,7 @@ use crate::services::tools::{self, Lookup, ResolvedTool};
 use crate::services::ytdlp::{self, CfgOs};
 
 /// Bump when the shape of [`Settings`] changes, and add a migration step here.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 /// Default filename for `--download-archive` under `<app-data>/` (spec §6.2.4,
 /// §8.2, §11.8).
@@ -159,6 +159,76 @@ fn de_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Language, D::Er
     Ok(language_from_str(raw.trim().to_ascii_lowercase().as_str()).unwrap_or_default())
 }
 
+/// A reusable media/transcription preset. Network credentials are never preset data.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SavedPreset {
+    pub id: String,
+    pub name: String,
+    pub quality: String,
+    pub options: serde_json::Value,
+}
+
+impl SavedPreset {
+    fn normalise(&mut self) -> bool {
+        self.id = self.id.trim().to_owned();
+        self.name = self.name.trim().chars().take(80).collect();
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || self.name.is_empty()
+            || !matches!(
+                self.quality.as_str(),
+                "best"
+                    | "audio"
+                    | "max2160"
+                    | "max1440"
+                    | "max1080"
+                    | "max720"
+                    | "max480"
+                    | "max360"
+            )
+        {
+            return false;
+        }
+        if !self.options.is_object() {
+            self.options = serde_json::json!({});
+        }
+        if let Some(options) = self.options.as_object_mut() {
+            options.retain(|key, value| match key.as_str() {
+                "encode"
+                | "keepOriginal"
+                | "autoPlay"
+                | "embedMetadata"
+                | "embedThumbnail"
+                | "embedChapters"
+                | "transcribe"
+                | "transcriptLanguageOverridden"
+                | "translateToEnglish"
+                | "transcriptsSubfolder"
+                | "summarize" => value.is_boolean(),
+                "videoCodec"
+                | "audioCodec"
+                | "sponsorblockMode"
+                | "whisperModel"
+                | "transcriptLanguage"
+                | "transcriptionEngine"
+                | "geminiModel"
+                | "summaryLanguage" => {
+                    value.is_null()
+                        || value
+                            .as_str()
+                            .is_some_and(|s| s.len() <= 128 && !s.chars().any(char::is_control))
+                }
+                "sponsorblockCategories" => value.as_array().is_some_and(|a| {
+                    a.len() <= 16 && a.iter().all(|v| v.as_str().is_some_and(|s| s.len() <= 32))
+                }),
+                _ => false,
+            });
+        }
+        true
+    }
+}
+
 /// The persisted configuration document (spec §2.6, §2.8).
 ///
 /// Every field has a default, unknown keys are ignored, and the file is written
@@ -166,6 +236,8 @@ fn de_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Language, D::Er
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    pub saved_presets: Vec<SavedPreset>,
+    pub last_preset: Option<String>,
     pub schema_version: u32,
     #[serde(deserialize_with = "de_language")]
     pub language: Language,
@@ -288,6 +360,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
+            saved_presets: Vec::new(),
+            last_preset: None,
             language: Language::default(),
             theme: Theme::default(),
             default_output_dir: None,
@@ -346,6 +420,17 @@ impl Settings {
     /// Normalise anything a user (or an older build) may have stored.
     pub fn normalise(&mut self) {
         self.schema_version = SETTINGS_SCHEMA_VERSION;
+        let mut seen = std::collections::HashSet::new();
+        self.saved_presets
+            .retain_mut(|preset| preset.normalise() && seen.insert(preset.id.clone()));
+        self.saved_presets.truncate(20);
+        if !self
+            .saved_presets
+            .iter()
+            .any(|preset| Some(&preset.id) == self.last_preset.as_ref())
+        {
+            self.last_preset = None;
+        }
         if self.sponsorblock_categories.is_empty() {
             self.sponsorblock_categories = vec![
                 "sponsor".to_owned(),
@@ -1292,6 +1377,30 @@ mod tests {
         assert_eq!(s.language, Language::System);
         assert_eq!(s.theme, Theme::System);
         assert!(s.default_output_dir.is_none());
+    }
+
+    #[test]
+    fn saved_presets_migrate_round_trip_and_never_store_network_fields() {
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 7,
+            "savedPresets": [{ "id": "p1", "name": " Podcast ", "quality": "audio", "options": {
+                "transcribe": true, "audioCodec": "opus", "customHeaders": "fake-secret", "url": "https://private.example", "trimStart": "10"
+            } }], "lastPreset": "p1"
+        })).expect("parse");
+        settings.normalise();
+        assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(settings.saved_presets[0].name, "Podcast");
+        assert_eq!(
+            settings.saved_presets[0].options,
+            serde_json::json!({"transcribe": true, "audioCodec": "opus"})
+        );
+        let dir = TempDir::new().expect("tempdir");
+        let path = settings_path(&dir);
+        Settings::save(&path, &settings).expect("save");
+        assert_eq!(Settings::load(&path).expect("load").settings, settings);
+        settings.saved_presets.clear();
+        settings.normalise();
+        assert!(settings.last_preset.is_none());
     }
 
     #[test]

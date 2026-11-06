@@ -187,6 +187,14 @@ describe("buildPlaylistRequests()", () => {
     useArchive: true,
   };
 
+  it("snapshots transcription settings on every selected playlist entry", () => {
+    const requests = buildPlaylistRequests(list, new Set([1, 3]), { ...options,
+      transcription: { transcribe: true, transcriptionEngine: "whisper_only", whisperModel: "tiny", transcriptLanguage: "it", summarize: true, summaryLanguage: "en" },
+    });
+    for (const request of requests) expect(request).toMatchObject({ transcribe: true, transcriptionEngine: "whisper_only", whisperModel: "tiny", transcriptLanguage: "it", summarize: true, summaryLanguage: "en" });
+    expect(requests[0]).not.toBe(requests[1]);
+  });
+
   it("makes one request per selected, available entry with its own position", () => {
     const requests = buildPlaylistRequests(list, new Set([1, 2, 4]), options);
     expect(requests.map((r) => r.url)).toEqual([list.entries[0].url, list.entries[3].url]);

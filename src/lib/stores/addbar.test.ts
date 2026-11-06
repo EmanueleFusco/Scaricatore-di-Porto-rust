@@ -4,13 +4,22 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel: class {
   constructor(public onmessage: (event: unknown) => void) {}
 } }));
-vi.mock("$lib/stores/settings.svelte", () => ({
-  isTauriRuntime: () => true,
-  settingsStore: { settings: { sponsorblockCategories: [], defaultTranscriptLanguage: "auto" } },
-}));
+vi.mock("$lib/stores/settings.svelte", async () => {
+  const { DEFAULT_SETTINGS } = await import("$lib/settings");
+  const settingsStore = {
+    settings: structuredClone(DEFAULT_SETTINGS),
+    update: vi.fn(async (patch: Record<string, unknown>) => {
+      settingsStore.settings = { ...settingsStore.settings, ...patch };
+      return true;
+    }),
+  };
+  return { isTauriRuntime: () => true, settingsStore };
+});
 vi.mock("$lib/stores/queue.svelte", () => ({ queueStore: { addLocalFile: vi.fn() } }));
 
 import { addBarStore as store } from "./addbar.svelte";
+import { settingsStore } from "$lib/stores/settings.svelte";
+import { DEFAULT_SETTINGS } from "$lib/settings";
 
 interface Pending {
   requestId: number;
@@ -26,8 +35,10 @@ function answer(url: string, title = url) {
   return { url, inspected: { kind: "video", id: url, title }, error: null };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   store.clear();
+  settingsStore.settings = structuredClone(DEFAULT_SETTINGS);
+  await store.selectPreset(null);
   store.errorKey = null;
   invoke.mockReset();
   pending = [];
@@ -38,6 +49,28 @@ beforeEach(() => {
 });
 
 describe("Add bar inspection lifecycle", () => {
+  it("saves media options, applies them to new links and deletes the selected preset", async () => {
+    const initial = store.addLinks([first]);
+    pending[0].resolve([answer(first)]);
+    await initial;
+    store.preset = "audio";
+    store.setMediaOptions(store.rows[0].key, { encode: true, audioCodec: "opus", transcribe: true, transcriptionEngine: "whisper_only" });
+    store.setNetworkOptions(store.rows[0].key, { customHeaders: "Authorization: fake-private-header" });
+    expect(await store.savePreset("Podcast")).toBe(true);
+    const saved = settingsStore.settings.savedPresets[0];
+    expect(saved.options).not.toHaveProperty("customHeaders");
+    expect(settingsStore.settings.lastPreset).toBe(saved.id);
+    store.clear();
+    const fresh = store.addLinks([second]);
+    pending[1].resolve([answer(second)]);
+    await fresh;
+    expect(store.rows[0]).toMatchObject({ encode: true, audioCodec: "opus", transcribe: true, transcriptionEngine: "whisper_only" });
+    expect(store.toRequests()[0].kind).toBe("audio");
+    expect(await store.deletePreset(saved.id)).toBe(true);
+    expect(settingsStore.settings.savedPresets).toEqual([]);
+    expect(settingsStore.settings.lastPreset).toBeNull();
+    expect(store.rows[0].transcribe).toBe(false);
+  });
   it("preserves streamed successes if the remaining batch fails", async () => {
     const work = store.addLinks([first, second]);
     pending[0].onResult.onmessage({ requestId: pending[0].requestId, answer: answer(second) });

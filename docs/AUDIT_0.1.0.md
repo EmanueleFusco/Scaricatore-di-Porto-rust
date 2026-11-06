@@ -20,6 +20,8 @@ code therefore matches that tag. No application fixes were applied in this audit
   entries (D148); native Linux acceptance still required.
 - F06–F10: corrected inspection details/copy, FFmpeg version parsing, low-speed
   feedback, pause/interruption wording and shell-free launcher paths (D149).
+- Missing playlist transcription and personal preset workflows: implemented with
+  shared controls, per-entry snapshots and schema-8 persisted presets (D151).
 - The findings and reproduction notes below describe the audited baseline.
 
 The core download pipeline works in the exercised cases, and the ordinary test

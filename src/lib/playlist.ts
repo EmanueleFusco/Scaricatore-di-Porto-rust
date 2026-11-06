@@ -11,6 +11,7 @@
  * and the numbering prefix of the filenames follows the position.
  */
 import type { QualityChoice, AddItemRequest } from "$lib/queue";
+import { transcriptionRequest, type TranscriptionRequest } from "$lib/addbar";
 import {
   CHANNEL_DEFAULT_CAP,
   CHANNEL_WARN_THRESHOLD,
@@ -260,6 +261,7 @@ export function formatPlaylistPrefix(position: number, total: number): string {
 // ---------------------------------------------------------------------------
 
 export interface PlaylistAddOptions {
+  transcription?: TranscriptionRequest;
   reversed?: boolean;
   /** One queue group per playlist, created by the caller. */
   groupId: string;
@@ -298,6 +300,7 @@ export function buildPlaylistRequests(
   const paced = chosen.length > PLAYLIST_PACING_THRESHOLD;
   const subdir = options.folderPerPlaylist ? sanitizeFolderName(playlist.title) : null;
   return chosen.map((entry) => ({
+    ...(options.transcription ? transcriptionRequest(options.transcription) : {}),
     url: entry.url,
     title: entry.title === "" ? null : entry.title,
     site: playlist.site === "" ? null : playlist.site,
