@@ -55,8 +55,8 @@
     /* The composer and queue own their scroll areas; keep global actions
        inside the window. Horizontal padding preserves visible focus rings. */
     overflow: hidden;
-    padding: 0 2px;
-    margin: 0 -2px;
+    padding: 0 4px;
+    margin: 0 -4px;
   }
 
   .queue__title {

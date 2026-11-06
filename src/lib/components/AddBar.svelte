@@ -405,6 +405,10 @@
       <p class="add__error" role="alert">
         {errorText(addBarStore.errorKey, addBarStore.errorDetail)}
       </p>
+    {:else if queueStore.errorKey}
+      <p class="add__error" role="alert">
+        {errorText(queueStore.errorKey, queueStore.errorDetail)}
+      </p>
     {/if}
   </div>
 
@@ -487,7 +491,7 @@
                   )}
               >
                 {#each options(row) as option (option.value)}
-                  <option value={option.value}>{qualityText(option.choice)}</option>
+                  <option value={option.value} selected={option.value === qualityValue(choiceFor(row))}>{qualityText(option.choice)}</option>
                 {/each}
               </select>
             {/if}
@@ -604,6 +608,8 @@
                             <button
                               type="button"
                               class="btn btn--small"
+                              class:btn--primary={row.quality?.kind === "explicit" && row.quality.formatId === format.formatId}
+                              aria-pressed={row.quality?.kind === "explicit" && row.quality.formatId === format.formatId}
                               onclick={() => addBarStore.setQuality(row.key, explicitChoiceFor(format))}
                             >
                               {tt("queue.add.formats.pick")}

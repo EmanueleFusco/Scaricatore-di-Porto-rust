@@ -211,7 +211,13 @@ pub enum QualityChoice {
     /// Audio only, Opus (§8.2).
     AudioOnly,
     /// An explicit format id from the advanced table (M3 fills the table).
-    Explicit { format_id: String, has_audio: bool },
+    #[serde(rename_all = "camelCase")]
+    Explicit {
+        #[serde(alias = "format_id")]
+        format_id: String,
+        #[serde(alias = "has_audio")]
+        has_audio: bool,
+    },
 }
 
 impl QualityChoice {
@@ -1224,6 +1230,27 @@ mod tests {
                 .selector()
                 .unwrap(),
             "bv[height=1080]+ba/bv[height<=1080]+ba/b[height<=1080]/b"
+        );
+    }
+
+    #[test]
+    fn explicit_quality_choice_serialises_camel_case_and_accepts_snake_case() {
+        let explicit_json = serde_json::to_string(&QualityChoice::Explicit {
+            format_id: "231".into(),
+            has_audio: false,
+        })
+        .expect("serialise explicit choice");
+        assert!(explicit_json.contains(r#""formatId":"231""#));
+        assert!(explicit_json.contains(r#""hasAudio":false"#));
+        let legacy: QualityChoice =
+            serde_json::from_str(r#"{"kind":"explicit","format_id":"231","has_audio":false}"#)
+                .expect("parse legacy snake_case explicit choice");
+        assert_eq!(
+            legacy,
+            QualityChoice::Explicit {
+                format_id: "231".into(),
+                has_audio: false,
+            }
         );
     }
 

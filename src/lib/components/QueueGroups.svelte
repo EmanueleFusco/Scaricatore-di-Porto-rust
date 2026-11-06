@@ -106,7 +106,7 @@
   .groups {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--space-2);
     flex: none;
     max-height: 168px;
     margin: 0;

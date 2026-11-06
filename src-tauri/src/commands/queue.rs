@@ -232,8 +232,11 @@ pub enum QualityRequest {
     },
     AudioOnly,
     /// An explicit format id from the advanced table (M3 fills the table).
+    #[serde(rename_all = "camelCase")]
     Explicit {
+        #[serde(alias = "format_id")]
         format_id: String,
+        #[serde(alias = "has_audio")]
         has_audio: bool,
     },
 }
@@ -944,6 +947,31 @@ mod tests {
             QualityChoice::Explicit {
                 format_id: "137".into(),
                 has_audio: false
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_quality_request_deserialises_camel_case_from_frontend() {
+        let from_camel: QualityRequest =
+            serde_json::from_str(r#"{"kind":"explicit","formatId":"231","hasAudio":false}"#)
+                .expect("camelCase explicit quality request must deserialise");
+        assert_eq!(
+            from_camel.into_choice(),
+            QualityChoice::Explicit {
+                format_id: "231".into(),
+                has_audio: false,
+            }
+        );
+
+        let from_snake: QualityRequest =
+            serde_json::from_str(r#"{"kind":"explicit","format_id":"140","has_audio":true}"#)
+                .expect("snake_case explicit quality request alias must deserialise");
+        assert_eq!(
+            from_snake.into_choice(),
+            QualityChoice::Explicit {
+                format_id: "140".into(),
+                has_audio: true,
             }
         );
     }

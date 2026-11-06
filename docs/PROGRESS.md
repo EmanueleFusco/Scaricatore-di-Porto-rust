@@ -381,3 +381,13 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none.
 - Decisions/deviations (also in DECISIONS.md): version 0.2.0 chosen for the accumulated user-facing features and fixes since 0.1.0.
 - Next step: run the version check and required Rust/frontend checks, commit the version bump, then push and merge before tagging.
+
+
+## 2026-11-06 — M7 / Harmonize queue spacing, fix explicit format deserialization, and refine flash glow
+
+- Done: harmonized the vertical spacing (`gap: var(--space-2)`) and horizontal alignment between the Add bar, the filter toolbar, playlist group headers, and the queue viewport; gave `.list__viewport` symmetric bleed padding (`padding: 3px; margin: -3px;`) so card edges align flush with the sections above while preventing overflow clipping of card highlights; refined the `.item--new` (`item-flash`) pulse animation with a balanced inner/outer ring and soft glow so top/bottom/side thickness and rounded corners remain uniform during animation; fixed `QualityRequest::Explicit` and `QualityChoice::Explicit` serde field casing (`#[serde(rename_all = "camelCase")]` with `snake_case` aliases) so picking a format from the advanced format table no longer fails `queue_add` deserialization, highlighted the chosen format button in the table, bound `<option selected>` in the per-row quality dropdown, and surfaced `queueStore.errorKey` in `AddBar.svelte`.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (454 passed), `cargo test --test queue_ipc --test queue_engine` -> pass; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 357 passed, 12 skipped; `npm.cmd run build` -> pass.
+- Not verified / stubbed: native macOS/Linux execution.
+- Spec items marked "verify" that I checked: none.
+- Decisions/deviations (also in DECISIONS.md): none; backward-compatible serde aliases keep existing `snake_case` persisted queue entries working alongside `camelCase` frontend requests.
+- Next step: commit and push to `main` and update tag `v0.2.0` so both stay in sync for manual CI dispatch.

@@ -365,7 +365,7 @@
   .list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--space-2);
     flex: 1 1 0;
     /* A zero flex basis prevents a huge virtual spacer from squeezing the
        composer below the size of its fixed controls. */
@@ -380,7 +380,8 @@
     flex-direction: column;
     gap: 0;
     overflow-anchor: none;
-    padding-right: var(--space-1);
+    padding: 3px;
+    margin: -3px;
   }
 
   .list__count {

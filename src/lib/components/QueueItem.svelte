@@ -730,16 +730,24 @@
   /* Just added: a pulse the eye catches where the row appears (D104). */
   .item--new {
     border-color: var(--accent);
-    animation: item-flash 1.1s ease-in-out 2;
+    animation: item-flash 1.15s ease-in-out 2;
   }
 
   @keyframes item-flash {
     0%,
     100% {
-      box-shadow: 0 0 0 2px var(--accent);
+      border-color: var(--accent);
+      box-shadow:
+        inset 0 0 0 1px var(--accent),
+        0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent),
+        0 0 6px 0 color-mix(in srgb, var(--accent) 35%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 2px transparent;
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      box-shadow:
+        inset 0 0 0 1px transparent,
+        0 0 0 1px transparent,
+        0 0 6px 0 transparent;
     }
   }
 
