@@ -222,6 +222,127 @@ fn progress_tracker_parses_pipe1_output() {
 // Integration tests with fake ffmpeg
 // ---------------------------------------------------------------------------
 
+fn collision_test_request(fixture: &Fixture, original: &Path, output: &Path) -> EncodeRequest {
+    EncodeRequest {
+        ffmpeg_path: fixture.fake_ffmpeg.clone(),
+        kind: EncodeJobKind::Video(VideoEncodeOptions {
+            input: original.to_path_buf(),
+            output: output.to_path_buf(),
+            video_encoder: "libx264".into(),
+            audio_codec: Some(AudioCodec::Aac),
+            trim: Some(TrimSpec::new(Some(2.0), Some(5.0))),
+            embed_thumbnail: false,
+        }),
+        keep_original: true,
+        total_duration: Some(10.0),
+        temp_dir: None,
+    }
+}
+
+fn successful_output(outcome: EncodeOutcome) -> PathBuf {
+    match outcome {
+        EncodeOutcome::Success { output_file, .. } => output_file,
+        other => panic!("expected successful encode, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn video_encode_preserves_existing_clips_and_selects_the_next_unused_name() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("clip.mp4", b"SOURCE");
+    let output = fixture.create_dummy_media("clip-encoded.mp4", b"FIRST_CLIP");
+    let second = fixture.create_dummy_media("clip-encoded (1).mp4", b"SECOND_CLIP");
+    let outcome = run_encode(
+        collision_test_request(&fixture, &original, &output),
+        CancellationToken::new(),
+        Arc::new(|_| {}),
+    )
+    .await;
+    let published = successful_output(outcome);
+    assert_eq!(published, fixture.dir.path().join("clip-encoded (2).mp4"));
+    assert_eq!(fs::read(&output).unwrap(), b"FIRST_CLIP");
+    assert_eq!(fs::read(&second).unwrap(), b"SECOND_CLIP");
+    assert_eq!(fs::read(&original).unwrap(), b"SOURCE");
+    assert_eq!(fs::read(&published).unwrap(), b"DUMMY_ENCODED_OUTPUT_DATA");
+}
+
+#[tokio::test]
+async fn concurrent_encodes_publish_distinct_outputs_without_sharing_partial_files() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("clip.mp4", b"SOURCE");
+    let output = derive_encoded_output_path(&original, "mp4");
+    let request = collision_test_request(&fixture, &original, &output);
+    let (first, second) = tokio::join!(
+        run_encode(request.clone(), CancellationToken::new(), Arc::new(|_| {})),
+        run_encode(request, CancellationToken::new(), Arc::new(|_| {})),
+    );
+    let first = successful_output(first);
+    let second = successful_output(second);
+    assert_ne!(first, second);
+    assert!(first == output || second == output);
+    assert_eq!(fs::read(first).unwrap(), b"DUMMY_ENCODED_OUTPUT_DATA");
+    assert_eq!(fs::read(second).unwrap(), b"DUMMY_ENCODED_OUTPUT_DATA");
+    assert!(!fs::read_dir(fixture.dir.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".sdp-encode-")
+    }));
+}
+
+#[tokio::test]
+async fn audio_encode_preserves_an_existing_result_before_deleting_its_source() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("song.wav", b"SOURCE");
+    let output = fixture.create_dummy_media("song-encoded.m4a", b"PREVIOUS_RESULT");
+    let outcome = run_encode(
+        EncodeRequest {
+            ffmpeg_path: fixture.fake_ffmpeg.clone(),
+            kind: EncodeJobKind::Audio(AudioEncodeOptions {
+                input: original.clone(),
+                output: output.clone(),
+                audio_codec: AudioCodec::Aac,
+                trim: None,
+                embed_thumbnail: false,
+            }),
+            keep_original: false,
+            total_duration: Some(10.0),
+            temp_dir: None,
+        },
+        CancellationToken::new(),
+        Arc::new(|_| {}),
+    )
+    .await;
+    assert_eq!(
+        successful_output(outcome),
+        fixture.dir.path().join("song-encoded (1).m4a")
+    );
+    assert_eq!(fs::read(output).unwrap(), b"PREVIOUS_RESULT");
+    assert!(!original.exists());
+}
+
+#[tokio::test]
+async fn failed_encode_preserves_existing_outputs_and_cleans_its_own_staging_file() {
+    let fixture = Fixture::new();
+    let original = fixture.create_dummy_media("clip.mp4", b"SOURCE");
+    let output = fixture.create_dummy_media("clip-encoded.mp4", b"PREVIOUS_RESULT");
+    fs::write(fixture.dir.path().join("fail_all.txt"), "1").unwrap();
+    let mut request = collision_test_request(&fixture, &original, &output);
+    request.keep_original = false;
+    let result = run_encode(request, CancellationToken::new(), Arc::new(|_| {})).await;
+    assert!(matches!(result, EncodeOutcome::Failed { .. }));
+    assert_eq!(fs::read(original).unwrap(), b"SOURCE");
+    assert_eq!(fs::read(output).unwrap(), b"PREVIOUS_RESULT");
+    assert!(!fs::read_dir(fixture.dir.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".sdp-encode-")
+    }));
+}
+
 #[tokio::test]
 async fn probe_encoders_detects_candidates_and_filters_failures() {
     let fixture = Fixture::new();

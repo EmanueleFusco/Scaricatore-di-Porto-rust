@@ -7,6 +7,12 @@ The `v0.1.0` tag resolves locally to `89a40523824e0a3db39491b10b8f3cae426f3476`;
 the intervening commit changes only PROGRESS, DECISIONS and SPIKES. Production
 code therefore matches that tag. No application fixes were applied in this audit.
 
+### Follow-up implementation status
+
+- F01: corrected after the audit; unique staging files and no-clobber numbered
+  outputs are covered by unit and fake-tool integration regression tests (D145).
+- The findings and reproduction notes below describe the audited baseline.
+
 The core download pipeline works in the exercised cases, and the ordinary test
 suite is green. That does not make the whole release accepted: there are two
 high-priority defects, several reproducible queue/UI defects, and important

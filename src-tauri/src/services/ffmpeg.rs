@@ -377,20 +377,51 @@ pub fn derive_encoded_output_path(input: &Path, target_ext: &str) -> PathBuf {
     parent.join(name)
 }
 
-/// The temporary file ffmpeg writes to before the atomic rename to `output`
-/// (spec §7.3, §15.12). It keeps the extension, which ffmpeg needs to pick
-/// the muxer: `Video-encoded.mp4` -> `Video-encoded.sdp-part.mp4`.
-pub fn partial_output_path(output: &Path) -> PathBuf {
-    let mut name = output
-        .file_stem()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("output"));
-    name.push(".sdp-part");
+/// Stage each encode separately, on the destination filesystem. Closing the
+/// handle lets ffmpeg write it on Windows; TempPath still cleans up on failure.
+fn create_encoded_partial(output: &Path) -> std::io::Result<tempfile::TempPath> {
+    let mut suffix = OsString::from(".sdp-part");
+    if let Some(ext) = output.extension() {
+        suffix.push(".");
+        suffix.push(ext);
+    }
+    tempfile::Builder::new()
+        .prefix(".sdp-encode-")
+        .suffix(&suffix)
+        .tempfile_in(output.parent().unwrap_or_else(|| Path::new(".")))
+        .map(|file| file.into_temp_path())
+}
+
+fn encoded_output_candidate(output: &Path, index: u64) -> PathBuf {
+    if index == 0 {
+        return output.to_path_buf();
+    }
+    let mut name = output.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!(" ({index})"));
     if let Some(ext) = output.extension() {
         name.push(".");
         name.push(ext);
     }
     output.with_file_name(name)
+}
+
+/// Publish the completed file without replacing an existing result, including
+/// one published by a concurrent encode after this job started (D145).
+fn publish_encoded_output(
+    mut partial: tempfile::TempPath,
+    requested: &Path,
+) -> std::io::Result<PathBuf> {
+    for index in 0.. {
+        let candidate = encoded_output_candidate(requested, index);
+        match partial.persist_noclobber(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                partial = error.path;
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
+    Err(std::io::Error::other("encoded output names exhausted"))
 }
 
 /// Build video encode args with optional custom encoder arguments (e.g. VideoToolbox fallback args).
@@ -738,29 +769,30 @@ pub async fn run_encode(
     token: CancellationToken,
     sink: EncodeProgressSink,
 ) -> EncodeOutcome {
-    // ffmpeg writes to a partial file; only a complete encode is renamed onto
-    // the final name, so a cancel/pause/failure never leaves a corrupt
-    // `-encoded` file nor truncates an existing one (spec §7.3, §15.12).
-    let (input, final_output) = match &mut request.kind {
-        EncodeJobKind::Video(o) => {
-            let fin = std::mem::replace(&mut o.output, PathBuf::new());
-            o.output = partial_output_path(&fin);
-            (o.input.clone(), fin)
-        }
-        EncodeJobKind::Audio(o) => {
-            let fin = std::mem::replace(&mut o.output, PathBuf::new());
-            o.output = partial_output_path(&fin);
-            (o.input.clone(), fin)
+    let (input, requested_output) = match &request.kind {
+        EncodeJobKind::Video(o) => (o.input.clone(), o.output.clone()),
+        EncodeJobKind::Audio(o) => (o.input.clone(), o.output.clone()),
+    };
+    let partial = match create_encoded_partial(&requested_output) {
+        Ok(partial) => partial,
+        Err(error) => {
+            return EncodeOutcome::Failed {
+                error: format!("could not create an encode staging file: {error}"),
+                stderr_tail: Vec::new(),
+            };
         }
     };
+    match &mut request.kind {
+        EncodeJobKind::Video(o) => o.output = partial.to_path_buf(),
+        EncodeJobKind::Audio(o) => o.output = partial.to_path_buf(),
+    };
     let keep_original = request.keep_original;
-    let partial = partial_output_path(&final_output);
 
     match run_encode_attempts(request, token, sink).await {
         EncodeOutcome::Success {
             used_cpu_fallback, ..
-        } => match fs::rename(&partial, &final_output) {
-            Ok(()) => {
+        } => match publish_encoded_output(partial, &requested_output) {
+            Ok(final_output) => {
                 // Delete original only if requested and successful
                 if !keep_original && input != final_output {
                     let _ = fs::remove_file(&input);
@@ -770,18 +802,12 @@ pub async fn run_encode(
                     used_cpu_fallback,
                 }
             }
-            Err(err) => {
-                let _ = fs::remove_file(&partial);
-                EncodeOutcome::Failed {
-                    error: format!("could not move the encoded file into place: {err}"),
-                    stderr_tail: Vec::new(),
-                }
-            }
+            Err(err) => EncodeOutcome::Failed {
+                error: format!("could not move the encoded file into place: {err}"),
+                stderr_tail: Vec::new(),
+            },
         },
-        other => {
-            let _ = fs::remove_file(&partial);
-            other
-        }
+        other => other,
     }
 }
 
@@ -1167,10 +1193,32 @@ mod tests {
     }
 
     #[test]
-    fn partial_output_keeps_extension_and_folder() {
+    fn encoded_partials_keep_the_extension_and_folder_without_sharing_a_path() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let output = dir.path().join("My Video-encoded.mp4");
+        let first = create_encoded_partial(&output).expect("first partial");
+        let second = create_encoded_partial(&output).expect("second partial");
+        assert_ne!(first.to_path_buf(), second.to_path_buf());
+        assert_eq!(first.parent(), Some(dir.path()));
+        assert_eq!(first.extension(), Some(std::ffi::OsStr::new("mp4")));
+        let first_path = first.to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
+    }
+
+    #[test]
+    fn encoded_output_candidates_preserve_unicode_and_the_media_extension() {
         assert_eq!(
-            partial_output_path(Path::new("/path/to/My Video-encoded.mp4")),
-            PathBuf::from("/path/to/My Video-encoded.sdp-part.mp4")
+            encoded_output_candidate(Path::new("clip.été-encoded.m4a"), 0),
+            PathBuf::from("clip.été-encoded.m4a")
+        );
+        assert_eq!(
+            encoded_output_candidate(Path::new("clip.été-encoded.m4a"), 2),
+            PathBuf::from("clip.été-encoded (2).m4a")
+        );
+        assert_eq!(
+            encoded_output_candidate(Path::new("no-extension"), 1),
+            PathBuf::from("no-extension (1)")
         );
     }
 

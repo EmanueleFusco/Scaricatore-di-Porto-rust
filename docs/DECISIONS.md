@@ -956,3 +956,26 @@ an inference from `current_exe()` and the official AppImage runtime documentatio
 not a native Linux reproduction. Real Gemini, macOS/Linux UI acceptance and the
 remaining long-audio/provider/installer cases need separate validation. No claim
 of complete acceptance or support-tier promotion follows from the green suite.
+
+### D145 — Preserve encoded results with no-clobber publication (F01)
+
+The specification names `<stem>-encoded.<ext>` but does not define collisions.
+Keep that name for the first result; publish later results as
+`<stem>-encoded (1).<ext>`, etc. Each encode owns a unique staging file on the
+destination filesystem and publishes with `tempfile::TempPath::persist_noclobber`,
+retrying only a destination collision. This prevents a check-then-rename race
+between jobs. Delete the source only after successful publication, according to
+the existing keep-original option. Failures preserve both existing outputs and
+the source.
+
+The `tempfile` API and Windows/Unix no-replace implementations were checked in
+the cached 3.27.0 source. It is now a direct runtime dependency, but was already
+shipped transitively by `tauri-plugin-updater`: no new crate or feature is added.
+The optimized binary-size comparison is pending the release build. Fake-tool
+tests cover video/audio collisions, simultaneous jobs, source retention and
+staging cleanup. The previous fixed-partial-name unit test now checks unique
+paths, extension preservation and cleanup, reflecting the corrected contract.
+
+F01 release measurement: `npm.cmd run tauri build -- --no-bundle` passed in
+2m 13s; Windows x64 executable 6,963,200 bytes, up 2,048 bytes from the audited
+6,961,152-byte executable. The direct tempfile use adds no new runtime crate.

@@ -293,3 +293,13 @@ Running log, one block per milestone/step, newest last (format defined in `AGENT
 - Spec items marked "verify" that I checked: none.
 - Decisions/deviations (also in DECISIONS.md): none; explicit owner instruction.
 - Next step: commit the encoded-output collision fix separately.
+
+## 2026-11-06 — M7 / Preserve encoded results and isolate concurrent staging files (F01)
+
+- Done: kept the default encoded filename for the first result and selected a numbered name when occupied, using no-clobber publication instead of overwrite-on-rename. Each encode owns a unique same-filesystem staging file. Video/audio results, existing clips and source-retention behavior are covered by reusable fake-tool regression tests, including simultaneous encodes.
+- Verified by running: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` -> pass; `cargo test` -> 642 passed, 5 ignored; `cargo test --test ffmpeg_encode` -> 23 passed; `npm.cmd run check` -> 0 errors/warnings; `npm.cmd test -- --run` -> 327 passed, 12 skipped; `npm.cmd run build` -> pass. One newly added unit assertion initially compared TempPath values directly; corrected it to compare owned paths before the successful full run.
+- Not verified / stubbed: native macOS/Linux execution and removable-filesystem acceptance; optimized build/size comparison still running. No new real network/media acceptance was claimed.
+- Spec items marked "verify" that I checked: cached tempfile 3.27.0 `Builder::tempfile_in`, `into_temp_path`, `TempPath::persist_noclobber`, and Windows/Unix no-replace implementation; `cargo tree -i tempfile --edges normal` confirms the updater already ships this runtime dependency.
+- Decisions/deviations (also in DECISIONS.md): D145; suffix colliding outputs instead of replacing them. No new crate or feature added to the runtime dependency graph.
+- Next step: fix per-row inspection lifecycle/cancellation (F02), and record the release build result when available.
+- Release follow-up: `npm.cmd run tauri build -- --no-bundle` passed in 2m 13s; Windows x64 executable 6,963,200 bytes (+2,048 bytes against the audit baseline). Installer and native macOS/Linux acceptance remain unverified.
