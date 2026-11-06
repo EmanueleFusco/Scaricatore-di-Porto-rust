@@ -22,13 +22,51 @@ code therefore matches that tag. No application fixes were applied in this audit
   feedback, pause/interruption wording and shell-free launcher paths (D149).
 - Missing playlist transcription and personal preset workflows: implemented with
   shared controls, per-entry snapshots and schema-8 persisted presets (D151).
+- Queue UI recommendations: implemented a collapsible composer with counters,
+  compact primary/overflow actions, smaller completed cards, variable-height
+  virtualization and reliable enqueue/focus feedback (D152).
 - The findings and reproduction notes below describe the audited baseline.
 
-The core download pipeline works in the exercised cases, and the ordinary test
-suite is green. That does not make the whole release accepted: there are two
-high-priority defects, several reproducible queue/UI defects, and important
-unexercised platform and service combinations. Fix output collisions and
-inspection lifecycle first, then queue/playlist behavior, before cosmetic work.
+All F01–F10 findings now have implemented corrections, and the separately listed
+workflows/UI improvements are implemented. Native Linux validation of F05 and the
+remaining platform/service acceptance matrix are still required. The original
+audit found two high-priority defects; the baseline descriptions below are retained
+as reproduction evidence, not a list of currently unfixed defects.
+
+### Follow-up verification
+
+| Check | Final result |
+| --- | --- |
+| Rust formatting, Clippy (`--all-targets -- -D warnings`) | Passed |
+| Full Rust suite | 656 passed, 5 ignored live-network tests |
+| Svelte/TypeScript | 0 errors, 0 warnings |
+| Frontend/script suite | 357 passed, 12 skipped, 23 files |
+| Frontend production build | Passed |
+| Optimized Windows executable | `npm.cmd run tauri build -- --no-bundle` passed; 7,015,424 bytes (+54,272 versus audit baseline); installer not built/tested |
+| CI shell syntax / release version consistency | 24 blocks valid / all three manifests remain 0.1.0 |
+| Native Windows large queue | 5,000 synthetic rows; only six cards exposed in the initial accessibility tree; expanded cards, filtering, end navigation and new-item scrolling exercised |
+| Native layouts | 980×680 dark/light; 640×520 light with icon sidebar and visible global controls |
+| Personal presets | Saved through the native UI; persisted quality/name/selection and restored after restart |
+| Inspection diagnostics | Real example.com no-media error expanded and copied using keyboard navigation |
+| Incremental inspection | A fast video and playlist appeared while another fake-tool URL remained pending; the slow row later became a retryable timeout error |
+| Playlist options/order | Native enqueue persisted Video C then Video A, original `003`/`001` prefixes, and `transcribe: true`/`whisper_only` on both items |
+| Missing transcription tool | Those fake media jobs reported WHISPER_MISSING as expected in the deliberately unprovisioned isolated profile; this is not a real transcription quality test |
+| Windows launcher | Actual `npm.cmd run app:binary` from a copied test fixture path containing spaces, Unicode and `%` exited successfully and focused the existing audit instance |
+| Close during inspection | One verified active fake-tool process before close, none afterward; audit app and Vite server also stopped |
+
+Native acceptance used a separate Tauri identifier and the installed Tauri
+`appDirectoriesOverride` option, with settings, queue, tools, fixtures and generated
+media entirely under ignored `src-tauri/target/audit-ui-2026-11-06/`. The owner's
+application data was not used or modified. Frontend changes were explicitly
+reloaded before the final enqueue/scroll acceptance; live-update behavior was not
+treated as acceptance evidence. Temporary geometry instrumentation was removed.
+No dependency, public release, tag or remote GitHub state changed.
+
+Remaining acceptance is environmental/service validation: native macOS/Linux and
+AppImage menu launch, fresh-machine installer/signing/antivirus, real Gemini/cloud
+cleanup and billing, authenticated/live/large public providers, long/Italian/VAD
+transcription, screen readers and a formal memory/frame-time benchmark. Existing
+fake-tool tests and selected Windows UI checks do not certify those cases.
 
 Evidence labels:
 
@@ -92,7 +130,7 @@ compatibility with four independent public providers. The Tiny English transcrip
 contained recognition errors; this is a pipeline smoke test, not a quality score
 for the recommended model, Italian, or long recordings.
 
-## Findings, ordered by priority
+## Original findings, ordered by priority
 
 ### F01 — P1: encoding replaces an existing result without preserving it
 
@@ -300,8 +338,9 @@ separate from the reproduced defects above.
 - **Native dialogs:** the folder picker opened, but the automation helper could
   not reliably target its modal controls. Folder selection/import was therefore
   not accepted or classified as an app defect.
-- **Performance/accessibility:** no 5,000-row runtime measurement, idle-memory
-  benchmark, screen-reader pass or complete light-theme/keyboard acceptance.
+- **Performance/accessibility:** the follow-up exercised 5,000 synthetic rows,
+  light theme and selected keyboard paths natively. A formal frame-time/idle-memory
+  benchmark, screen-reader pass and complete accessibility certification remain.
 
 ## Proposed implementation sequence
 

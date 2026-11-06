@@ -35,7 +35,7 @@
   import { queueStore } from "$lib/stores/queue.svelte";
   import { settingsStore, tt, ttCount } from "$lib/stores/settings.svelte";
 
-  let { row, playlist }: { row: AddRow; playlist: PlaylistInfo } = $props();
+  let { row, playlist, onadded }: { row: AddRow; playlist: PlaylistInfo; onadded?: (generation: number) => void } = $props();
 
   /** Fixed row height: the virtualiser needs one, and a title never wraps. */
   const ROW_HEIGHT = 34;
@@ -65,7 +65,8 @@
   });
 
   const visible = $derived(orderEntries(filterEntries(playlist.entries, query), reversed));
-  const range = $derived(visibleRange(scrollTop, VIEWPORT_HEIGHT, ROW_HEIGHT, visible.length));
+  const viewportHeight = $derived(Math.min(VIEWPORT_HEIGHT, Math.max(ROW_HEIGHT * 2, visible.length * ROW_HEIGHT)));
+  const range = $derived(visibleRange(scrollTop, viewportHeight, ROW_HEIGHT, visible.length));
   const shown = $derived(visibleItems(visible, range));
   const warningKey = $derived(playlistWarningKey(playlist));
   const duration = $derived(secondsToClock(totalDuration(playlist.entries)));
@@ -108,9 +109,11 @@
       return;
     }
     busy = true;
+    const generation = addBarStore.rowGeneration;
     try {
       const groupId = `g-${Date.now().toString(36)}-${row.key}`;
       const options = {
+        clientKey: row.key,
         transcription: transcriptionRequest(row),
         reversed,
         groupId,
@@ -134,6 +137,7 @@
       if (result.added.length > 0) {
         queueStore.flash(result.added);
         addBarStore.removeRow(row.key);
+        onadded?.(generation);
       } else if (result.duplicates.length === 0) {
         await queueStore.removeGroup(groupId);
       }
@@ -223,7 +227,7 @@
     class="pl__list"
     role="group"
     aria-label={tt("playlist.list.label")}
-    style:height={`${VIEWPORT_HEIGHT}px`}
+    style:height={`${viewportHeight}px`}
     onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
   >
     <div style:height={`${range.topPad}px`}></div>

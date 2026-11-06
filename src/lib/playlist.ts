@@ -261,6 +261,7 @@ export function formatPlaylistPrefix(position: number, total: number): string {
 // ---------------------------------------------------------------------------
 
 export interface PlaylistAddOptions {
+  clientKey?: string;
   transcription?: TranscriptionRequest;
   reversed?: boolean;
   /** One queue group per playlist, created by the caller. */
@@ -300,6 +301,7 @@ export function buildPlaylistRequests(
   const paced = chosen.length > PLAYLIST_PACING_THRESHOLD;
   const subdir = options.folderPerPlaylist ? sanitizeFolderName(playlist.title) : null;
   return chosen.map((entry) => ({
+    ...(options.clientKey ? { clientKey: options.clientKey } : {}),
     ...(options.transcription ? transcriptionRequest(options.transcription) : {}),
     url: entry.url,
     title: entry.title === "" ? null : entry.title,

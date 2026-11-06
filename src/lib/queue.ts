@@ -230,6 +230,8 @@ export interface AddResult {
 
 /** What the Add bar sends for one link. */
 export interface AddItemRequest {
+  /** Frontend ownership only; stripped before IPC and external-tool execution. */
+  clientKey?: string;
   url: string;
   title: string | null;
   site: string | null;
@@ -715,6 +717,19 @@ export function actionsFor(
     actions.push("copyLink", "openPage");
   }
   return actions;
+}
+
+/** Keep common actions visible and retain every secondary action in the overflow. */
+export function actionLayout(state: ItemState, hasFile: boolean, isRemoteUrl = true): { primary: ItemAction[]; more: ItemAction[] } {
+  const all = actionsFor(state, hasFile, isRemoteUrl);
+  const preferred: ItemAction[] = isActive(state) ? ["pause", "cancel"]
+    : state === "paused" || state === "interrupted" ? ["resume", "cancel"]
+    : state === "failed" || state === "cancelled" ? ["retry", "remove"]
+    : state === "done" && hasFile ? ["open", "reveal"]
+    : state === "queued" ? ["moveToTop", "cancel"] : ["copyLink"];
+  const primary = preferred.filter((action) => all.includes(action));
+  if (primary.length === 0 && all.length > 0) primary.push(all[0]);
+  return { primary, more: all.filter((action) => !primary.includes(action)) };
 }
 
 /** i18n key of an action button. */

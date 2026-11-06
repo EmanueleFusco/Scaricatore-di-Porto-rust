@@ -49,6 +49,17 @@ beforeEach(async () => {
 });
 
 describe("Add bar inspection lifecycle", () => {
+  it("does not clear a replacement row when an older add response names the same URL", async () => {
+    const initial = store.addLinks([first]);
+    pending[0].resolve([answer(first)]);
+    await initial;
+    const old = store.toRequests()[0];
+    store.removeRow(store.rows[0].key);
+    await store.addLinks([first]);
+    store.clearAdded([old.clientKey!]);
+    expect(store.rows).toHaveLength(1);
+    expect(store.rows[0].key).not.toBe(old.clientKey);
+  });
   it("saves media options, applies them to new links and deletes the selected preset", async () => {
     const initial = store.addLinks([first]);
     pending[0].resolve([answer(first)]);

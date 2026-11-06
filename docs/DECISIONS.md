@@ -1072,3 +1072,38 @@ snapshot. Cloud-capable playlist requests use the existing explicit privacy
 confirmation before enqueueing. Pure tests cover per-entry options, disabled
 transcription/summary behavior and cloud-engine selection. No paid API call or
 new native macOS/Linux acceptance was performed.
+
+### D152 — Keep queue work visible and measure every rendered card
+
+The composer is collapsible, capped and separately scrollable; successful enqueue
+collapses it while retaining unsubmitted rows. A row-generation check prevents an
+older submission from hiding newly pasted work, and duplicate confirmations stay
+open. Counts distinguish checking, ready, failed and playlist rows. The queue owns
+a stable viewport and keeps global actions on screen; mixed parked/running queues
+can expose both Pause all and Resume all.
+
+Cards retain at most two primary actions, with native disclosure/context access to
+all secondary actions and Escape/outside-click dismissal. Completed cards are
+shorter with de-emphasized progress. Focusable titles support arrow/Home/End
+navigation. The virtualizer uses measured per-ID heights and prefix offsets,
+remeasures on resize/details changes, discards removed measurements and preserves
+scroll anchors/end position. Enqueue scrolling is immediate: measurement updates
+can interrupt native smooth scrolling before its destination. Pure tests cover
+5,000 mixed-height entries and every action/state combination.
+
+Native testing exposed a huge-spacer flex-basis issue that squeezed the composer;
+the queue/scroller now use zero flex bases. Windows tests exercised 5,000 synthetic
+rows, expanded cards, end navigation, dark/default and light/minimum-size layouts,
+preset save/restart, error details/copy, streaming results and playlist option/order
+snapshots. Frontend-only client keys reconcile accepted source rows without clearing
+a replacement with the same URL; they are stripped before IPC. Regression tests
+cover that race and original duplicate indexes after unsupported URL filtering.
+
+All native artifacts live under ignored target directories using a distinct Tauri
+identifier and verified `appDirectoriesOverride`; no personal queue/settings were
+used. Source-only tests cannot certify native macOS/Linux UI, screen readers,
+signing/installers or real Gemini billing/cloud behavior. No new dependency.
+
+Final optimized Windows measurement: `npm.cmd run tauri build -- --no-bundle`
+passed in 2m 28s. The executable is 7,015,424 bytes, +54,272 bytes versus the
+6,961,152-byte audited baseline. No installer or signed update was installed.

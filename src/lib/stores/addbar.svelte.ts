@@ -99,6 +99,7 @@ class AddBarStore {
   errorDetail = $state<string | null>(null);
 
   #counter = 0;
+  get rowGeneration(): number { return this.#counter; }
   #presetsRestored = false;
   #presetOptions: PresetOptions = {};
 
@@ -524,6 +525,7 @@ class AddBarStore {
       const headers = parseHeaderLines(row.customHeaders);
       return {
         url: row.url,
+        clientKey: row.key,
         title: video?.title ?? null,
         site: video?.site ?? null,
         durationSec: video?.duration ?? null,
@@ -567,9 +569,9 @@ class AddBarStore {
   }
 
   /** Drop the rows that were added, keep the rest. */
-  clearAdded(urls: readonly string[]): void {
-    const added = new Set(urls);
-    this.rows = this.rows.filter((row) => row.state !== "ready" || !added.has(row.url));
+  clearAdded(keys: readonly string[]): void {
+    const added = new Set(keys);
+    this.rows = this.rows.filter((row) => !added.has(row.key));
   }
 
   /** The per-inspection flags of one row (spec §6.2, §6.4, §11.3). */

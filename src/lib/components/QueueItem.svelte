@@ -7,10 +7,11 @@
   path, the error with **Copy details** and the last log lines.
 -->
 <script lang="ts">
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
-    actionsFor,
+    actionLayout,
     actionKey,
     barPercentFor,
     detailsText,
@@ -41,19 +42,58 @@
     item,
     selected = false,
     onselect,
+    onmeasure,
   }: {
     item: QueueItem;
     selected?: boolean;
     onselect?: (id: string, event: MouseEvent) => void;
+    onmeasure?: (id: string, height: number) => void;
   } = $props();
 
   let expanded = $state(false);
   let copied = $state(false);
+  let copyError = $state(false);
+  let actionMenu = $state<HTMLDetailsElement | null>(null);
   let pendingGeminiTranscribe = $state<"transcribe" | "gemini_only" | "whisper_only" | null>(null);
 
   const hasFile = $derived(item.file !== null);
   const isRemoteUrl = $derived(!item.url.startsWith("local://"));
-  const actions = $derived(actionsFor(item.state, hasFile, isRemoteUrl));
+  const layout = $derived(actionLayout(item.state, hasFile, isRemoteUrl));
+
+  function measure(node: HTMLElement): { destroy: () => void } {
+    const observer = new ResizeObserver(() => {
+      const gap = Number.parseFloat(getComputedStyle(node).marginBottom) || 0;
+      onmeasure?.(item.id, node.getBoundingClientRect().height + gap);
+    });
+    observer.observe(node);
+    const context = (event: MouseEvent): void => {
+      if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select")) return;
+      event.preventDefault();
+      if (actionMenu !== null) { actionMenu.open = true; actionMenu.querySelector("summary")?.focus(); }
+    };
+    node.addEventListener("contextmenu", context);
+    return { destroy: () => { observer.disconnect(); node.removeEventListener("contextmenu", context); } };
+  }
+
+  function closeActionMenu(restoreFocus = true): void {
+    if (!actionMenu?.open) return;
+    actionMenu.open = false;
+    if (restoreFocus) actionMenu.querySelector("summary")?.focus();
+  }
+
+  onMount(() => {
+    const keyboard = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && event.target instanceof Node && actionMenu?.contains(event.target)) {
+        event.preventDefault(); closeActionMenu();
+      }
+    };
+    const outside = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !actionMenu?.contains(event.target)) closeActionMenu(false);
+    };
+    window.addEventListener("keydown", keyboard);
+    window.addEventListener("pointerdown", outside);
+    return () => { window.removeEventListener("keydown", keyboard); window.removeEventListener("pointerdown", outside); };
+  });
   const warning = $derived(heightWarning(item));
   const speed = $derived(speedMbits(item.progress.speedBps));
   const eta = $derived(secondsToClock(item.progress.etaSec));
@@ -177,6 +217,7 @@
   }
 
   async function act(action: ItemAction): Promise<void> {
+    closeActionMenu();
     switch (action) {
       case "reveal":
         if (item.file !== null) {
@@ -189,8 +230,8 @@
         }
         return;
       case "copyLink":
-        await navigator.clipboard.writeText(item.url).catch(() => {});
-        copied = true;
+        try { await navigator.clipboard.writeText(item.url); copied = true; copyError = false; }
+        catch { copied = false; copyError = true; }
         setTimeout(() => (copied = false), 1500);
         return;
       case "openPage":
@@ -216,8 +257,8 @@
 
   async function copyDetails(): Promise<void> {
     const message = item.error !== null ? errorText(item.error.messageKey, null) : null;
-    await navigator.clipboard.writeText(detailsText(item, message)).catch(() => {});
-    copied = true;
+    try { await navigator.clipboard.writeText(detailsText(item, message)); copied = true; copyError = false; }
+    catch { copied = false; copyError = true; }
     setTimeout(() => (copied = false), 1500);
   }
 
@@ -281,6 +322,7 @@
 
 <li
   class="item"
+  use:measure
   class:item--expanded={expanded}
   class:item--new={queueStore.isFlashing(item.id)}
   class:item--selected={selected}
@@ -302,7 +344,7 @@
     <span class="item__chip" data-state={item.state}>{tt(stageKey)}</span>
 
     <div class="item__title-block">
-      <span class="item__title">{itemLabel(item)}</span>
+      <button type="button" class="item__title" data-queue-id={item.id} aria-expanded={expanded} onclick={() => (expanded = !expanded)}>{itemLabel(item)}</button>
       <span class="item__meta">
         {#if item.site !== null}
           <span class="item__site">{item.site}</span>
@@ -320,11 +362,12 @@
     </div>
 
     <div class="item__actions">
-      {#each actions as action (action)}
+      {#each layout.primary as action (action)}
         <button
           type="button"
           class="btn btn--small"
-          class:btn--danger={action === "cancel"}
+          class:btn--danger={action === "cancel" || action === "remove"}
+          class:btn--primary={action === layout.primary[0] && action !== "cancel" && action !== "remove"}
           onclick={() => void act(action)}
         >
           {#if action === "copyLink" && copied}
@@ -334,14 +377,17 @@
           {/if}
         </button>
       {/each}
-      <button
-        type="button"
-        class="btn btn--small"
-        aria-expanded={expanded}
-        onclick={() => (expanded = !expanded)}
-      >
-        {tt(expanded ? "queue.list.collapse" : "queue.list.expand")}
-      </button>
+      <details class="item__more" bind:this={actionMenu} ontoggle={() => { if (actionMenu?.open) actionMenu.scrollIntoView({ block: "nearest" }); }}>
+        <summary class="btn btn--small">{tt("queue.moreActions")}</summary>
+        <div class="item__more-actions">
+          {#each layout.more as action (action)}
+            <button type="button" class="btn btn--small" class:btn--danger={action === "cancel" || action === "remove"} onclick={() => void act(action)}>
+              {tt(action === "copyLink" && copied ? "queue.copied" : actionKey(action))}
+            </button>
+          {/each}
+          <button type="button" class="btn btn--small" aria-expanded={expanded} onclick={() => { closeActionMenu(); expanded = !expanded; }}>{tt(expanded ? "queue.list.collapse" : "queue.list.expand")}</button>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -372,6 +418,7 @@
   >
     {statusText}
   </p>
+  {#if copyError}<p class="field__hint" role="status">{tt("queue.copyFailed")}</p>{/if}
 
   {#if denoOffer}
     <div class="item__offer" role="status">
@@ -655,7 +702,15 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--surface);
+    flex: none;
+    margin-bottom: var(--space-2);
   }
+
+  .item[data-state="done"] { gap: var(--space-1); }
+  .item[data-state="done"] .item__bar { height: 2px; opacity: .25; }
+  .item__more-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); padding-top: var(--space-2); }
+  .item__more { max-width: 100%; }
+  .item__more summary { cursor: pointer; }
 
   .item--expanded {
     border-color: var(--border-strong);
@@ -729,6 +784,13 @@
   }
 
   .item__title {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;

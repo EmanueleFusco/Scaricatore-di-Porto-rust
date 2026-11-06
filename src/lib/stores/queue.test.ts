@@ -16,6 +16,13 @@ beforeEach(() => {
   invoke.mockResolvedValue({});
 });
 describe("duplicate reconciliation", () => {
+  it("retains local row ownership in results without sending it to the backend", async () => {
+    const item = { ...request("https://example.com/a"), clientKey: "r42" };
+    invoke.mockResolvedValueOnce({ added: ["new"], duplicates: [] });
+    const result = await store.add([item]);
+    expect(result.accepted?.[0].clientKey).toBe("r42");
+    expect(invoke).toHaveBeenCalledWith("queue_add", { items: [request(item.url)], force: false });
+  });
   it("forces only refused requests, even with identical URLs and different options", async () => {
     const requests = [request("https://example.com/a"), request("https://example.com/a", 1080)];
     invoke.mockResolvedValueOnce({ added: ["new"], duplicates: [{ url: requests[1].url, itemId: "old", requestIndex: 1 }] });

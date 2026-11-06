@@ -366,6 +366,40 @@ fn queue_add_reports_duplicates_and_the_second_call_forces_them() {
 }
 
 #[test]
+fn mixed_duplicate_results_keep_original_indexes_after_unsupported_urls_are_filtered() {
+    let dir = TempDir::new().expect("tempdir");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("output");
+    let app = app_in(dir.path());
+    let window = webview(&app);
+    let original = json!({ "url": "https://a.example/original", "kind": "video", "quality": { "kind": "best" }, "outputDir": out.display().to_string() });
+    tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({ "items": [original], "force": false }),
+        )
+    })
+    .expect("initial item");
+    let mut fresh = original.clone();
+    fresh["url"] = json!("https://a.example/fresh");
+    let result = tauri::async_runtime::block_on(async {
+        call(
+            &window,
+            "queue_add",
+            json!({ "items": [{ "url": "file:///ignored" }, fresh, original], "force": false }),
+        )
+    })
+    .expect("mixed batch");
+    assert_eq!(result["added"].as_array().expect("added").len(), 1);
+    assert_eq!(
+        result["duplicates"].as_array().expect("duplicates").len(),
+        1
+    );
+    assert_eq!(result["duplicates"][0]["requestIndex"], 2);
+}
+
+#[test]
 fn queue_add_does_not_treat_different_m4_options_as_duplicates() {
     let dir = TempDir::new().expect("temp dir");
     let out = dir.path().join("out");

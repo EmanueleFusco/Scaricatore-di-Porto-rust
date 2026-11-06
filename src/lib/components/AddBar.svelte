@@ -24,7 +24,7 @@
   import DownloadIcon from "lucide-svelte/icons/download";
   import PlusIcon from "lucide-svelte/icons/plus";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, tick } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import CookieBanner from "$lib/components/CookieBanner.svelte";
   import PlaylistPanel from "$lib/components/PlaylistPanel.svelte";
@@ -60,10 +60,32 @@
   let pasteBlocked = $state(false);
   /** One-shot: the next input comes from a paste, so it skips the debounce. */
   let pasted = $state(false);
+  let expanded = $state(true);
+  let expansionButton = $state<HTMLButtonElement | null>(null);
+  let initialLayout = false;
+  let previousRowCount = 0;
   $effect(() => { if (settingsStore.loaded) untrack(() => addBarStore.restorePreset()); });
 
   const rows = $derived(addBarStore.rows);
   const readyCount = $derived(addBarStore.readyCount);
+  const checkingCount = $derived(rows.filter((row) => row.state === "pending" || row.state === "checking").length);
+  const failedCount = $derived(rows.filter((row) => row.state === "error" || row.state === "skipped").length);
+  const playlistCount = $derived(rows.filter((row) => row.state === "playlist" || row.state === "choice").length);
+  const rowCount = $derived(rows.length);
+  $effect(() => {
+    if (queueStore.loaded && !initialLayout) {
+      initialLayout = true;
+      if (queueStore.summary.total > 0 && rowCount === 0 && !addBarStore.text) expanded = false;
+    }
+  });
+  $effect(() => { if (rowCount > previousRowCount) expanded = true; previousRowCount = rowCount; });
+
+  async function collapseComposer(generation: number): Promise<void> {
+    if (generation !== addBarStore.rowGeneration || queueStore.pendingDuplicates.length > 0 || addBarStore.text) return;
+    expanded = false;
+    await tick();
+    expansionButton?.focus();
+  }
   /** A ready row has an invalid trim range: submitting it must be blocked (spec §9.2). */
   const hasTrimError = $derived(
     addBarStore.ready.some(
@@ -203,12 +225,14 @@
   ): Promise<void> {
     if (requests.length === 0) return;
     busy = "adding";
+    const generation = addBarStore.rowGeneration;
     try {
       const result = await queueStore.add(requests);
       if (result.added.length > 0) {
-        addBarStore.clearAdded((result.accepted ?? []).map((request) => request.url));
+        addBarStore.clearAdded((result.accepted ?? []).flatMap((request) => request.clientKey ? [request.clientKey] : []));
         queueStore.flash(result.added);
         if (mode === "download") await queueStore.prioritize(result.added);
+        await collapseComposer(generation);
       }
     } finally {
       busy = "";
@@ -235,10 +259,12 @@
 
   async function addAnyway(): Promise<void> {
     busy = "adding";
+    const generation = addBarStore.rowGeneration;
     try {
       const result = await queueStore.addAnyway();
-      addBarStore.clearAdded((result.accepted ?? []).map((request) => request.url));
+      addBarStore.clearAdded((result.accepted ?? []).flatMap((request) => request.clientKey ? [request.clientKey] : []));
       queueStore.flash(result.added);
+      if (result.added.length > 0) await collapseComposer(generation);
     } finally {
       busy = "";
     }
@@ -257,6 +283,7 @@
     addBarStore.dragging = false;
     const text = event.dataTransfer?.getData("text/plain");
     if (text !== undefined && text !== null && text.trim() !== "") {
+      expanded = true;
       pasteBlocked = splitLinks(text).length === 0;
       void addBarStore.dropText(text);
     }
@@ -282,6 +309,7 @@
     const target = event.target as HTMLElement | null;
     if (target !== null && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
     const text = event.clipboardData?.getData("text");
+    if (text?.trim()) expanded = true;
     if (text === undefined || text === null || text.trim() === "") return;
     if (splitLinks(text).length === 0) return;
     event.preventDefault();
@@ -342,8 +370,15 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
 >
+  <header class="add__heading">
+    <h2>{tt("queue.add.label")}</h2>
+    {#if rowCount > 0}<p class="field__hint" role="status">{tt("queue.add.counts", { checking: checkingCount, ready: readyCount, failed: failedCount, playlists: playlistCount })}</p>{/if}
+    <button type="button" class="btn btn--small" bind:this={expansionButton} aria-expanded={expanded} aria-controls={expanded ? "add-composer" : undefined} onclick={() => (expanded = !expanded)}>{tt(expanded ? "queue.add.close" : "queue.add.open")}</button>
+  </header>
+  {#if expanded}
+  <div class="add__body" id="add-composer">
   <div class="field">
-    <label class="field__label" for="add-links">{tt("queue.add.label")}</label>
+    <label class="visually-hidden" for="add-links">{tt("queue.add.label")}</label>
     <textarea
       class="input add__input"
       id="add-links"
@@ -507,7 +542,7 @@
 
           {#if row.state === "playlist" && row.inspected?.kind === "playlist"}
             <div class="add__block">
-              <PlaylistPanel {row} playlist={row.inspected} />
+              <PlaylistPanel {row} playlist={row.inspected} onadded={(generation) => void collapseComposer(generation)} />
             </div>
           {/if}
 
@@ -888,11 +923,14 @@
     </div>
   {/if}
 
+  </div>
   <div class="add__footer">
     <div class="add__status">
       <p class="field__hint" role="status">
         {#if readyCount > 0}
           {ttCount("queue.add.ready", readyCount)}
+        {:else if checkingCount > 0}
+          {tt("queue.add.inspecting")}
         {:else if rows.length > 0}
           {tt("queue.add.none")}
         {/if}
@@ -925,6 +963,7 @@
       </button>
     </div>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -933,10 +972,16 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    /* Never squeezed: on a window too small for everything, the page scrolls
-       (`.queue`), and the textarea keeps its size. */
-    flex: none;
+    flex: 0 1 auto;
+    max-height: 54%;
+    min-height: 52px;
   }
+
+  .add__heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); flex: none; }
+  .add__heading h2 { font-size: 14px; flex: 1; }
+  .add__heading .field__hint { flex: 1 1 200px; }
+  .add__body { display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; overflow-y: auto; padding-right: var(--space-1); }
+  .add__footer { flex: none; }
 
   .add--dragging {
     border-color: var(--accent);
@@ -994,8 +1039,7 @@
     list-style: none;
     /* A long inspection list scrolls inside the card so the queue below it
        keeps a usable height. */
-    max-height: min(32vh, 360px);
-    overflow-y: auto;
+    flex: none;
   }
 
   .add__row {

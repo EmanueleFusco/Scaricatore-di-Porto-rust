@@ -166,7 +166,7 @@ class QueueStore {
     }
     try {
       const result = normaliseAddResult(
-        await invoke<unknown>("queue_add", { items: requests, force }),
+        await invoke<unknown>("queue_add", { items: requests.map(({ clientKey: _, ...request }) => request), force }),
       );
       const refusedIndexes = new Set(result.duplicates.map((duplicate) => duplicate.requestIndex));
       const accepted = requests.filter((_, index) => !refusedIndexes.has(index));
